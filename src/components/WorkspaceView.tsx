@@ -1,0 +1,2202 @@
+import {
+  Bell,
+  CheckCircle2,
+  ClipboardList,
+  Database,
+  Download,
+  ExternalLink,
+  FileSpreadsheet,
+  FileText,
+  HardHat,
+  Layers,
+  LayoutDashboard,
+  LifeBuoy,
+  LogOut,
+  Plus,
+  Receipt,
+  RefreshCw,
+  ShieldCheck,
+  ShoppingBag,
+  Trash2,
+  Users,
+  Wallet,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
+import {
+  ALL_PERMISSIONS,
+  buildQuoteLinesFromEstimate,
+  calculateDocumentTotals,
+  formatNgn,
+  hasPermission,
+  syncLineItemsWithCatalog,
+} from '../lib/solar';
+import type {
+  CatalogItem,
+  CatalogItemType,
+  EnquiryRecord,
+  LineItem,
+  PermissionKey,
+  QuotationRecord,
+  RoleDefinition,
+  ServiceTicket,
+  StaffStatus,
+  StoreOrderStatus,
+  TicketStatus,
+  UserRole,
+  WorkspaceBootstrap,
+} from '../lib/types';
+import { PWAInstallButton } from './PWAInstallButton';
+import { WorkspaceFinance } from './WorkspaceFinance';
+import { WorkspaceInstallations } from './WorkspaceInstallations';
+
+type WorkspaceTab =
+  | 'overview'
+  | 'enquiries'
+  | 'tickets'
+  | 'catalog'
+  | 'orders'
+  | 'quotes'
+  | 'invoices'
+  | 'finance'
+  | 'installations'
+  | 'staff'
+  | 'notifications'
+  | 'audit'
+  | 'cpanel';
+
+interface WorkspaceViewProps {
+  onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
+  onCatalogChange?: (catalog: CatalogItem[]) => void;
+}
+
+const DEMO_ACCOUNTS = [
+  {
+    email: 'superadmin@example.invalid',
+    short: 'Super Admin',
+    label: 'Super Admin · Full Control & Roles',
+    role: 'All Modules & Custom Role Builder',
+  },
+  {
+    email: 'director@example.invalid',
+    short: 'Director',
+    label: 'Demo Director',
+    role: 'Quote Approvals, Payments & Job Release',
+  },
+  {
+    email: 'admin@example.invalid',
+    short: 'Admin',
+    label: 'Demo Admin · Help Desk',
+    role: 'Storefront, Enquiries, Complaints & Quotes',
+  },
+  {
+    email: 'technician@example.invalid',
+    short: 'Technician',
+    label: 'Demo Technician',
+    role: 'Assigned Field Stages & Service Tickets',
+  },
+];
+const SHOW_DEMO_LOGINS = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEMO_LOGIN === 'true';
+
+export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceViewProps) {
+  const [data, setData] = useState<WorkspaceBootstrap | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<WorkspaceTab>('overview');
+  const [toastMsg, setToastMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // Login form state
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+
+  // Manual enquiry modal
+  const [enqModal, setEnqModal] = useState(false);
+  const [enqName, setEnqName] = useState('');
+  const [enqPhone, setEnqPhone] = useState('');
+  const [enqEmail, setEnqEmail] = useState('');
+  const [enqLocation, setEnqLocation] = useState('');
+  const [enqChannel, setEnqChannel] = useState('WhatsApp · Manual Intake');
+  const [enqNeed, setEnqNeed] = useState('');
+
+  // Storefront / Catalogue modal & view
+  const [catalogView, setCatalogView] = useState<'cards' | 'list'>('cards');
+  const [catModal, setCatModal] = useState(false);
+  const [catSku, setCatSku] = useState('');
+  const [catName, setCatName] = useState('');
+  const [catType, setCatType] = useState<CatalogItemType>('equipment');
+  const [catCategory, setCatCategory] = useState('Accessories');
+  const [catUnit, setCatUnit] = useState('unit');
+  const [catPrice, setCatPrice] = useState('45000');
+  const [catStock, setCatStock] = useState('10');
+  const [catCapacity, setCatCapacity] = useState('');
+  const [catWatts, setCatWatts] = useState('');
+  const [catDescription, setCatDescription] = useState('');
+  const [catImagePath, setCatImagePath] = useState('/src/assets/images/store_inverter_ac_1794824379632.jpg');
+  const [catImageDataUrl, setCatImageDataUrl] = useState('');
+  const [catImageName, setCatImageName] = useState('');
+
+  // Quotation builder modal
+  const [quoteModal, setQuoteModal] = useState(false);
+  const [editQuoteId, setEditQuoteId] = useState<string | undefined>(undefined);
+  const [quoteEnqId, setQuoteEnqId] = useState('');
+  const [quoteCustomer, setQuoteCustomer] = useState('');
+  const [quoteScope, setQuoteScope] = useState('');
+  const [quoteTerms, setQuoteTerms] = useState('50% deposit on acceptance, 50% prior to commissioning.');
+  const [quoteNote, setQuoteNote] = useState('Valid 7 days. 1-year installation warranty applies.');
+  const [quoteDiscount, setQuoteDiscount] = useState('0');
+  const [quoteTax, setQuoteTax] = useState('7.5');
+  const [quoteValid, setQuoteValid] = useState(
+    new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+  );
+  const [quoteItems, setQuoteItems] = useState<LineItem[]>([]);
+
+  // Help Desk Ticket resolution modal
+  const [editTicket, setEditTicket] = useState<ServiceTicket | null>(null);
+  const [tktStatus, setTktStatus] = useState<TicketStatus>('Open');
+  const [tktTechId, setTktTechId] = useState('');
+  const [tktResolution, setTktResolution] = useState('');
+
+  // Staff modal
+  const [staffModal, setStaffModal] = useState(false);
+  const [editStaffId, setEditStaffId] = useState<string | undefined>(undefined);
+  const [staffName, setStaffName] = useState('');
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffPhone, setStaffPhone] = useState('');
+  const [staffRole, setStaffRole] = useState<UserRole>('technician');
+  const [staffTitle, setStaffTitle] = useState('Solar Field Technician');
+  const [staffSkills, setStaffSkills] = useState('');
+  const [staffStatus, setStaffStatus] = useState<StaffStatus>('Active');
+  const [staffPassword, setStaffPassword] = useState('');
+
+  // Custom Role modal (Super Admin)
+  const [roleModal, setRoleModal] = useState(false);
+  const [editRoleId, setEditRoleId] = useState<string | undefined>(undefined);
+  const [roleName, setRoleName] = useState('');
+  const [roleDesc, setRoleDesc] = useState('');
+  const [rolePerms, setRolePerms] = useState<PermissionKey[]>(['manage_enquiries', 'manage_tickets']);
+
+  // Storefront order inline status edits
+  const [orderDraftStatus, setOrderDraftStatus] = useState<Record<string, StoreOrderStatus>>({});
+  const [orderSavingId, setOrderSavingId] = useState<string | null>(null);
+  const [pkgManifest, setPkgManifest] = useState<{ cpanelCount: number; sourceCount: number } | null>(null);
+
+  function showToast(msg: string) {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(''), 4000);
+  }
+
+  async function loadWorkspace() {
+    setLoading(true);
+    try {
+      const sess = await api.session();
+      if (!sess.authenticated) {
+        setData(null);
+        return;
+      }
+      const ws = await api.getWorkspace();
+      setData(ws);
+      onCatalogChange?.(ws.catalog);
+
+      // Route staff into an accessible initial tab if current tab isn't allowed
+      const isFieldOnly =
+        ws.user.role === 'technician' &&
+        !hasPermission(ws.user, 'manage_enquiries') &&
+        !hasPermission(ws.user, 'manage_storefront');
+      if (isFieldOnly && !['installations', 'tickets', 'notifications', 'cpanel'].includes(tab)) {
+        setTab('installations');
+      }
+    } catch {
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadWorkspace();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (tab !== 'cpanel' || pkgManifest) return;
+    fetch('/api/package-manifest', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => {
+        if (m && typeof m.cpanelCount === 'number') {
+          setPkgManifest({ cpanelCount: m.cpanelCount, sourceCount: m.sourceCount });
+        }
+      })
+      .catch(() => {
+        // Ignore optional manifest preview error
+      });
+  }, [tab, pkgManifest]);
+
+  async function handleLogin(email: string, password: string, demoQuickLogin = false) {
+    setErrorMsg('');
+    setLoginBusy(true);
+    try {
+      await api.login(email, password, demoQuickLogin);
+      setTab('overview');
+      await loadWorkspace();
+    } catch (err) {
+      setErrorMsg((err as Error).message);
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord) {
+    if (!data) return;
+    setErrorMsg('');
+    if (existing) {
+      setEditQuoteId(existing.id);
+      setQuoteEnqId(existing.enquiryId);
+      setQuoteCustomer(existing.customerName);
+      setQuoteScope(existing.scope);
+      setQuoteTerms(existing.terms);
+      setQuoteNote(existing.note);
+      setQuoteDiscount(String(existing.discountNgn));
+      setQuoteTax(String(existing.taxPercent));
+      setQuoteValid(existing.validUntil);
+      setQuoteItems(existing.items);
+    } else if (enq) {
+      setEditQuoteId(undefined);
+      setQuoteEnqId(enq.id);
+      setQuoteCustomer(enq.customerName);
+      setQuoteScope(`Turnkey hybrid solar engineering supply and installation for ${enq.location}.`);
+      setQuoteItems(buildQuoteLinesFromEstimate(enq.estimate, data.catalog));
+    }
+    setQuoteModal(true);
+  }
+
+  function openRoleEditor(roleDef?: RoleDefinition) {
+    if (roleDef) {
+      setEditRoleId(roleDef.id);
+      setRoleName(roleDef.name);
+      setRoleDesc(roleDef.description);
+      setRolePerms(roleDef.permissions);
+    } else {
+      setEditRoleId(undefined);
+      setRoleName('');
+      setRoleDesc('');
+      setRolePerms(['manage_enquiries', 'manage_tickets']);
+    }
+    setRoleModal(true);
+  }
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-16 text-center text-sm text-slate-500">
+        Loading Operations Command Centre...
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="mx-auto max-w-lg px-4 py-12">
+        <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-[#0B1D39]">
+          <div className="flex items-center gap-3">
+            <img src="/assets/hisotech-logo-mark.png" alt="HI-SOTECH" className="h-10 w-10 object-contain" />
+            <div>
+              <h1 className="text-xl font-bold text-[#081E3E] dark:text-white">HI-SOTECH Staff Workspace</h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Sign In · Super Admin, Director, Admin, Technician &amp; Custom Roles
+              </p>
+            </div>
+          </div>
+
+          {errorMsg && (
+            <p className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
+              {errorMsg}
+            </p>
+          )}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleLogin(loginEmail, loginPassword, false);
+            }}
+            className="mt-6 space-y-4 text-sm"
+          >
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Staff Email</span>
+              <input
+                type="email"
+                required
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password</span>
+              <input
+                type="password"
+                required
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={loginBusy}
+              className="w-full rounded-lg bg-[#081E3E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#D61F26] dark:bg-[#D61F26]"
+            >
+              {loginBusy ? 'Signing In...' : 'Sign In to Staff Workspace'}
+            </button>
+          </form>
+
+          {SHOW_DEMO_LOGINS && (
+            <div className="mt-6 border-t border-slate-200 pt-5 dark:border-slate-800">
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Development-only role preview</p>
+              <div className="mt-3 space-y-2">
+                {DEMO_ACCOUNTS.map((acc) => (
+                  <button
+                    key={acc.email}
+                    type="button"
+                    onClick={() => handleLogin(acc.email, '', true)}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 px-3.5 py-2.5 text-left text-xs transition-colors hover:border-[#D61F26] dark:border-slate-700"
+                  >
+                    <div>
+                      <div className="font-bold text-[#081E3E] dark:text-white">{acc.label}</div>
+                      <div className="text-slate-500 dark:text-slate-400">{acc.role}</div>
+                    </div>
+                    <span className="font-semibold text-[#D61F26]">Enter</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const user = data.user;
+  const unreadCount = data.notifications.filter((n) => !n.isRead).length;
+  const openTicketsCount = data.tickets.filter((t) => t.status !== 'Resolved').length;
+  const pendingOrders = data.orders.filter((o) => o.status === 'Pending' || o.status === 'Confirmed').length;
+  const pendingQuotes = data.quotes.filter((q) => q.status === 'Pending MD').length;
+  const pendingPayments = data.payments.filter((p) => p.status === 'Pending').length;
+  const technicians = data.staff.filter(
+    (s) => (s.role === 'technician' || hasPermission(s, 'update_installations')) && s.status === 'Active'
+  );
+
+  const navLinks: { id: WorkspaceTab; label: string; icon: typeof LayoutDashboard; allowed: boolean }[] = [
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard, allowed: true },
+    { id: 'enquiries', label: 'Enquiries', icon: ClipboardList, allowed: hasPermission(user, 'manage_enquiries') },
+    {
+      id: 'tickets',
+      label: `Help Desk (${openTicketsCount})`,
+      icon: LifeBuoy,
+      allowed: hasPermission(user, 'manage_tickets'),
+    },
+    { id: 'catalog', label: 'Storefront & Prices', icon: Layers, allowed: hasPermission(user, 'manage_storefront') },
+    {
+      id: 'orders',
+      label: `Store Orders (${pendingOrders})`,
+      icon: ShoppingBag,
+      allowed:
+        hasPermission(user, 'manage_storefront') ||
+        hasPermission(user, 'manage_enquiries') ||
+        hasPermission(user, 'manage_invoices'),
+    },
+    {
+      id: 'quotes',
+      label: 'Quotations',
+      icon: FileText,
+      allowed: hasPermission(user, 'draft_quotes') || hasPermission(user, 'approve_quotes'),
+    },
+    {
+      id: 'invoices',
+      label: 'Invoices',
+      icon: Receipt,
+      allowed: hasPermission(user, 'manage_invoices') || hasPermission(user, 'release_installations'),
+    },
+    {
+      id: 'finance',
+      label: 'Payments & Finance',
+      icon: Wallet,
+      allowed: hasPermission(user, 'verify_payments') || hasPermission(user, 'manage_invoices'),
+    },
+    {
+      id: 'installations',
+      label: 'Installations',
+      icon: HardHat,
+      allowed: hasPermission(user, 'update_installations') || hasPermission(user, 'release_installations'),
+    },
+    {
+      id: 'staff',
+      label: 'Staff & Roles',
+      icon: Users,
+      allowed: hasPermission(user, 'manage_staff') || hasPermission(user, 'manage_roles'),
+    },
+    { id: 'notifications', label: `Notifications (${unreadCount})`, icon: Bell, allowed: true },
+    { id: 'audit', label: 'Audit Trail', icon: ShieldCheck, allowed: hasPermission(user, 'view_audit') },
+    { id: 'cpanel', label: 'cPanel PHP + MySQL', icon: Database, allowed: true },
+  ];
+
+  const quoteTotals = calculateDocumentTotals(
+    quoteItems,
+    Number(quoteDiscount) || 0,
+    Number(quoteTax) || 0
+  );
+
+  return (
+    <div className="mx-auto grid min-h-[calc(100vh-65px)] max-w-7xl lg:grid-cols-12">
+      {/* Sidebar */}
+      <aside className="border-b border-slate-200 bg-[#081E3E] p-4 text-slate-200 lg:col-span-3 lg:border-r lg:border-b-0 dark:border-slate-800">
+        <div className="rounded-lg bg-white/10 p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-red-300">
+              {user.roleName || user.role}
+            </span>
+            <PWAInstallButton variant="workspace" />
+          </div>
+          <div className="mt-0.5 text-base font-bold text-white">{user.name}</div>
+          <div className="text-[11px] text-slate-300">{user.title}</div>
+          {SHOW_DEMO_LOGINS && (
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              {DEMO_ACCOUNTS.map((acc) => (
+                <button
+                  key={acc.email}
+                  type="button"
+                  onClick={() => handleLogin(acc.email, '', true)}
+                  className={`rounded px-2 py-0.5 text-[11px] font-medium ${
+                    user.email === acc.email
+                      ? 'bg-[#D61F26] text-white'
+                      : 'bg-white/10 text-slate-300 hover:bg-white/20'
+                  }`}
+                >
+                  {acc.short}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <nav className="mt-4 space-y-1">
+          {navLinks
+            .filter((item) => item.allowed)
+            .map((item) => {
+              const Icon = item.icon;
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setTab(item.id)}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
+                    active ? 'bg-[#D61F26] text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </button>
+              );
+            })}
+        </nav>
+
+        <div className="mt-6 border-t border-white/15 pt-4">
+          <button
+            type="button"
+            onClick={async () => {
+              await api.logout();
+              setData(null);
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign Out
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="min-w-0 p-4 sm:p-6 lg:col-span-9 lg:p-8">
+        {toastMsg && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-sm font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+            {toastMsg}
+          </div>
+        )}
+        {errorMsg && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3.5 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
+            {errorMsg}
+          </div>
+        )}
+
+        {/* OVERVIEW */}
+        {tab === 'overview' && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold tracking-wider text-[#D61F26]">COMMAND CENTRE</p>
+                <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Operations Overview</h1>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href="/api/cpanel-package.zip"
+                  download="hisotech-php-mysql-cpanel.zip"
+                  className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
+                >
+                  <Download className="h-4 w-4" />
+                  Download PHP + MySQL cPanel Package
+                </a>
+                <a
+                  href="/api/source-package.zip"
+                  download="hisotech-full-source-code.zip"
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-[#081E3E] hover:border-[#D61F26] dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                >
+                  <Download className="h-4 w-4" />
+                  Download Full Source Code (.zip)
+                </a>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                { label: 'Enquiries', val: data.enquiries.length, target: 'enquiries' as WorkspaceTab, ok: hasPermission(user, 'manage_enquiries') },
+                { label: 'Storefront Orders', val: pendingOrders, target: 'orders' as WorkspaceTab, ok: hasPermission(user, 'manage_storefront') || hasPermission(user, 'manage_enquiries') || hasPermission(user, 'manage_invoices') },
+                { label: 'Open Help Desk Tickets', val: openTicketsCount, target: 'tickets' as WorkspaceTab, ok: hasPermission(user, 'manage_tickets') },
+                { label: 'Quotes Pending Director', val: pendingQuotes, target: 'quotes' as WorkspaceTab, ok: hasPermission(user, 'draft_quotes') || hasPermission(user, 'approve_quotes') },
+                { label: 'Receipts Pending Review', val: pendingPayments, target: 'finance' as WorkspaceTab, ok: hasPermission(user, 'verify_payments') || hasPermission(user, 'manage_invoices') },
+                { label: 'Active Installations', val: data.installations.length, target: 'installations' as WorkspaceTab, ok: hasPermission(user, 'update_installations') || hasPermission(user, 'release_installations') },
+                { label: 'Storefront SKUs', val: data.catalog.length, target: 'catalog' as WorkspaceTab, ok: hasPermission(user, 'manage_storefront') },
+                { label: 'Staff & Custom Roles', val: data.roles.length, target: 'staff' as WorkspaceTab, ok: hasPermission(user, 'manage_staff') || hasPermission(user, 'manage_roles') },
+                { label: 'Unread Alerts', val: unreadCount, target: 'notifications' as WorkspaceTab, ok: true },
+              ]
+                .filter((k) => k.ok)
+                .map((kpi) => (
+                  <button
+                    key={kpi.label}
+                    type="button"
+                    onClick={() => setTab(kpi.target)}
+                    className="rounded-xl border border-slate-200 bg-white p-4 text-left transition-colors hover:border-[#D61F26] dark:border-slate-800 dark:bg-[#0B1D39]"
+                  >
+                    <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{kpi.label}</div>
+                    <div className="font-mono-num mt-1 text-2xl font-bold text-[#081E3E] dark:text-white">
+                      {kpi.val}
+                    </div>
+                  </button>
+                ))}
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-2">
+              {hasPermission(user, 'manage_tickets') && (
+                <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-bold text-[#081E3E] dark:text-white">Customer Service &amp; Complaints</h2>
+                    <button
+                      type="button"
+                      onClick={() => setTab('tickets')}
+                      className="text-xs font-semibold text-[#D61F26] hover:underline"
+                    >
+                      Open Help Desk →
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {data.tickets.slice(0, 4).map((t) => (
+                      <div key={t.id} className="flex items-center justify-between border-b border-slate-100 pb-2.5 text-sm dark:border-slate-800">
+                        <div>
+                          <span className="font-mono-num font-bold text-[#D61F26]">{t.ticketCode}</span>{' '}
+                          <span className="font-semibold">{t.subject}</span>
+                          <div className="text-xs text-slate-500">
+                            {t.customerName} · {t.category} · {t.priority}
+                          </div>
+                        </div>
+                        <span className="text-xs font-semibold text-[#081E3E] dark:text-slate-200">{t.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {hasPermission(user, 'manage_enquiries') && (
+                <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-bold text-[#081E3E] dark:text-white">Enquiries Pipeline</h2>
+                    <button
+                      type="button"
+                      onClick={() => setTab('enquiries')}
+                      className="text-xs font-semibold text-[#D61F26] hover:underline"
+                    >
+                      View All →
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {data.enquiries.slice(0, 4).map((e) => (
+                      <div
+                        key={e.id}
+                        className="flex items-center justify-between border-b border-slate-100 pb-2.5 text-sm dark:border-slate-800"
+                      >
+                        <div>
+                          <span className="font-mono-num font-bold text-[#D61F26]">{e.refCode}</span>{' '}
+                          <span className="font-semibold">{e.customerName}</span>
+                          <div className="text-xs text-slate-500">{e.location} · {e.channel}</div>
+                        </div>
+                        <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{e.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* HELP DESK / CUSTOMER SERVICE & COMPLAINTS */}
+        {tab === 'tickets' && (
+          <div className="space-y-4">
+            <div>
+              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">
+                Help Desk · Customer Service &amp; Complaints
+              </h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Tickets submitted from customer profiles appear here for Admin triage, Technician assignment, and resolution.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {data.tickets.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-[#0B1D39]">
+                  No customer service requests or complaints logged yet.
+                </div>
+              ) : (
+                data.tickets.map((tkt) => (
+                  <div
+                    key={tkt.id}
+                    className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                          <span className="font-mono-num font-bold text-[#D61F26]">{tkt.ticketCode}</span>
+                          <span>·</span>
+                          <span>{tkt.category}</span>
+                          <span>·</span>
+                          <span className={tkt.priority === 'Urgent' ? 'font-bold text-[#D61F26]' : ''}>
+                            {tkt.priority} Priority
+                          </span>
+                          <span>·</span>
+                          <span className="font-semibold text-[#081E3E] dark:text-white">{tkt.status}</span>
+                        </div>
+                        <h3 className="mt-1 text-lg font-bold text-[#081E3E] dark:text-white">{tkt.subject}</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Customer: {tkt.customerName} ({tkt.customerPhone}) · {tkt.location}
+                        </p>
+                        <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{tkt.description}</p>
+                        <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                          Equipment: <strong>{tkt.equipmentSummary || 'General System'}</strong> · Technician:{' '}
+                          <strong>{tkt.assignedTechName || 'Unassigned'}</strong>
+                        </div>
+                        {tkt.resolutionNote && (
+                          <div className="mt-2 rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">
+                            Resolution Note: {tkt.resolutionNote}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditTicket(tkt);
+                          setTktStatus(tkt.status);
+                          setTktTechId(tkt.assignedTechId || '');
+                          setTktResolution(tkt.resolutionNote);
+                        }}
+                        className="rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
+                      >
+                        Manage Ticket
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ENQUIRIES */}
+        {tab === 'enquiries' && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Enquiries Intake</h1>
+              <button
+                type="button"
+                onClick={() => setEnqModal(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
+              >
+                <Plus className="h-4 w-4" /> Log Phone / WhatsApp Enquiry
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {data.enquiries.map((e) => (
+                <div
+                  key={e.id}
+                  className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span className="font-mono-num font-bold text-[#D61F26]">{e.refCode}</span>
+                      <span>·</span>
+                      <span>{e.channel}</span>
+                      <span>·</span>
+                      <span>{e.status}</span>
+                    </div>
+                    <h3 className="mt-1 text-lg font-bold text-[#081E3E] dark:text-white">{e.customerName}</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {e.location} · {e.phone} {e.email ? `· ${e.email}` : ''}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{e.needSummary}</p>
+                    {e.estimate && e.estimate.connectedLoadWatts > 0 && (
+                      <p className="font-mono-num mt-1 text-xs font-semibold text-[#081E3E] dark:text-red-300">
+                        Load Estimate: {e.estimate.connectedLoadWatts}W · {e.estimate.dailyEnergyKwh}kWh/day ·{' '}
+                        {e.estimate.inverterMinKw}kW Inverter · {e.estimate.recommendedPanels550w}×550W PV
+                      </p>
+                    )}
+                  </div>
+                  {hasPermission(user, 'draft_quotes') && (
+                    <button
+                      type="button"
+                      onClick={() => openQuoteBuilder(e)}
+                      className="rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
+                    >
+                      Draft Quotation
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STOREFRONT & CATALOGUE */}
+        {tab === 'catalog' && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">
+                  Storefront Pricing, Images &amp; Appliances
+                </h1>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Price and specification changes here automatically update the public Storefront, Load Estimator, and Quotation Builder.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCatalogView(catalogView === 'cards' ? 'list' : 'cards')}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold dark:border-slate-700"
+                >
+                  {catalogView === 'cards' ? 'Switch to List' : 'Switch to Cards'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCatSku('');
+                    setCatName('');
+                    setCatType('equipment');
+                    setCatCategory('Accessories');
+                    setCatUnit('unit');
+                    setCatPrice('45000');
+                    setCatStock('10');
+                    setCatCapacity('');
+                    setCatWatts('');
+                    setCatDescription('');
+                    setCatImagePath('/src/assets/images/store_inverter_ac_1794824379632.jpg');
+                    setCatImageDataUrl('');
+                    setCatImageName('');
+                    setCatModal(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
+                >
+                  <Plus className="h-4 w-4" /> Add Storefront Item
+                </button>
+              </div>
+            </div>
+
+            {catalogView === 'cards' ? (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {data.catalog.map((c) => (
+                  <div
+                    key={c.sku}
+                    className="flex flex-col justify-between overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0B1D39]"
+                  >
+                    <div>
+                      <div className="aspect-[16/10] bg-slate-100 dark:bg-slate-800">
+                        <img src={c.imagePath} alt={c.name} className="h-full w-full object-cover" />
+                      </div>
+                      <div className="p-4">
+                        <div className="font-mono-num text-xs text-slate-500">
+                          {c.sku} · <span className="capitalize">{c.itemType}</span> · {c.category}
+                        </div>
+                        <h3 className="mt-1 font-bold text-[#081E3E] dark:text-white">{c.name}</h3>
+                        {c.description && (
+                          <p className="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-400">
+                            {c.description}
+                          </p>
+                        )}
+                        <div className="mt-3 flex items-center justify-between">
+                          <span className="font-mono-num text-base font-bold text-[#D61F26]">
+                            {formatNgn(c.priceNgn)}
+                          </span>
+                          <span className="font-mono-num text-xs text-slate-500">
+                            {c.stockQty === 999 ? 'Service' : `${c.stockQty} ${c.unit}`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 border-t border-slate-100 p-3 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCatSku(c.sku);
+                          setCatName(c.name);
+                          setCatType(c.itemType);
+                          setCatCategory(c.category);
+                          setCatUnit(c.unit);
+                          setCatPrice(String(c.priceNgn));
+                          setCatStock(String(c.stockQty));
+                          setCatCapacity(c.capacityKw !== null ? String(c.capacityKw) : '');
+                          setCatWatts(c.watts !== null ? String(c.watts) : '');
+                          setCatDescription(c.description);
+                          setCatImagePath(c.imagePath);
+                          setCatImageDataUrl('');
+                          setCatImageName('');
+                          setCatModal(true);
+                        }}
+                        className="flex-1 rounded-lg border border-slate-300 py-1.5 text-xs font-semibold hover:border-[#081E3E] dark:border-slate-700"
+                      >
+                        Edit Price / Image
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${c.sku}`}
+                        onClick={async () => {
+                          await api.deleteCatalogItem(c.sku);
+                          await loadWorkspace();
+                          showToast(`Removed ${c.sku} from Storefront.`);
+                        }}
+                        className="inline-flex items-center justify-center rounded-lg border border-slate-200 px-2.5 text-slate-500 hover:border-red-300 hover:text-[#D61F26] dark:border-slate-700"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-[#0B1D39]">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-200 text-xs text-slate-500 dark:border-slate-700">
+                    <tr>
+                      <th className="py-2 pr-3">SKU</th>
+                      <th className="py-2 pr-3">Item</th>
+                      <th className="py-2 pr-3">Type</th>
+                      <th className="py-2 pr-3 text-right">Stock</th>
+                      <th className="py-2 text-right">Price</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {data.catalog.map((c) => (
+                      <tr key={c.sku}>
+                        <td className="font-mono-num py-2.5 pr-3 text-xs font-bold">{c.sku}</td>
+                        <td className="py-2.5 pr-3 font-medium">{c.name}</td>
+                        <td className="py-2.5 pr-3 capitalize text-xs text-slate-500">{c.itemType}</td>
+                        <td className="font-mono-num py-2.5 pr-3 text-right">{c.stockQty}</td>
+                        <td className="font-mono-num py-2.5 text-right font-bold">{formatNgn(c.priceNgn)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* STOREFRONT ORDERS */}
+        {tab === 'orders' && (
+          <div className="space-y-4">
+            <div>
+              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Storefront Customer Orders</h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Manage equipment and appliance checkout orders, update dispatch status, or draft an itemized quote from a linked reference.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              {data.orders.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-[#0B1D39]">
+                  No storefront orders placed yet.
+                </div>
+              ) : (
+                data.orders.map((ord) => {
+                  const currentStatus = orderDraftStatus[ord.id] ?? ord.status;
+                  const linkedEnquiry = data.enquiries.find((e) => e.id === ord.enquiryId);
+                  return (
+                    <div
+                      key={ord.id}
+                      className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                            <span className="font-mono-num font-bold text-[#D61F26]">{ord.orderCode}</span>
+                            <span>·</span>
+                            <span className="font-mono-num font-semibold text-[#081E3E] dark:text-slate-200">
+                              {ord.refCode}
+                            </span>
+                            <span>·</span>
+                            <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold text-[#081E3E] dark:bg-slate-800 dark:text-white">
+                              {ord.status}
+                            </span>
+                            <span>·</span>
+                            <span>{ord.createdAt.slice(0, 10)}</span>
+                          </div>
+                          <h3 className="mt-1.5 text-lg font-bold text-[#081E3E] dark:text-white">
+                            {ord.customerName}
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {ord.phone} {ord.email ? `· ${ord.email}` : ''} · {ord.location}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                            <strong>{ord.deliveryMethod}</strong> · {ord.deliveryAddress} ·{' '}
+                            <strong>{ord.paymentMethod}</strong>
+                          </p>
+                          {ord.notes && (
+                            <p className="mt-1 text-xs italic text-slate-500 dark:text-slate-400">
+                              Note: {ord.notes}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="sr-only" htmlFor={`order-status-${ord.id}`}>
+                            Status for {ord.orderCode}
+                          </label>
+                          <select
+                            id={`order-status-${ord.id}`}
+                            value={currentStatus}
+                            onChange={(e) =>
+                              setOrderDraftStatus((prev) => ({
+                                ...prev,
+                                [ord.id]: e.target.value as StoreOrderStatus,
+                              }))
+                            }
+                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold dark:border-slate-700 dark:bg-[#061327]"
+                          >
+                            <option value="Pending">Pending</option>
+                            <option value="Confirmed">Confirmed</option>
+                            <option value="Dispatched">Dispatched</option>
+                            <option value="Delivered">Delivered</option>
+                            <option value="Cancelled">Cancelled</option>
+                          </select>
+                          <button
+                            type="button"
+                            disabled={orderSavingId === ord.id}
+                            onClick={async () => {
+                              setErrorMsg('');
+                              setOrderSavingId(ord.id);
+                              try {
+                                await api.updateStoreOrder({ orderId: ord.id, status: currentStatus });
+                                await loadWorkspace();
+                                showToast(`Order ${ord.orderCode} updated to ${currentStatus}.`);
+                              } catch (err) {
+                                setErrorMsg((err as Error).message);
+                              } finally {
+                                setOrderSavingId(null);
+                              }
+                            }}
+                            className="rounded-lg bg-[#D61F26] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#B0171D] disabled:opacity-60"
+                          >
+                            {orderSavingId === ord.id ? 'Saving...' : 'Update Status'}
+                          </button>
+                          {linkedEnquiry && hasPermission(user, 'draft_quotes') && (
+                            <button
+                              type="button"
+                              onClick={() => openQuoteBuilder(linkedEnquiry)}
+                              className="rounded-lg border border-[#081E3E] px-3 py-2 text-xs font-semibold text-[#081E3E] hover:bg-[#081E3E] hover:text-white dark:border-slate-600 dark:text-white"
+                            >
+                              Draft Quote
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-50 text-slate-500 dark:bg-[#061327] dark:text-slate-400">
+                            <tr>
+                              <th className="px-3 py-2">SKU</th>
+                              <th className="px-3 py-2">Item</th>
+                              <th className="px-3 py-2 text-right">Qty</th>
+                              <th className="px-3 py-2 text-right">Unit Price</th>
+                              <th className="px-3 py-2 text-right">Line Total</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {ord.items.map((it) => (
+                              <tr key={`${ord.id}-${it.sku}`}>
+                                <td className="font-mono-num px-3 py-2 font-bold text-[#081E3E] dark:text-slate-200">
+                                  {it.sku}
+                                </td>
+                                <td className="px-3 py-2">{it.name}</td>
+                                <td className="font-mono-num px-3 py-2 text-right">
+                                  {it.qty} {it.unit}
+                                </td>
+                                <td className="font-mono-num px-3 py-2 text-right">{formatNgn(it.unitPriceNgn)}</td>
+                                <td className="font-mono-num px-3 py-2 text-right font-semibold">
+                                  {formatNgn(it.qty * it.unitPriceNgn)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="font-mono-num mt-3 flex flex-wrap items-center justify-end gap-4 text-xs text-slate-600 dark:text-slate-300">
+                        <span>Subtotal: {formatNgn(ord.subtotalNgn)}</span>
+                        <span>Delivery: {ord.deliveryFeeNgn === 0 ? 'Free' : formatNgn(ord.deliveryFeeNgn)}</span>
+                        <span>VAT (7.5%): {formatNgn(ord.taxNgn)}</span>
+                        <span className="text-sm font-bold text-[#D61F26]">Total: {formatNgn(ord.totalNgn)}</span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* QUOTATIONS */}
+        {tab === 'quotes' && (
+          <div className="space-y-4">
+            <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Quotations &amp; Director Approvals</h1>
+            {data.quotes.map((q) => {
+              const tot = calculateDocumentTotals(q.items, q.discountNgn, q.taxPercent);
+              return (
+                <div
+                  key={q.id}
+                  className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="font-mono-num font-bold text-[#D61F26]">
+                          {q.quoteCode} · R{q.revisionNo}
+                        </span>
+                        <span>·</span>
+                        <span className="font-semibold text-[#081E3E] dark:text-white">{q.status}</span>
+                        <span>·</span>
+                        <span>Valid until {q.validUntil}</span>
+                      </div>
+                      <h3 className="mt-1 text-lg font-bold text-[#081E3E] dark:text-white">{q.customerName}</h3>
+                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{q.scope}</p>
+                      <div className="font-mono-num mt-2 text-base font-bold text-[#081E3E] dark:text-white">
+                        {formatNgn(tot.total)}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onOpenDocument('quote', q.id)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold dark:border-slate-700"
+                      >
+                        Print PDF <ExternalLink className="h-3 w-3" />
+                      </button>
+                      {hasPermission(user, 'draft_quotes') && q.status !== 'Invoiced' && (
+                        <button
+                          type="button"
+                          onClick={() => openQuoteBuilder(undefined, q)}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold dark:border-slate-700"
+                        >
+                          Edit / Revise
+                        </button>
+                      )}
+                      {hasPermission(user, 'approve_quotes') && q.status === 'Pending MD' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await api.decideQuote(q.id, 'Approved');
+                              await loadWorkspace();
+                              showToast(`${q.quoteCode} approved.`);
+                            }}
+                            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white"
+                          >
+                            Approve Quote
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await api.decideQuote(q.id, 'Rejected');
+                              await loadWorkspace();
+                              showToast(`${q.quoteCode} returned for revision.`);
+                            }}
+                            className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
+                      {hasPermission(user, 'manage_invoices') && q.status === 'Approved' && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const inv = await api.issueInvoice(q.id);
+                            await loadWorkspace();
+                            showToast(`Issued proforma invoice ${inv.invoiceCode}.`);
+                          }}
+                          className="rounded-lg bg-[#D61F26] px-3 py-1.5 text-xs font-semibold text-white"
+                        >
+                          Issue Invoice
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {(tab === 'invoices' || tab === 'finance') && (
+          <WorkspaceFinance
+            mode={tab}
+            user={user}
+            invoices={data.invoices}
+            payments={data.payments}
+            staff={data.staff}
+            onRefresh={loadWorkspace}
+            onOpenDocument={onOpenDocument}
+            onNotify={showToast}
+          />
+        )}
+
+        {tab === 'installations' && (
+          <WorkspaceInstallations
+            user={user}
+            installations={data.installations}
+            staff={data.staff}
+            onRefresh={loadWorkspace}
+            onNotify={showToast}
+          />
+        )}
+
+        {/* STAFF & DYNAMIC CUSTOM ROLES */}
+        {tab === 'staff' && (
+          <div className="space-y-8">
+            {/* Roles Governance Section */}
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Role Access Governance</h1>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Super Admin controls all modules and can create custom staff roles with exact permissions.
+                  </p>
+                </div>
+                {hasPermission(user, 'manage_roles') && (
+                  <button
+                    type="button"
+                    onClick={() => openRoleEditor()}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
+                  >
+                    <Plus className="h-4 w-4" /> Create Custom Role
+                  </button>
+                )}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {data.roles.map((r) => (
+                  <div
+                    key={r.id}
+                    className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-mono-num text-xs font-semibold text-[#D61F26]">
+                          {r.id} · {r.isSystem ? 'Built-in Role' : 'Custom Role'}
+                        </div>
+                        <h2 className="mt-1 text-base font-bold text-[#081E3E] dark:text-white">{r.name}</h2>
+                        <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{r.description}</p>
+                        <p className="font-mono-num mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+                          {r.permissions.length} permission(s): {r.permissions.slice(0, 4).join(', ')}
+                          {r.permissions.length > 4 ? ` +${r.permissions.length - 4} more` : ''}
+                        </p>
+                      </div>
+                      {hasPermission(user, 'manage_roles') && r.id !== 'superadmin' && (
+                        <button
+                          type="button"
+                          onClick={() => openRoleEditor(r)}
+                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold dark:border-slate-700"
+                        >
+                          Configure
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Staff Directory */}
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-xl font-bold text-[#081E3E] dark:text-white">Staff Accounts</h2>
+                {hasPermission(user, 'manage_staff') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditStaffId(undefined);
+                      setStaffName('');
+                      setStaffEmail('');
+                      setStaffPhone('');
+                      setStaffRole('technician');
+                      setStaffTitle('Solar Field Technician');
+                      setStaffSkills('');
+                      setStaffStatus('Active');
+                      setStaffPassword('');
+                      setStaffModal(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
+                  >
+                    <Plus className="h-4 w-4" /> Add Staff Member
+                  </button>
+                )}
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {data.staff.map((s) => (
+                  <div
+                    key={s.id}
+                    className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold uppercase text-[#D61F26]">
+                          {s.roleName || s.role} · {s.status}
+                        </div>
+                        <h3 className="mt-1 text-lg font-bold text-[#081E3E] dark:text-white">{s.name}</h3>
+                        <p className="text-xs text-slate-500">{s.title}</p>
+                        <p className="font-mono-num mt-2 text-xs text-slate-600 dark:text-slate-300">
+                          {s.email} · {s.phone}
+                        </p>
+                      </div>
+                      {hasPermission(user, 'manage_staff') && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditStaffId(s.id);
+                            setStaffName(s.name);
+                            setStaffEmail(s.email);
+                            setStaffPhone(s.phone);
+                            setStaffRole(s.role);
+                            setStaffTitle(s.title);
+                            setStaffSkills(s.skills);
+                            setStaffStatus(s.status);
+                            setStaffPassword('');
+                            setStaffModal(true);
+                          }}
+                          className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold dark:border-slate-700"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* NOTIFICATIONS */}
+        {tab === 'notifications' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Notifications</h1>
+              <button
+                type="button"
+                onClick={async () => {
+                  await api.markNotificationsRead();
+                  await loadWorkspace();
+                }}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold dark:border-slate-700"
+              >
+                Mark All Read
+              </button>
+            </div>
+            <div className="space-y-2.5">
+              {data.notifications.map((n) => (
+                <div
+                  key={n.id}
+                  className={`rounded-xl border p-4 text-sm ${
+                    n.isRead
+                      ? 'border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0B1D39]'
+                      : 'border-[#D61F26]/50 bg-red-50/50 dark:bg-red-950/20'
+                  }`}
+                >
+                  <div className="font-bold text-[#081E3E] dark:text-white">{n.title}</div>
+                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{n.body}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* AUDIT LOG */}
+        {tab === 'audit' && (
+          <div className="space-y-4">
+            <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Audit Trail</h1>
+            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-[#0B1D39]">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-700">
+                  <tr>
+                    <th className="py-2 pr-3">Timestamp</th>
+                    <th className="py-2 pr-3">Actor</th>
+                    <th className="py-2 pr-3">Action</th>
+                    <th className="py-2">Summary</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {data.auditLogs.map((a) => (
+                    <tr key={a.id}>
+                      <td className="font-mono-num py-2.5 pr-3 text-slate-500">
+                        {a.createdAt.slice(0, 19).replace('T', ' ')}
+                      </td>
+                      <td className="py-2.5 pr-3 font-semibold">
+                        {a.actorName} ({a.actorRole})
+                      </td>
+                      <td className="font-mono-num py-2.5 pr-3 text-[#D61F26]">{a.actionType}</td>
+                      <td className="py-2.5">{a.summary}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* CPANEL PHP + MYSQL EXPORT */}
+        {tab === 'cpanel' && (
+          <div className="space-y-6">
+            <div className="rounded-xl bg-[#081E3E] p-6 text-white sm:p-8">
+              <p className="text-xs font-semibold tracking-wider text-red-300">
+                PHP 8.2+ &amp; PHPMYADMIN DEPLOYMENT PACKAGE
+              </p>
+              <h1 className="mt-1 text-2xl font-bold">Download &amp; Deploy to Localhost or cPanel</h1>
+              <p className="mt-2 max-w-2xl text-sm text-slate-300">
+                Download the complete deployment bundle containing the PHP 8.2+ PDO MySQL REST API, MySQL{' '}
+                <code className="font-mono-num">schema.sql</code> for phpMyAdmin import,{' '}
+                <code className="font-mono-num">.htaccess</code>, and compiled PWA frontend assets.
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <a
+                  href="/api/cpanel-package.zip"
+                  download="hisotech-php-mysql-cpanel.zip"
+                  className="inline-flex items-center gap-2 rounded-lg bg-[#D61F26] px-5 py-3 text-sm font-semibold text-white hover:bg-[#B0171D]"
+                >
+                  <Download className="h-4 w-4" />
+                  Download hisotech-php-mysql-cpanel.zip
+                  {pkgManifest ? ` (${pkgManifest.cpanelCount} files)` : ''}
+                </a>
+                <a
+                  href="/api/source-package.zip"
+                  download="hisotech-full-source-code.zip"
+                  className="inline-flex items-center gap-2 rounded-lg border border-white/25 bg-white/10 px-5 py-3 text-sm font-semibold text-white hover:bg-white/20"
+                >
+                  <Download className="h-4 w-4" />
+                  Download Full Source Code (.zip)
+                  {pkgManifest ? ` (${pkgManifest.sourceCount} files)` : ''}
+                </a>
+              </div>
+              {pkgManifest && (
+                <p className="font-mono-num mt-3 text-xs text-slate-300">
+                  Verified archive ready: {pkgManifest.cpanelCount} deployable cPanel/PWA files (including index.html,
+                  assets, images, .htaccess, schema.sql, hiso_private PHP &amp; API) and {pkgManifest.sourceCount} complete
+                  source + build files.
+                </p>
+              )}
+            </div>
+
+            <div className="grid gap-6 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+                <h2 className="flex items-center gap-2 text-base font-bold text-[#081E3E] dark:text-white">
+                  <FileSpreadsheet className="h-4 w-4 text-[#D61F26]" />
+                  1. Local Computer Testing (XAMPP / Laragon)
+                </h2>
+                <ol className="mt-3 list-decimal space-y-2 pl-4 text-sm text-slate-600 dark:text-slate-300">
+                  <li>
+                    Extract the ZIP and open <span className="font-mono-num">http://localhost/phpmyadmin</span>.
+                  </li>
+                  <li>
+                    Create database <strong className="font-mono-num">hisotech_operations</strong> and import{' '}
+                    <strong className="font-mono-num">schema.sql</strong>.
+                  </li>
+                  <li>
+                    Copy <strong className="font-mono-num">hiso_private/.env.example.php</strong> to{' '}
+                    <strong className="font-mono-num">.env.php</strong>.
+                  </li>
+                  <li>
+                    Run <code className="font-mono-num">php -S localhost:8080</code> inside{' '}
+                    <strong className="font-mono-num">public_html/</strong> (or place inside{' '}
+                    <code className="font-mono-num">htdocs</code>).
+                  </li>
+                </ol>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+                <h2 className="flex items-center gap-2 text-base font-bold text-[#081E3E] dark:text-white">
+                  <Database className="h-4 w-4 text-[#D61F26]" />
+                  2. Pushing to cPanel &amp; phpMyAdmin
+                </h2>
+                <ol className="mt-3 list-decimal space-y-2 pl-4 text-sm text-slate-600 dark:text-slate-300">
+                  <li>
+                    Create DB &amp; user in <strong>cPanel → MySQL Database Wizard</strong> and import{' '}
+                    <strong className="font-mono-num">schema.sql</strong> in phpMyAdmin.
+                  </li>
+                  <li>
+                    Upload <strong className="font-mono-num">hiso_private/</strong> to{' '}
+                    <code className="font-mono-num">/home/&lt;user&gt;/hiso_private/</code> (above{' '}
+                    <code className="font-mono-num">public_html</code>).
+                  </li>
+                  <li>
+                    Upload <strong className="font-mono-num">public_html/</strong> contents to your domain or subdomain
+                    folder.
+                  </li>
+                  <li>
+                    Update <code className="font-mono-num">.env.php</code> with cPanel DB credentials and enable HTTPS
+                    rules in <code className="font-mono-num">.htaccess</code>.
+                  </li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Manual Enquiry Modal */}
+      {enqModal && (
+        <div role="dialog" aria-modal="true" aria-label="Log Offline or WhatsApp Enquiry" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await api.createStaffEnquiry({
+                customerName: enqName,
+                phone: enqPhone,
+                email: enqEmail,
+                location: enqLocation,
+                channel: enqChannel,
+                needSummary: enqNeed,
+              });
+              setEnqModal(false);
+              setEnqName('');
+              setEnqPhone('');
+              setEnqLocation('');
+              setEnqNeed('');
+              await loadWorkspace();
+              showToast('Enquiry logged into pipeline.');
+            }}
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
+          >
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Log Offline / WhatsApp Enquiry</h3>
+            <div className="mt-4 space-y-3 text-sm">
+              <input
+                type="text"
+                required
+                placeholder="Customer / Organization Name *"
+                value={enqName}
+                onChange={(e) => setEnqName(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  type="tel"
+                  required
+                  placeholder="Phone *"
+                  value={enqPhone}
+                  onChange={(e) => setEnqPhone(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={enqEmail}
+                  onChange={(e) => setEnqEmail(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  required
+                  placeholder="Site Location *"
+                  value={enqLocation}
+                  onChange={(e) => setEnqLocation(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+                <select
+                  value={enqChannel}
+                  onChange={(e) => setEnqChannel(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                >
+                  <option>WhatsApp · Manual Intake</option>
+                  <option>Phone Call</option>
+                  <option>Email (Yahoo/Corporate)</option>
+                  <option>Referral / Walk-in</option>
+                </select>
+              </div>
+              <textarea
+                rows={3}
+                required
+                placeholder="Requirement summary..."
+                value={enqNeed}
+                onChange={(e) => setEnqNeed(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setEnqModal(false)} className="rounded-lg border px-4 py-2 text-xs">
+                Cancel
+              </button>
+              <button type="submit" className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white">
+                Save Enquiry
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Storefront / Catalogue Modal */}
+      {catModal && (
+        <div role="dialog" aria-modal="true" aria-label="Storefront Item and Pricing" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setErrorMsg('');
+              await api.upsertCatalog({
+                sku: catSku,
+                name: catName,
+                itemType: catType,
+                category: catCategory,
+                unit: catUnit,
+                priceNgn: Number(catPrice),
+                stockQty: Number(catStock),
+                capacityKw: catCapacity ? Number(catCapacity) : null,
+                watts: catWatts ? Number(catWatts) : null,
+                description: catDescription,
+                imagePath: catImagePath,
+                imageDataUrl: catImageDataUrl || undefined,
+                imageName: catImageName || undefined,
+              });
+              setCatModal(false);
+              await loadWorkspace();
+              showToast(`Storefront item ${catSku} updated & synced to Load Estimator.`);
+            }}
+            className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
+          >
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Storefront Item &amp; Pricing</h3>
+            <div className="mt-4 space-y-3 text-sm">
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  type="text"
+                  required
+                  placeholder="SKU (e.g. SPD-DC)"
+                  value={catSku}
+                  onChange={(e) => setCatSku(e.target.value)}
+                  className="font-mono-num rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+                <select
+                  value={catType}
+                  onChange={(e) => setCatType(e.target.value as CatalogItemType)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                >
+                  <option value="equipment">Solar Equipment</option>
+                  <option value="appliance">Appliance</option>
+                  <option value="service">Service</option>
+                </select>
+                <input
+                  type="text"
+                  required
+                  placeholder="Category"
+                  value={catCategory}
+                  onChange={(e) => setCatCategory(e.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </div>
+              <input
+                type="text"
+                required
+                placeholder="Item Name *"
+                value={catName}
+                onChange={(e) => setCatName(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <textarea
+                rows={2}
+                placeholder="Technical description shown on public Storefront..."
+                value={catDescription}
+                onChange={(e) => setCatDescription(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <div className="grid grid-cols-4 gap-2">
+                <label className="block text-xs">
+                  <span className="text-slate-500">Price (₦) *</span>
+                  <input
+                    type="number"
+                    required
+                    value={catPrice}
+                    onChange={(e) => setCatPrice(e.target.value)}
+                    className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span className="text-slate-500">Unit</span>
+                  <input
+                    type="text"
+                    required
+                    value={catUnit}
+                    onChange={(e) => setCatUnit(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span className="text-slate-500">Stock</span>
+                  <input
+                    type="number"
+                    required
+                    value={catStock}
+                    onChange={(e) => setCatStock(e.target.value)}
+                    className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                {catType === 'appliance' ? (
+                  <label className="block text-xs">
+                    <span className="text-slate-500">Watts</span>
+                    <input
+                      type="number"
+                      value={catWatts}
+                      onChange={(e) => setCatWatts(e.target.value)}
+                      placeholder="150"
+                      className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                  </label>
+                ) : (
+                  <label className="block text-xs">
+                    <span className="text-slate-500">kW (opt.)</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      value={catCapacity}
+                      onChange={(e) => setCatCapacity(e.target.value)}
+                      className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                  </label>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-[#061327]">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                  Product / Appliance Photo (Upload image or keep existing URL)
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const compressed = await compressImageFile(file);
+                    setCatImageDataUrl(await imageBlobToDataUrl(compressed.blob));
+                    setCatImageName(compressed.name);
+                  }}
+                  className="mt-1.5 block w-full text-xs"
+                />
+                <input
+                  type="text"
+                  value={catImagePath}
+                  onChange={(e) => setCatImagePath(e.target.value)}
+                  placeholder="Image path"
+                  className="font-mono-num mt-2 w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-[#0B1D39]"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setCatModal(false)} className="rounded-lg border px-4 py-2 text-xs">
+                Cancel
+              </button>
+              <button type="submit" className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white">
+                Save &amp; Sync Storefront
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Quotation Builder Modal */}
+      {quoteModal && (
+        <div role="dialog" aria-modal="true" aria-label="Quotation Builder" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">
+                {editQuoteId ? 'Revise Quotation' : 'New Itemised Quotation'} · {quoteCustomer}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuoteItems((prev) => syncLineItemsWithCatalog(prev, data.catalog));
+                  showToast('Synced quote line items with latest Storefront prices.');
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-[#081E3E] hover:border-[#D61F26] dark:border-slate-600 dark:text-white"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Sync Storefront Prices
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-sm">
+              <label className="block">
+                <span className="text-xs font-medium">Technical Scope</span>
+                <textarea
+                  rows={2}
+                  value={quoteScope}
+                  onChange={(e) => setQuoteScope(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </label>
+
+              <div className="max-h-56 space-y-2 overflow-y-auto rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                {quoteItems.map((it, idx) => (
+                  <div key={idx} className="grid grid-cols-12 items-center gap-2 text-xs">
+                    <input
+                      type="text"
+                      value={it.description}
+                      onChange={(e) =>
+                        setQuoteItems((prev) =>
+                          prev.map((x, i) => (i === idx ? { ...x, description: e.target.value } : x))
+                        )
+                      }
+                      className="col-span-6 rounded border border-slate-300 px-2 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      value={it.qty}
+                      onChange={(e) =>
+                        setQuoteItems((prev) =>
+                          prev.map((x, i) => (i === idx ? { ...x, qty: Number(e.target.value) } : x))
+                        )
+                      }
+                      className="font-mono-num col-span-2 rounded border border-slate-300 px-2 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      value={it.unitPriceNgn}
+                      onChange={(e) =>
+                        setQuoteItems((prev) =>
+                          prev.map((x, i) => (i === idx ? { ...x, unitPriceNgn: Number(e.target.value) } : x))
+                        )
+                      }
+                      className="font-mono-num col-span-3 rounded border border-slate-300 px-2 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setQuoteItems((prev) => prev.filter((_, i) => i !== idx))}
+                      className="col-span-1 text-red-600"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setQuoteItems((prev) => [
+                      ...prev,
+                      { sku: 'CUSTOM', description: 'Additional Component', unit: 'unit', qty: 1, unitPriceNgn: 50000 },
+                    ])
+                  }
+                  className="text-xs font-semibold text-[#D61F26]"
+                >
+                  + Add Line Item
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <label className="block text-xs">
+                  <span>Discount (₦)</span>
+                  <input
+                    type="number"
+                    value={quoteDiscount}
+                    onChange={(e) => setQuoteDiscount(e.target.value)}
+                    className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span>Tax / VAT (%)</span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={quoteTax}
+                    onChange={(e) => setQuoteTax(e.target.value)}
+                    className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span>Valid Until</span>
+                  <input
+                    type="date"
+                    value={quoteValid}
+                    onChange={(e) => setQuoteValid(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg bg-slate-100 p-3 text-sm font-bold dark:bg-[#061327]">
+                <span>Computed Quotation Total</span>
+                <span className="font-mono-num text-[#D61F26]">{formatNgn(quoteTotals.total)}</span>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => setQuoteModal(false)} className="rounded-lg border px-4 py-2 text-xs">
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await api.saveQuote({
+                    quoteId: editQuoteId,
+                    enquiryId: quoteEnqId,
+                    customerName: quoteCustomer,
+                    scope: quoteScope,
+                    terms: quoteTerms,
+                    note: quoteNote,
+                    discountNgn: Number(quoteDiscount) || 0,
+                    taxPercent: Number(quoteTax) || 0,
+                    validUntil: quoteValid,
+                    items: quoteItems,
+                    submitForApproval: false,
+                  });
+                  setQuoteModal(false);
+                  await loadWorkspace();
+                  setTab('quotes');
+                  showToast(`Saved draft ${res.quoteCode}.`);
+                }}
+                className="rounded-lg border border-[#081E3E] px-4 py-2 text-xs font-semibold text-[#081E3E] dark:border-slate-500 dark:text-white"
+              >
+                Save Draft
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await api.saveQuote({
+                    quoteId: editQuoteId,
+                    enquiryId: quoteEnqId,
+                    customerName: quoteCustomer,
+                    scope: quoteScope,
+                    terms: quoteTerms,
+                    note: quoteNote,
+                    discountNgn: Number(quoteDiscount) || 0,
+                    taxPercent: Number(quoteTax) || 0,
+                    validUntil: quoteValid,
+                    items: quoteItems,
+                    submitForApproval: true,
+                  });
+                  setQuoteModal(false);
+                  await loadWorkspace();
+                  setTab('quotes');
+                  showToast(`Submitted ${res.quoteCode} for Director approval.`);
+                }}
+                className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
+              >
+                Submit for Director Approval
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Help Desk Ticket Modal */}
+      {editTicket && (
+        <div role="dialog" aria-modal="true" aria-label="Manage Help Desk Ticket" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await api.updateTicket({
+                ticketId: editTicket.id,
+                status: tktStatus,
+                assignedTechId: tktTechId || null,
+                resolutionNote: tktResolution,
+              });
+              setEditTicket(null);
+              await loadWorkspace();
+              showToast(`Updated Help Desk ticket ${editTicket.ticketCode}.`);
+            }}
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
+          >
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">
+              Manage Ticket · {editTicket.ticketCode}
+            </h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {editTicket.customerName} · {editTicket.subject}
+            </p>
+            <div className="mt-4 space-y-3 text-sm">
+              <label className="block">
+                <span className="text-xs font-medium">Ticket Status</span>
+                <select
+                  value={tktStatus}
+                  onChange={(e) => setTktStatus(e.target.value as TicketStatus)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                >
+                  <option value="Open">Open</option>
+                  <option value="Assigned">Assigned</option>
+                  <option value="In Progress">In Progress</option>
+                  <option value="Resolved">Resolved</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium">Assign Technician</span>
+                <select
+                  value={tktTechId}
+                  onChange={(e) => setTktTechId(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                >
+                  <option value="">Unassigned (Help Desk Queue)</option>
+                  {technicians.map((tech) => (
+                    <option key={tech.id} value={tech.id}>
+                      {tech.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium">Help Desk / Technician Resolution Note</span>
+                <textarea
+                  rows={3}
+                  value={tktResolution}
+                  onChange={(e) => setTktResolution(e.target.value)}
+                  placeholder="Visit scheduled, diagnosis summary, or customer resolution..."
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setEditTicket(null)} className="rounded-lg border px-4 py-2 text-xs">
+                Cancel
+              </button>
+              <button type="submit" className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white">
+                Save Ticket Update
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Custom Role Builder Modal (Super Admin) */}
+      {roleModal && (
+        <div role="dialog" aria-modal="true" aria-label="Custom Staff Role Builder" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              await api.saveRole({
+                id: editRoleId,
+                name: roleName,
+                description: roleDesc,
+                permissions: rolePerms,
+              });
+              setRoleModal(false);
+              await loadWorkspace();
+              showToast(`Saved role ${roleName}.`);
+            }}
+            className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
+          >
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">
+              {editRoleId ? `Configure Role: ${roleName}` : 'Create Custom Staff Role'}
+            </h3>
+            <div className="mt-4 space-y-3 text-sm">
+              <label className="block">
+                <span className="text-xs font-medium">Role Display Name *</span>
+                <input
+                  type="text"
+                  required
+                  value={roleName}
+                  onChange={(e) => setRoleName(e.target.value)}
+                  placeholder="e.g. Sales Supervisor, Inventory Manager"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium">Role Description</span>
+                <input
+                  type="text"
+                  value={roleDesc}
+                  onChange={(e) => setRoleDesc(e.target.value)}
+                  placeholder="Summary of responsibilities..."
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </label>
+
+              <div>
+                <span className="text-xs font-semibold text-[#081E3E] dark:text-white">
+                  Granular Module Permissions
+                </span>
+                <div className="mt-2 grid max-h-56 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-slate-200 p-3 sm:grid-cols-2 dark:border-slate-700">
+                  {ALL_PERMISSIONS.map((perm) => {
+                    const checked = rolePerms.includes(perm.key);
+                    return (
+                      <label key={perm.key} className="flex items-start gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setRolePerms((prev) => [...prev, perm.key]);
+                            } else {
+                              setRolePerms((prev) => prev.filter((p) => p !== perm.key));
+                            }
+                          }}
+                        />
+                        <span>
+                          <strong className="block text-[#081E3E] dark:text-white">{perm.label}</strong>
+                          <span className="text-[11px] text-slate-500">{perm.group}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setRoleModal(false)} className="rounded-lg border px-4 py-2 text-xs">
+                Cancel
+              </button>
+              <button type="submit" className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white">
+                Save Role Permissions
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Staff Modal */}
+      {staffModal && (
+        <div role="dialog" aria-modal="true" aria-label="Staff Account Editor" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setErrorMsg('');
+              try {
+                await api.saveStaff({
+                  id: editStaffId,
+                  name: staffName,
+                  email: staffEmail,
+                  phone: staffPhone,
+                  role: staffRole,
+                  title: staffTitle,
+                  skills: staffSkills,
+                  status: staffStatus,
+                  password: staffPassword || undefined,
+                });
+                setStaffModal(false);
+                await loadWorkspace();
+                showToast(`Staff record saved for ${staffName}.`);
+              } catch (err) {
+                setErrorMsg((err as Error).message);
+                setStaffModal(false);
+              }
+            }}
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
+          >
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">
+              {editStaffId ? 'Edit Staff Account' : 'Add Staff Account'}
+            </h3>
+            <div className="mt-4 space-y-3 text-sm">
+              <input
+                type="text"
+                required
+                placeholder="Full Name"
+                value={staffName}
+                onChange={(e) => setStaffName(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <input
+                type="email"
+                required
+                disabled={Boolean(editStaffId)}
+                placeholder="Corporate Email"
+                value={staffEmail}
+                onChange={(e) => setStaffEmail(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 disabled:opacity-60 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <input
+                type="tel"
+                required
+                placeholder="Phone"
+                value={staffPhone}
+                onChange={(e) => setStaffPhone(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <div className="grid grid-cols-2 gap-3">
+                <select
+                  value={staffRole}
+                  onChange={(e) => setStaffRole(e.target.value as UserRole)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                >
+                  {data.roles.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={staffStatus}
+                  onChange={(e) => setStaffStatus(e.target.value as StaffStatus)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                >
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                </select>
+              </div>
+              <input
+                type="text"
+                required
+                placeholder="Job Title"
+                value={staffTitle}
+                onChange={(e) => setStaffTitle(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              {!editStaffId && (
+                <input
+                  type="password"
+                  placeholder="Initial password (at least 12 characters)"
+                  minLength={12}
+                  maxLength={128}
+                  required
+                  value={staffPassword}
+                  onChange={(e) => setStaffPassword(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              )}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setStaffModal(false)} className="rounded-lg border px-4 py-2 text-xs">
+                Cancel
+              </button>
+              <button type="submit" className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white">
+                Save Account
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}

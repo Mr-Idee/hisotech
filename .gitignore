@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.aistudio/
+dev-dist/
+.DS_Store
+*.log
+.env*
+!.env.example
+.hiso_preview.sqlite*
+.hiso_uploads/
+php-cpanel/hiso_private/storage/
+php-cpanel/hiso_private/backups/
+public/assets/aistudio/

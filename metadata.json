@@ -1,0 +1,6 @@
+{
+  "name": "HI-SOTECH Solar Platform",
+  "description": "Corporate website, solar load estimator, customer request tracker, and PHP/MySQL-ready operations command centre for HI-SOTECH Solar Inverters.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
