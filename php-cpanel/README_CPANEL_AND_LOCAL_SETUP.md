@@ -12,13 +12,14 @@ The `php-cpanel/` package contains the production PHP/MySQL API and its web root
 ## cPanel deployment
 
 1. In **cPanel → MySQL Database Wizard**, create a database and a dedicated user with only the required database privileges. Import `schema.sql` into the empty database using phpMyAdmin.
-2. Keep the Git checkout separate from the live document root. Create `/home/<cpanel_user>/hiso_private/.env.php` from `config.example.php`; set the database name/user/password, the exact HTTPS `APP_URL`, a unique `SETUP_SECRET`, `SESSION_SECURE => true`, and `ALLOW_DEMO_LOGIN => false`. Do not put credentials in the web root or source control.
-3. Create a separate deployment directory such as `/home/<cpanel_user>/site/`, upload the generated cPanel document-root ZIP there, and extract it. The ZIP should place `index.html`, `.htaccess`, frontend assets, and `api/index.php` directly in that directory. Alternatively, build with `npm run build`, copy the contents of `dist/` there, then copy `php-cpanel/public_html/.htaccess` and `php-cpanel/public_html/api/index.php` to the corresponding deployment paths.
-4. In **cPanel → Domains**, set the domain's Document Root to the deployment directory (for example `/home/<cpanel_user>/site/`). Keep `hiso_private/` as a sibling of that directory. This lets the API resolve the private config outside the web root and avoids overwriting the Git checkout.
-5. Enable AutoSSL/HTTPS before enabling the HTTPS redirect directives in `.htaccess`.
-6. Select PHP 8.2+ in cPanel and enable `pdo_mysql`, `gd`, `fileinfo`, and `mbstring`. Set `post_max_size` to at least `32M` and `upload_max_filesize` to at least `4M`.
-7. Before serving customers, configure PHP mail delivery and test that the configured sender can deliver one-time sign-in links to verified customer email addresses. If the host's `mail()` delivery is unreliable, configure a supported mail transport before launch.
-8. Configure daily database backups to a private directory outside the web root, and periodically test restoring a backup.
+2. Create `/home/<cpanel_user>/hiso_private/.env.php` from `config.example.php`; set the database name/user/password, the exact HTTPS `APP_URL`, a unique `SETUP_SECRET`, `SESSION_SECURE => true`, and `ALLOW_DEMO_LOGIN => false`. Do not put credentials in the web root or source control.
+3. Recommended: create a separate deployment directory such as `/home/<cpanel_user>/site/`, upload the generated cPanel document-root ZIP there, and extract it. In **cPanel → Domains**, set the domain's Document Root to this directory. Keep `hiso_private/` as its sibling.
+4. If the Git checkout must remain the document root, extract the deployment ZIP directly into that directory. It will replace the source `index.html` with the compiled site and add the API and security `.htaccess`; the rules deny web access to Git metadata and source/configuration paths. A later Git deployment may replace the compiled `index.html`, so rebuild and re-extract after source deployments.
+5. The deployment ZIP places the frontend `index.html`, `.htaccess`, assets, and `api/index.php` directly at the document root. Alternatively, build with `npm run build`, copy the contents of `dist/` there, then copy `php-cpanel/public_html/.htaccess` and `php-cpanel/public_html/api/index.php` to the corresponding deployment paths.
+6. Enable AutoSSL/HTTPS before enabling the HTTPS redirect directives in `.htaccess`.
+7. Select PHP 8.2+ in cPanel and enable `pdo_mysql`, `gd`, `fileinfo`, and `mbstring`. Set `post_max_size` to at least `32M` and `upload_max_filesize` to at least `4M`.
+8. Before serving customers, configure PHP mail delivery and test that the configured sender can deliver one-time sign-in links to verified customer email addresses. If the host's `mail()` delivery is unreliable, configure a supported mail transport before launch.
+9. Configure daily database backups to a private directory outside the web root, and periodically test restoring a backup.
 
 ## Initial administrator
 
