@@ -119,7 +119,7 @@ export function OfflineIndicator() {
       className="no-print fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-lg bg-[#081E3E] px-3.5 py-2 text-xs font-semibold text-white shadow-lg ring-1 ring-white/20"
     >
       <WifiOff className="h-3.5 w-3.5 text-amber-400" />
-      <span>Offline Mode — Local Load Estimator &amp; Cached Storefront Ready</span>
+      <span>Offline Mode — Local Load Estimator &amp; Cached Store Ready</span>
     </div>
   );
 }

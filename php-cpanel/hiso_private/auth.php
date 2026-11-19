@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 
+$mailerAutoload = __DIR__ . '/vendor/autoload.php';
+if (is_file($mailerAutoload)) {
+    require_once $mailerAutoload;
+}
+
 function hiso_start_session(): void {
     if (session_status() === PHP_SESSION_ACTIVE) {
         return;
@@ -121,6 +126,7 @@ function hiso_current_user(): ?array {
     if (!$user) {
         return null;
     }
+    unset($user['password_hash']);
     $user['permissions'] = hiso_user_permissions((string)$user['role']);
     return $user;
 }
@@ -188,15 +194,43 @@ function hiso_send_mail(string $toEmail, string $subject, string $message): void
     }
     $mailFrom = (string)($CONFIG['MAIL_FROM'] ?? '');
     $mailFromName = (string)($CONFIG['MAIL_FROM_NAME'] ?? 'HI-SOTECH');
-    if (!filter_var($mailFrom, FILTER_VALIDATE_EMAIL) || preg_match('/[\r\n]/', $mailFromName)) {
-        throw new RuntimeException('Customer email delivery is not configured.');
+    $mailHost = trim((string)($CONFIG['MAIL_HOST'] ?? ''));
+    $mailUsername = trim((string)($CONFIG['MAIL_USERNAME'] ?? ''));
+    $mailPassword = (string)($CONFIG['MAIL_PASSWORD'] ?? '');
+    $mailPort = filter_var($CONFIG['MAIL_PORT'] ?? null, FILTER_VALIDATE_INT);
+    $mailEncryption = strtolower((string)($CONFIG['MAIL_ENCRYPTION'] ?? 'ssl'));
+    if (!filter_var($mailFrom, FILTER_VALIDATE_EMAIL)
+        || preg_match('/[\r\n]/', $mailFromName)
+        || preg_match('/[\r\n]/', $subject)
+        || $mailHost === ''
+        || $mailUsername === ''
+        || $mailPassword === ''
+        || $mailPort === false
+        || $mailPort < 1
+        || $mailPort > 65535
+        || !in_array($mailEncryption, ['ssl', 'tls'], true)) {
+        throw new RuntimeException('Customer SMTP delivery is not configured.');
     }
-    $headers = sprintf(
-        "From: %s <%s>\r\nContent-Type: text/plain; charset=UTF-8\r\n",
-        $mailFromName,
-        $mailFrom
-    );
-    if (!mail($toEmail, $subject, $message, $headers)) {
-        throw new RuntimeException('Customer email could not be sent.');
+    if (!class_exists(\PHPMailer\PHPMailer\PHPMailer::class)) {
+        throw new RuntimeException('Customer SMTP delivery dependency is unavailable.');
     }
+
+    $mailer = new \PHPMailer\PHPMailer\PHPMailer(true);
+    $mailer->isSMTP();
+    $mailer->Host = $mailHost;
+    $mailer->SMTPAuth = true;
+    $mailer->Username = $mailUsername;
+    $mailer->Password = $mailPassword;
+    $mailer->Port = $mailPort;
+    $mailer->SMTPSecure = $mailEncryption === 'ssl'
+        ? \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS
+        : \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+    $mailer->Timeout = 15;
+    $mailer->SMTPDebug = \PHPMailer\PHPMailer\SMTP::DEBUG_OFF;
+    $mailer->CharSet = 'UTF-8';
+    $mailer->setFrom($mailFrom, $mailFromName);
+    $mailer->addAddress($toEmail);
+    $mailer->Subject = $subject;
+    $mailer->Body = $message;
+    $mailer->send();
 }

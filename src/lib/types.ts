@@ -28,6 +28,7 @@ export interface RoleDefinition {
 export interface StaffMember {
   id: string;
   name: string;
+  username?: string;
   email: string;
   phone: string;
   role: UserRole;
@@ -55,6 +56,7 @@ export interface SolarEstimateOptions {
   backupShare?: number;
   autonomyHours?: number;
   usableDepthPercent?: number;
+  equipmentGrade?: string;
   powerMode?: PowerMode;
 }
 
@@ -69,6 +71,8 @@ export interface SolarEstimateResult {
   autonomyHours?: number;
   peakSunHours?: number;
   usableDepthPercent?: number;
+  recommendedArrayWatts?: number;
+  equipmentGrade?: string;
   estimatedTotalNgn?: number;
 }
 
@@ -80,6 +84,7 @@ export interface CatalogItem {
   name: string;
   itemType: CatalogItemType;
   category: string;
+  grade?: string;
   unit: string;
   priceNgn: number;
   stockQty: number;

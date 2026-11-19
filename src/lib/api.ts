@@ -40,10 +40,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getPublicBootstrap: () =>
-    request<{
-      catalog: WorkspaceBootstrap['catalog'];
-      sampleRefs: { ref_code: string; customer_name: string; status: string }[];
-    }>('/api/public/bootstrap'),
+    request<{ catalog: WorkspaceBootstrap['catalog'] }>('/api/public/bootstrap'),
 
   submitPublicEnquiry: (payload: {
     customerName: string;
@@ -204,10 +201,10 @@ export const api = {
     }),
 
   // --- Staff Authentication & Workspace ---
-  login: (email: string, password: string, demoQuickLogin = false) =>
+  login: (identifier: string, password: string) =>
     request<{ user: StaffMember }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password, demoQuickLogin }),
+      body: JSON.stringify({ identifier, password }),
     }),
 
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
@@ -236,6 +233,7 @@ export const api = {
     name: string;
     itemType: CatalogItemType;
     category: string;
+    grade: string;
     unit: string;
     priceNgn: number;
     stockQty: number;
@@ -370,6 +368,7 @@ export const api = {
   saveStaff: (payload: {
     id?: string;
     name: string;
+    username: string;
     email: string;
     phone: string;
     role: UserRole;

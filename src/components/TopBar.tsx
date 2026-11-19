@@ -1,4 +1,4 @@
-import { Menu, X } from 'lucide-react';
+import { Menu, Moon, Sun, Monitor, X } from 'lucide-react';
 import { useState } from 'react';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -7,18 +7,23 @@ export type AppRoute = 'home' | 'store' | 'estimator' | 'customer' | 'track' | '
 interface TopBarProps {
   activeRoute: AppRoute;
   onNavigate: (route: AppRoute, sectionId?: string) => void;
+  darkMode: boolean;
+  themeMode: 'system' | 'light' | 'dark';
+  onToggleTheme: () => void;
 }
 
-export function TopBar({ activeRoute, onNavigate }: TopBarProps) {
+export function TopBar({ activeRoute, onNavigate, darkMode, themeMode, onToggleTheme }: TopBarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const navItems: { label: string; route: AppRoute; section?: string }[] = [
     { label: 'Home', route: 'home' },
-    { label: 'Storefront', route: 'store' },
     { label: 'Load Estimator', route: 'estimator' },
     { label: 'Customer Portal', route: 'customer' },
+    { label: 'Store', route: 'store' },
     { label: 'Track Request', route: 'track' },
   ];
+
+  const ThemeIcon = themeMode === 'system' ? Monitor : darkMode ? Moon : Sun;
 
   const handleNav = (route: AppRoute, section?: string) => {
     setMobileOpen(false);
@@ -27,7 +32,7 @@ export function TopBar({ activeRoute, onNavigate }: TopBarProps) {
 
   return (
     <header className="no-print sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur-sm dark:border-slate-800 dark:bg-[#061327]/95">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-8 px-4 py-3 sm:px-6 lg:px-8">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
         {/* Zone 1: Brand Wordmark */}
         <a
           href="#home"
@@ -47,7 +52,7 @@ export function TopBar({ activeRoute, onNavigate }: TopBarProps) {
         </a>
 
         {/* Zone 2: Concise single-line navigation */}
-        <nav aria-label="Primary navigation" className="hidden items-center gap-6 lg:flex">
+        <nav aria-label="Primary navigation" className="hidden items-center gap-4 lg:flex">
           {navItems.map((item) => {
             const isCurrent = activeRoute === item.route && !item.section;
             return (
@@ -71,14 +76,24 @@ export function TopBar({ activeRoute, onNavigate }: TopBarProps) {
         </nav>
 
         {/* Zone 3: Install App (hidden when installed) + Primary Staff Workspace Action */}
-        <div className="flex shrink-0 items-center gap-2.5">
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            aria-label={`Theme: ${themeMode}. Change theme`}
+            title={`Theme: ${themeMode}`}
+            className="hidden h-10 items-center gap-1.5 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-700 hover:bg-slate-100 sm:inline-flex dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <ThemeIcon className="h-4 w-4" />
+            <span className="capitalize">{themeMode}</span>
+          </button>
           <div className="hidden sm:block">
             <PWAInstallButton variant="topbar" />
           </div>
           <button
             type="button"
             onClick={() => handleNav('workspace')}
-            className="hidden whitespace-nowrap shrink-0 rounded-lg bg-[#081E3E] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#D61F26] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#D61F26] lg:inline-flex dark:bg-[#D61F26] dark:hover:bg-[#B0171D]"
+            className="hidden whitespace-nowrap shrink-0 rounded-lg bg-[#081E3E] px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#D61F26] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#D61F26] lg:inline-flex dark:bg-[#D61F26] dark:hover:bg-[#B0171D]"
           >
             Staff Workspace
           </button>
@@ -127,6 +142,15 @@ export function TopBar({ activeRoute, onNavigate }: TopBarProps) {
               ))}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={onToggleTheme}
+                aria-label={`Theme: ${themeMode}. Change theme`}
+                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200"
+              >
+                <ThemeIcon className="h-4 w-4" />
+                <span className="capitalize">{themeMode}</span>
+              </button>
               <PWAInstallButton variant="topbar" />
               <button
                 type="button"

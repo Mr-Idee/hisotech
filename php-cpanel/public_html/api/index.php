@@ -45,6 +45,7 @@ function hiso_hydrate_catalog(): array {
         'name' => $c['name'],
         'itemType' => $c['item_type'] ?? 'equipment',
         'category' => $c['category'],
+        'grade' => $c['grade'] ?? 'Standard',
         'unit' => $c['unit'],
         'priceNgn' => (float)$c['price_ngn'],
         'stockQty' => (int)$c['stock_qty'],
@@ -127,7 +128,7 @@ function hiso_hydrate_workspace(array $user): array {
         return $mapped;
     }, $rolesRaw);
 
-    $staffRaw = $pdo->query('SELECT id, name, email, phone, role, title, skills, status, created_at AS createdAt FROM users ORDER BY created_at ASC')->fetchAll();
+    $staffRaw = $pdo->query('SELECT id, name, username, email, phone, role, title, skills, status, created_at AS createdAt FROM users ORDER BY created_at ASC')->fetchAll();
     $staff = array_map(function($s) use ($rolesMap) {
         $r = $rolesMap[$s['role']] ?? null;
         $s['roleName'] = $r ? $r['name'] : $s['role'];
@@ -324,8 +325,7 @@ function hiso_hydrate_workspace(array $user): array {
 
 try {
     if ($method === 'GET' && $route === 'public/bootstrap') {
-        $samples = hiso_pdo()->query('SELECT ref_code, customer_name, status FROM enquiries ORDER BY created_at DESC LIMIT 4')->fetchAll();
-        hiso_json_response(['catalog' => hiso_hydrate_catalog(), 'sampleRefs' => $samples]);
+        hiso_json_response(['catalog' => hiso_hydrate_catalog()]);
     }
 
     if ($method === 'POST' && $route === 'public/enquiries') {
@@ -401,16 +401,16 @@ try {
         $enqId = hiso_uuid();
         $refCode = hiso_next_code('enquiries', 'ref_code', 'HISO');
         $summaryList = array_map(fn($x) => $x['qty'] . '× ' . $x['name'], $resolved);
-        $needSummary = 'Storefront Order ' . $orderCode . ' (' . $deliveryMethod . '): ' . implode(', ', $summaryList);
+        $needSummary = 'Store Order ' . $orderCode . ' (' . $deliveryMethod . '): ' . implode(', ', $summaryList);
 
-        $pdo->prepare('INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, "Website · Storefront Order", ?, "[]", NULL, "New", "admin-idee")')
+        $pdo->prepare('INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, "Website · Store Order", ?, "[]", NULL, "New", "admin-idee")')
             ->execute([$enqId, $refCode, $name, trim((string)($body['email'] ?? '')), $phone, $location, $needSummary]);
 
         $pdo->prepare('INSERT INTO store_orders (id, order_code, enquiry_id, ref_code, customer_name, email, phone, location, delivery_address, delivery_method, payment_method, notes, items_json, subtotal_ngn, delivery_fee_ngn, tax_ngn, total_ngn, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "Pending")')
             ->execute([$orderId, $orderCode, $enqId, $refCode, $name, trim((string)($body['email'] ?? '')), $phone, $location, $address, $deliveryMethod, $paymentMethod, trim((string)($body['notes'] ?? '')), json_encode($resolved), $subtotal, $deliveryFee, $tax, $total]);
 
-        hiso_notify_roles(['superadmin', 'director', 'admin'], 'New Storefront Order ' . $orderCode, $name . ' (' . $location . ') ordered ₦' . number_format($total), 'orders', $orderCode);
-        hiso_audit(['name' => $name, 'role' => 'customer'], 'CREATE_ORDER', 'StoreOrder', $orderCode, 'Placed Storefront order ' . $orderCode);
+        hiso_notify_roles(['superadmin', 'director', 'admin'], 'New Store Order ' . $orderCode, $name . ' (' . $location . ') ordered ₦' . number_format($total), 'orders', $orderCode);
+        hiso_audit(['name' => $name, 'role' => 'customer'], 'CREATE_ORDER', 'StoreOrder', $orderCode, 'Placed Store order ' . $orderCode);
 
         $oStmt = $pdo->prepare('SELECT * FROM store_orders WHERE id = ? LIMIT 1');
         $oStmt->execute([$orderId]);
@@ -740,12 +740,14 @@ try {
             hiso_json_response(['error' => 'Initial account setup is unavailable.'], 403);
         }
         $name = trim((string)($body['name'] ?? ''));
+        $username = strtolower(trim((string)($body['username'] ?? '')));
         $email = strtolower(trim((string)($body['email'] ?? '')));
         $phone = trim((string)($body['phone'] ?? ''));
         $password = (string)($body['password'] ?? '');
-        if ($name === '' || strlen($name) > 120 || !filter_var($email, FILTER_VALIDATE_EMAIL)
+        if ($name === '' || strlen($name) > 120 || !preg_match('/^[a-z0-9._-]{3,50}$/', $username)
+            || !filter_var($email, FILTER_VALIDATE_EMAIL)
             || strlen($email) > 190 || strlen($phone) > 40 || strlen($password) < 14 || strlen($password) > 128) {
-            hiso_json_response(['error' => 'Name, valid email, phone, and a 14-character password are required.'], 422);
+            hiso_json_response(['error' => 'Name, username, valid email, phone, and a 14-character password are required.'], 422);
         }
         $pdo = hiso_pdo();
         $pdo->beginTransaction();
@@ -763,8 +765,8 @@ try {
                 hiso_json_response(['error' => 'Initial setup has already been completed.'], 409);
             }
             $id = hiso_uuid();
-            $pdo->prepare('INSERT INTO users (id, name, email, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, ?, "superadmin", "System Super Administrator", "", "Active")')
-                ->execute([$id, $name, $email, $phone, password_hash($password, PASSWORD_DEFAULT)]);
+            $pdo->prepare('INSERT INTO users (id, name, username, email, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, ?, ?, "superadmin", "System Super Administrator", "", "Active")')
+                ->execute([$id, $name, $username, $email, $phone, password_hash($password, PASSWORD_DEFAULT)]);
             $pdo->exec('UPDATE app_setup SET completed_at = UTC_TIMESTAMP() WHERE id = 1');
             $pdo->commit();
         } catch (Throwable $e) {
@@ -779,24 +781,21 @@ try {
     }
 
     if ($method === 'POST' && $route === 'auth/login') {
-        global $CONFIG;
         $body = hiso_json_body();
-        $email = strtolower(trim((string)($body['email'] ?? '')));
+        $identifier = strtolower(trim((string)($body['identifier'] ?? '')));
         $password = (string)($body['password'] ?? '');
-        if (strlen($email) > 190 || strlen($password) > 128) {
+        if (strlen($identifier) > 190 || strlen($password) > 128) {
             hiso_json_response(['error' => 'Invalid email or password.'], 422);
         }
         $clientAddress = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
         if (!hiso_customer_auth_rate_limit('staff-ip:' . $clientAddress, 10, 900)
-            || !hiso_customer_auth_rate_limit('staff-email:' . $email, 5, 900)) {
+            || !hiso_customer_auth_rate_limit('staff-identifier:' . $identifier, 5, 900)) {
             hiso_json_response(['error' => 'Too many sign-in attempts. Please try again later.'], 429);
         }
-        $stmt = hiso_pdo()->prepare('SELECT * FROM users WHERE LOWER(email) = ? AND status = "Active" LIMIT 1');
-        $stmt->execute([$email]);
+        $stmt = hiso_pdo()->prepare('SELECT * FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND status = "Active" LIMIT 1');
+        $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch();
-        $demoBypass = ($CONFIG['APP_ENV'] ?? 'production') !== 'production'
-            && !empty($CONFIG['ALLOW_DEMO_LOGIN']) && !empty($body['demoQuickLogin']);
-        if (!$user || (!$demoBypass && !password_verify($password, $user['password_hash']))) {
+        if (!$user || !password_verify($password, $user['password_hash'])) {
             hiso_json_response(['error' => 'Invalid email or password.'], 401);
         }
         hiso_start_session();
@@ -850,23 +849,38 @@ try {
         $user = hiso_require_permission('manage_storefront');
         $body = hiso_json_body();
         $sku = trim((string)($body['sku'] ?? ''));
-        if ($sku === '') hiso_json_response(['error' => 'SKU is required.'], 422);
+        $name = trim((string)($body['name'] ?? ''));
+        $itemType = trim((string)($body['itemType'] ?? 'equipment'));
+        $category = trim((string)($body['category'] ?? ''));
+        $grade = trim((string)($body['grade'] ?? 'Standard'));
+        $unit = trim((string)($body['unit'] ?? 'unit'));
+        $price = $body['priceNgn'] ?? null;
+        $stock = filter_var($body['stockQty'] ?? null, FILTER_VALIDATE_INT);
+        $capacity = $body['capacityKw'] ?? null;
+        $watts = $body['watts'] ?? null;
+        if ($sku === '' || strlen($sku) > 60 || $name === '' || strlen($name) > 180
+            || $category === '' || strlen($category) > 80 || $grade === '' || strlen($grade) > 60
+            || $unit === '' || strlen($unit) > 40 || !in_array($itemType, ['equipment', 'service', 'appliance'], true)
+            || !is_numeric($price) || (float)$price < 0 || $stock === false || $stock < 0
+            || ($capacity !== null && $capacity !== '' && (!is_numeric($capacity) || (float)$capacity <= 0))
+            || ($watts !== null && $watts !== '' && filter_var($watts, FILTER_VALIDATE_INT) === false)) {
+            hiso_json_response(['error' => 'Enter valid SKU, item details, grade, price, stock, and equipment capacity.'], 422);
+        }
         $imgPath = trim((string)($body['imagePath'] ?? '/src/assets/images/catalog_hybrid_inverter_1794819207311.jpg'));
         if (!empty($body['imageDataUrl'])) {
             $stored = hiso_store_photo_data_url((string)$body['imageDataUrl'], 'cat-' . $sku . '.jpg');
             $imgPath = '/api/catalog-image/' . $stored['storage_filename'];
         }
-        $stmt = hiso_pdo()->prepare('INSERT INTO catalog_items (id, sku, name, item_type, category, unit, price_ngn, stock_qty, capacity_kw, watts, description, image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), item_type=VALUES(item_type), category=VALUES(category), unit=VALUES(unit), price_ngn=VALUES(price_ngn), stock_qty=VALUES(stock_qty), capacity_kw=VALUES(capacity_kw), watts=VALUES(watts), description=VALUES(description), image_path=VALUES(image_path)');
+        $stmt = hiso_pdo()->prepare('INSERT INTO catalog_items (id, sku, name, item_type, category, grade, unit, price_ngn, stock_qty, capacity_kw, watts, description, image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), item_type=VALUES(item_type), category=VALUES(category), grade=VALUES(grade), unit=VALUES(unit), price_ngn=VALUES(price_ngn), stock_qty=VALUES(stock_qty), capacity_kw=VALUES(capacity_kw), watts=VALUES(watts), description=VALUES(description), image_path=VALUES(image_path)');
         $stmt->execute([
-            hiso_uuid(), $sku, trim((string)$body['name']), trim((string)($body['itemType'] ?? 'equipment')),
-            trim((string)$body['category']), trim((string)($body['unit'] ?? 'unit')),
-            (float)$body['priceNgn'], (int)$body['stockQty'],
-            isset($body['capacityKw']) && $body['capacityKw'] !== '' ? (float)$body['capacityKw'] : null,
-            isset($body['watts']) && $body['watts'] !== '' ? (int)$body['watts'] : null,
+            hiso_uuid(), $sku, $name, $itemType, $category, $grade, $unit,
+            (float)$price, $stock,
+            $capacity !== null && $capacity !== '' ? (float)$capacity : null,
+            $watts !== null && $watts !== '' ? (int)$watts : null,
             trim((string)($body['description'] ?? '')),
             $imgPath,
         ]);
-        hiso_audit($user, 'UPSERT_CATALOG', 'Catalog', $sku, 'Updated storefront SKU ' . $sku);
+        hiso_audit($user, 'UPSERT_CATALOG', 'Catalog', $sku, 'Updated Store SKU ' . $sku);
         hiso_json_response(['ok' => true, 'imagePath' => $imgPath]);
     }
 
@@ -874,7 +888,7 @@ try {
         $user = hiso_require_permission('manage_storefront');
         $body = hiso_json_body();
         hiso_pdo()->prepare('DELETE FROM catalog_items WHERE sku = ?')->execute([trim((string)$body['sku'])]);
-        hiso_audit($user, 'DELETE_CATALOG', 'Catalog', (string)$body['sku'], 'Removed storefront SKU');
+        hiso_audit($user, 'DELETE_CATALOG', 'Catalog', (string)$body['sku'], 'Removed SKU from Store');
         hiso_json_response(['ok' => true]);
     }
 
@@ -947,7 +961,7 @@ try {
             ->execute([$invId, $invCode, $quote['id'], $quote['enquiry_id'], $quote['customer_name'], $quote['discount_ngn'], $quote['tax_percent'], $total, json_encode(['bankName' => 'Example Bank', 'accountName' => 'DEMO ONLY - DO NOT PAY', 'accountNumber' => '0000000000']), $quote['items_json']]);
         $pdo->prepare('UPDATE quotations SET status = "Invoiced" WHERE id = ?')->execute([$quote['id']]);
         $pdo->prepare('UPDATE enquiries SET status = "Invoiced" WHERE id = ?')->execute([$quote['enquiry_id']]);
-        hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued proforma invoice from ' . $quote['quote_code']);
+        hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);
         hiso_json_response(['id' => $invId, 'invoiceCode' => $invCode], 201);
     }
 
@@ -1156,6 +1170,9 @@ try {
 
     if ($method === 'POST' && $route === 'roles') {
         $user = hiso_require_permission('manage_roles');
+        if ($user['role'] !== 'superadmin') {
+            hiso_json_response(['error' => 'Only Super Admin can create or edit roles.'], 403);
+        }
         $body = hiso_json_body();
         $name = trim((string)($body['name'] ?? ''));
         if ($name === '') hiso_json_response(['error' => 'Role name is required.'], 422);
@@ -1171,6 +1188,7 @@ try {
         $user = hiso_require_permission('manage_staff');
         $body = hiso_json_body();
         $name = trim((string)($body['name'] ?? ''));
+        $username = strtolower(trim((string)($body['username'] ?? '')));
         $email = strtolower(trim((string)($body['email'] ?? '')));
         $phone = trim((string)($body['phone'] ?? ''));
         $role = trim((string)($body['role'] ?? ''));
@@ -1178,17 +1196,43 @@ try {
         $skills = trim((string)($body['skills'] ?? ''));
         $status = (string)($body['status'] ?? 'Active');
         $password = trim((string)($body['password'] ?? ''));
-        if ($name === '' || strlen($name) > 120 || !filter_var($email, FILTER_VALIDATE_EMAIL)
+        $id = $body['id'] ?? null;
+        if ($name === '' || strlen($name) > 120
+            || (!$id && !preg_match('/^[a-z0-9._-]{3,50}$/', $username))
+            || ($username !== '' && !preg_match('/^[a-z0-9._-]{3,50}$/', $username))
+            || !filter_var($email, FILTER_VALIDATE_EMAIL)
             || strlen($email) > 190 || strlen($phone) > 40 || strlen($role) > 60
             || strlen($title) > 120 || strlen($skills) > 4000
             || !in_array($status, ['Active', 'Inactive'], true)) {
-            hiso_json_response(['error' => 'Valid name, email, phone, role, title, skills, and status are required.'], 422);
+            hiso_json_response(['error' => 'Valid name, username, email, phone, role, title, skills, and status are required.'], 422);
         }
         if ($role === 'superadmin' && $user['role'] !== 'superadmin') {
             hiso_json_response(['error' => 'Only Super Admin can create Super Admin accounts.'], 403);
         }
         $pdo = hiso_pdo();
-        $id = $body['id'] ?? null;
+        if (!$id && $user['role'] !== 'superadmin') {
+            hiso_json_response(['error' => 'Only Super Admin can create staff accounts.'], 403);
+        }
+        if ($id) {
+            $existingStmt = $pdo->prepare('SELECT role, username FROM users WHERE id = ? LIMIT 1');
+            $existingStmt->execute([$id]);
+            $existingStaff = $existingStmt->fetch();
+            if (!$existingStaff) hiso_json_response(['error' => 'Staff account not found.'], 404);
+            $usernameValue = $username !== '' ? $username : ($existingStaff['username'] ?: null);
+            if ($user['role'] !== 'superadmin'
+                && ($existingStaff['role'] !== $role || (string)($existingStaff['username'] ?? '') !== (string)($usernameValue ?? ''))) {
+                hiso_json_response(['error' => 'Only Super Admin can change usernames or assign roles.'], 403);
+            }
+        } else {
+            $usernameValue = $username;
+        }
+        if ($usernameValue !== null && $usernameValue !== '') {
+            $usernameStmt = $pdo->prepare('SELECT COUNT(*) FROM users WHERE username = ? AND id <> ?');
+            $usernameStmt->execute([$usernameValue, $id ?? '']);
+            if ((int)$usernameStmt->fetchColumn() > 0) {
+                hiso_json_response(['error' => 'That username is already in use.'], 422);
+            }
+        }
         $roleStmt = $pdo->prepare('SELECT COUNT(*) FROM roles WHERE id = ?');
         $roleStmt->execute([$role]);
         if ((int)$roleStmt->fetchColumn() !== 1) {
@@ -1203,8 +1247,8 @@ try {
             if ($password !== '' && (strlen($password) < 12 || strlen($password) > 128)) {
                 hiso_json_response(['error' => 'Staff passwords must be between 12 and 128 characters.'], 422);
             }
-            $pdo->prepare('UPDATE users SET name=?, phone=?, role=?, title=?, skills=?, status=? WHERE id=?')
-                ->execute([$name, $phone, $role, $title, $skills, $status, $id]);
+            $pdo->prepare('UPDATE users SET name=?, username=?, phone=?, role=?, title=?, skills=?, status=? WHERE id=?')
+                ->execute([$name, $usernameValue, $phone, $role, $title, $skills, $status, $id]);
             if ($password !== '') {
                 $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?')
                     ->execute([password_hash($password, PASSWORD_DEFAULT), $id]);
@@ -1215,8 +1259,8 @@ try {
             }
             $id = hiso_uuid();
             $hash = password_hash($password, PASSWORD_DEFAULT);
-            $pdo->prepare('INSERT INTO users (id, name, email, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "Active")')
-                ->execute([$id, $name, $email, $phone, $hash, $role, $title, $skills]);
+            $pdo->prepare('INSERT INTO users (id, name, username, email, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "Active")')
+                ->execute([$id, $name, $usernameValue, $email, $phone, $hash, $role, $title, $skills]);
         }
         hiso_audit($user, 'SAVE_STAFF', 'Staff', (string)$id, 'Updated staff account ' . $name);
         hiso_json_response(['id' => $id]);

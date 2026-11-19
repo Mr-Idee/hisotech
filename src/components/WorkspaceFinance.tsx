@@ -240,7 +240,7 @@ export function WorkspaceFinance({
       {/* Invoices Table */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
         <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">
-          {mode === 'invoices' ? 'Proforma Invoices & Release Gate' : 'Invoice Balances'}
+          {mode === 'invoices' ? 'Invoices & Release Gate' : 'Invoice Balances'}
         </h3>
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-left text-sm">

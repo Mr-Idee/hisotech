@@ -81,7 +81,7 @@ export function DocumentView({ type, id, onBack }: DocumentViewProps) {
                 {isInvoice ? 'COMMERCIAL DOCUMENT' : 'TECHNICAL PROPOSAL'}
               </div>
               <h1 className="mt-1 text-2xl font-extrabold text-[#081E3E]">
-                {isInvoice ? 'PROFORMA INVOICE' : 'QUOTATION'}
+                {isInvoice ? 'INVOICE' : 'QUOTATION'}
               </h1>
               <div className="font-mono-num mt-1 text-sm font-bold text-slate-700">
                 {String(doc.documentCode)}

@@ -5,33 +5,37 @@ The `php-cpanel/` package contains the production PHP/MySQL API and its web root
 ## Local PHP/MySQL setup
 
 1. Create an empty MySQL database in phpMyAdmin and import `schema.sql`.
-2. Copy `hiso_private/config.example.php` to `hiso_private/.env.php`. Set the local database values, `APP_URL`, and a long random `SETUP_SECRET`. Keep `.env.php` outside the web root and never commit or share it.
+2. From `php-cpanel/`, run `composer install --no-dev --classmap-authoritative` to install the locked mail dependency. Copy `hiso_private/config.example.php` to `hiso_private/.env.php`. Set the local database values, `APP_URL`, and a long random `SETUP_SECRET`. Keep `.env.php` outside the web root and never commit or share it.
 3. Serve `public_html/` with PHP 8.2+ and visit the local site. The private directory must remain a sibling of `public_html/`.
 4. Configure PHP `post_max_size` to at least `32M` and `upload_max_filesize` to at least `4M` for installation photos.
 
 ## cPanel deployment
 
 1. In **cPanel → MySQL Database Wizard**, create a database and a dedicated user with only the required database privileges. Import `schema.sql` into the empty database using phpMyAdmin.
-2. Create `/home/<cpanel_user>/hiso_private/` as a sibling of the document root. Copy all runtime files from `php-cpanel/hiso_private/` into it (or extract the private runtime ZIP there), then copy `config.example.php` to `.env.php`. In File Manager, enable viewing hidden files so `.env.php` is visible. Set the database name/user/password, exact HTTPS `APP_URL`, configured `MAIL_FROM`, a unique `SETUP_SECRET`, `SESSION_SECURE => true`, and `ALLOW_DEMO_LOGIN => false`. Keep this directory and `.env.php` outside the Git checkout and web root; never commit or share credentials.
+2. From `php-cpanel/`, run `composer install --no-dev --classmap-authoritative`; Composer places `vendor/` inside `hiso_private/`. Create `/home/<cpanel_user>/hiso_private/` as a sibling of the document root. Copy all runtime files from `php-cpanel/hiso_private/` into it (including the generated `vendor/` directory, or extract an updated private runtime ZIP), then copy `config.example.php` to `.env.php`. In File Manager, enable viewing hidden files so `.env.php` is visible. Set the database name/user/password, exact HTTPS `APP_URL`, the private SMTP account password, a unique `SETUP_SECRET`, and `SESSION_SECURE => true`. Keep this directory and `.env.php` outside the Git checkout and web root; never commit or share credentials.
 3. Recommended: create a separate deployment directory such as `/home/<cpanel_user>/site/`, upload the generated cPanel document-root ZIP there, and extract it. In **cPanel → Domains**, set the domain's Document Root to this directory. Keep `hiso_private/` as its sibling.
 4. If the Git checkout must remain the document root, extract the deployment ZIP directly into that directory. It will replace the source `index.html` with the compiled site and add the API and security `.htaccess`; the rules deny web access to Git metadata and source/configuration paths. A later Git deployment may replace the compiled `index.html`, so rebuild and re-extract after source deployments.
 5. The deployment ZIP places the frontend `index.html`, `.htaccess`, assets, and `api/index.php` directly at the document root. Alternatively, build with `npm run build`, copy the contents of `dist/` there, then copy `php-cpanel/public_html/.htaccess` and `php-cpanel/public_html/api/index.php` to the corresponding deployment paths.
 6. Enable AutoSSL/HTTPS before enabling the HTTPS redirect directives in `.htaccess`.
 7. Select PHP 8.2+ in cPanel and enable `pdo_mysql`, `gd`, `fileinfo`, and `mbstring`. Set `post_max_size` to at least `32M` and `upload_max_filesize` to at least `4M`.
-8. Before serving customers, configure PHP mail delivery and test that the configured sender can deliver one-time sign-in links to verified customer email addresses. If the host's `mail()` delivery is unreliable, configure a supported mail transport before launch.
+8. Configure authenticated SMTP in the private `.env.php` using the domain mail settings: `MAIL_HOST` = `app.hisotechsolarinverters.com`, `MAIL_PORT` = `465`, `MAIL_USERNAME` and `MAIL_FROM` = `admin@app.hisotechsolarinverters.com`, `MAIL_ENCRYPTION` = `ssl`, and `MAIL_PASSWORD` = the email account password. Enter the password only in cPanel File Manager or another private server-side configuration channel; do not send it in chat or commit it. Before serving customers, test delivery of one-time sign-in links over HTTPS.
 9. Configure daily database backups to a private directory outside the web root, and periodically test restoring a backup.
+
+## Existing database migration
+
+For databases imported from an earlier version, first create and verify a restorable phpMyAdmin backup. Then import `migrations/001-username-and-demo-cleanup.sql` once. It adds the nullable unique username and catalog grade columns and deletes only records matching the original seeded demonstration IDs and identifiers. Do not import this migration into a database already created from the current `schema.sql`; the columns are already present. The migration does not remove other customer or operational records.
 
 ## Initial administrator
 
-The schema does not create staff accounts. After deploying over HTTPS and setting `SETUP_SECRET`, make a one-time `POST /api/setup/first-admin` request with JSON fields `setupSecret`, `name`, `email`, `phone`, and a unique password of at least 14 characters. The endpoint creates the first superadmin only when the users table is empty, then signs in that administrator. Use a secure password manager and do not put the setup secret or password in browser code, source control, or support logs.
+The schema does not create staff accounts. After deploying over HTTPS and setting `SETUP_SECRET`, make a one-time `POST /api/setup/first-admin` request with JSON fields `setupSecret`, `name`, `username`, `email`, `phone`, and a new password of at least 14 characters. The endpoint creates the first superadmin only when the users table is empty, then signs in that administrator. Sign in with the username or email. Use a secure password manager and do not put the setup secret or password in browser code, source control, or support logs.
 
 After setup, clear or rotate `SETUP_SECRET` in the private configuration. The setup endpoint also rejects later attempts once an account exists. Create additional staff accounts from the protected workspace, and assign only the permissions they need.
 
-The schema includes clearly labeled demonstration records and catalog values; replace or remove them and verify all prices, inventory, customer records, payment statuses, and invoice settings before using the database operationally. Sample invoices contain an invalid demo account number and must never be used for payment.
+New schema imports no longer create demonstration customers, enquiries, quotations, invoices, tracking records, or catalog products. Add and verify products, grades, prices, stock quantities, tax rates, and payment instructions in the protected workspace before accepting customer orders.
 
 ## Customer email sign-in
 
-Set `APP_URL` to the exact public HTTPS origin and configure a valid `MAIL_FROM` address in the private configuration. PHP uses the host's configured `mail()` transport. Customer sign-in links are short-lived and single-use; do not enable customer access until email delivery is verified.
+Set `APP_URL` to the exact public HTTPS origin and configure the authenticated SMTP settings in the private configuration. Customer sign-in links are short-lived and single-use; do not enable customer access until email delivery is verified.
 
 ## Image storage and access
 

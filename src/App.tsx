@@ -12,6 +12,17 @@ import { api } from './lib/api';
 import type { ApplianceItem, CatalogItem } from './lib/types';
 
 const CACHED_CATALOG_KEY = 'hiso_cached_catalog';
+const THEME_MODE_KEY = 'hiso_theme_mode';
+type ThemeMode = 'system' | 'light' | 'dark';
+
+function readThemeMode(): ThemeMode {
+  try {
+    const saved = window.localStorage.getItem(THEME_MODE_KEY);
+    return saved === 'light' || saved === 'dark' ? saved : 'system';
+  } catch {
+    return 'system';
+  }
+}
 
 function readRouteFromHash(): AppRoute {
   const hash = window.location.hash.replace(/^#/, '').split('?')[0];
@@ -44,8 +55,11 @@ export default function App() {
   const [docView, setDocView] = useState<{ type: 'quote' | 'invoice'; id: string } | null>(null);
   const [catalog, setCatalog] = useState<CatalogItem[]>(() => readCachedCatalog());
   const [importedAppliances, setImportedAppliances] = useState<ApplianceItem[]>([]);
-  const [sampleRefs, setSampleRefs] = useState<{ ref_code: string; customer_name: string; status: string }[]>([]);
-  const [darkMode, setDarkMode] = useState(false);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
+  const [systemDarkMode, setSystemDarkMode] = useState(
+    () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  );
+  const darkMode = themeMode === 'dark' || (themeMode === 'system' && systemDarkMode);
 
   function saveAndSetCatalog(nextCatalog: CatalogItem[]) {
     setCatalog(nextCatalog);
@@ -61,7 +75,6 @@ export default function App() {
       .getPublicBootstrap()
       .then((res) => {
         saveAndSetCatalog(res.catalog);
-        setSampleRefs(res.sampleRefs);
       })
       .catch(() => {
         // Offline mode: fallback cleanly to cached catalog from localStorage
@@ -73,8 +86,31 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!media) return;
+    const syncSystemTheme = (event: MediaQueryListEvent) => setSystemDarkMode(event.matches);
+    setSystemDarkMode(media.matches);
+    media.addEventListener('change', syncSystemTheme);
+    return () => media.removeEventListener('change', syncSystemTheme);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
+
+  function cycleThemeMode() {
+    const nextMode: ThemeMode = themeMode === 'system'
+      ? 'light'
+      : themeMode === 'light'
+        ? 'dark'
+        : 'system';
+    setThemeMode(nextMode);
+    try {
+      window.localStorage.setItem(THEME_MODE_KEY, nextMode);
+    } catch {
+      // Theme selection still applies for this session when storage is unavailable.
+    }
+  }
 
   function handleNavigate(next: AppRoute, sectionId?: string) {
     setDocView(null);
@@ -110,7 +146,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-[#061327] dark:text-slate-100">
-      <TopBar activeRoute={route} onNavigate={handleNavigate} />
+      <TopBar
+        activeRoute={route}
+        onNavigate={handleNavigate}
+        darkMode={darkMode}
+        themeMode={themeMode}
+        onToggleTheme={cycleThemeMode}
+      />
 
       {docView ? (
         <DocumentView
@@ -122,7 +164,8 @@ export default function App() {
         <PublicSite
           catalog={catalog}
           darkMode={darkMode}
-          onToggleTheme={() => setDarkMode((d) => !d)}
+          themeMode={themeMode}
+          onToggleTheme={cycleThemeMode}
           onNavigate={handleNavigate}
         />
       ) : route === 'store' ? (
@@ -151,7 +194,6 @@ export default function App() {
       ) : route === 'track' ? (
         <TrackerView
           initialRef={trackRef}
-          sampleRefs={sampleRefs}
           onOpenDocument={(type, id) => setDocView({ type, id })}
         />
       ) : (

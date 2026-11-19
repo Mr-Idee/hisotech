@@ -7,6 +7,7 @@ import {
   calculateSolarEstimate,
   calculateStoreOrderTotals,
   canUpdateStaffStatusOrRole,
+  buildQuoteLinesFromEstimate,
   computeEstimateCostFromCatalog,
   getOverdueAgeBand,
   hasPermission,
@@ -94,7 +95,7 @@ test('calculateSolarEstimate sizes inverter, panels, and batteries accurately ac
   assert.equal(gridBackup.recommendedPanels550w, 0);
 });
 
-test('computeEstimateCostFromCatalog & syncLineItemsWithCatalog reflect updated Storefront prices immediately', () => {
+test('computeEstimateCostFromCatalog & syncLineItemsWithCatalog reflect updated Store prices immediately', () => {
   const est = calculateSolarEstimate([
     { id: '1', name: 'Office Load', qty: 2, watts: 1000, hours: 6 },
   ]);
@@ -110,6 +111,56 @@ test('computeEstimateCostFromCatalog & syncLineItemsWithCatalog reflect updated 
   const synced = syncLineItemsWithCatalog(before.lines, updatedCatalog);
   const batteryLine = synced.find((l) => l.sku === 'BAT-512L');
   assert.equal(batteryLine?.unitPriceNgn, 1750000);
+});
+
+test('quote sizing follows selected catalog grade and component capacities', () => {
+  const premiumCatalog: CatalogItem[] = [
+    ...SAMPLE_CATALOG,
+    {
+      ...SAMPLE_CATALOG[0],
+      id: 'cat-pv-premium',
+      sku: 'PV-1000-PREMIUM',
+      name: '1000W Premium Solar Panel',
+      grade: 'Premium',
+      priceNgn: 250000,
+      watts: 1000,
+    },
+    {
+      ...SAMPLE_CATALOG[2],
+      id: 'cat-bat-premium',
+      sku: 'BAT-10-PREMIUM',
+      name: '10kWh Premium Battery',
+      grade: 'Premium',
+      priceNgn: 2500000,
+      capacityKw: 10,
+    },
+    {
+      ...SAMPLE_CATALOG[1],
+      id: 'cat-inv-premium',
+      sku: 'INV-5K-PREMIUM',
+      name: '5kW Premium Inverter',
+      grade: 'Premium',
+      priceNgn: 1400000,
+    },
+  ];
+  const estimate = calculateSolarEstimate(
+    [{ id: 'load', name: 'Load', qty: 1, watts: 2000, hours: 8 }],
+    { powerMode: 'Hybrid', equipmentGrade: 'Premium' }
+  );
+  const lines = buildQuoteLinesFromEstimate(estimate, premiumCatalog);
+  const panel = lines.find((line) => line.sku === 'PV-1000-PREMIUM');
+  const battery = lines.find((line) => line.sku === 'BAT-10-PREMIUM');
+  assert.equal(panel?.qty, Math.max(2, Math.ceil((estimate.recommendedArrayWatts ?? 0) / 1000)));
+  assert.equal(battery?.qty, Math.ceil(estimate.batteryTargetKwh / 10));
+  assert.equal(lines.find((line) => line.sku === 'INV-5K-PREMIUM')?.unitPriceNgn, 1400000);
+});
+
+test('estimate pricing does not show a partial total when required catalog equipment is missing', () => {
+  const estimate = calculateSolarEstimate([
+    { id: 'load', name: 'Load', qty: 1, watts: 1000, hours: 5 },
+  ]);
+  assert.equal(computeEstimateCostFromCatalog(estimate, []).lines.length, 0);
+  assert.equal(computeEstimateCostFromCatalog(estimate, SAMPLE_CATALOG.slice(0, 1)).total, 0);
 });
 
 test('hasPermission enforces superadmin wildcard and custom role permissions', () => {

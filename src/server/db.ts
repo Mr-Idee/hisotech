@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  username TEXT,
   email TEXT NOT NULL UNIQUE,
   phone TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
@@ -85,6 +86,7 @@ CREATE TABLE IF NOT EXISTS catalog_items (
   name TEXT NOT NULL,
   item_type TEXT NOT NULL DEFAULT 'equipment',
   category TEXT NOT NULL,
+  grade TEXT NOT NULL DEFAULT 'Standard',
   unit TEXT NOT NULL,
   price_ngn REAL NOT NULL,
   stock_qty INTEGER NOT NULL,
@@ -323,9 +325,12 @@ function ensureColumn(table: string, col: string, ddl: string): void {
 }
 
 ensureColumn('catalog_items', 'item_type', "item_type TEXT NOT NULL DEFAULT 'equipment'");
+ensureColumn('catalog_items', 'grade', "grade TEXT NOT NULL DEFAULT 'Standard'");
 ensureColumn('catalog_items', 'watts', 'watts INTEGER');
 ensureColumn('catalog_items', 'description', "description TEXT NOT NULL DEFAULT ''");
 ensureColumn('customer_profiles', 'email_verified_at', 'email_verified_at TEXT');
+ensureColumn('users', 'username', 'username TEXT');
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users(username) WHERE username IS NOT NULL AND username <> ''");
 
 function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
@@ -379,7 +384,7 @@ function seedRolesAndMigrateUsers(): void {
   insRole.run(
     'superadmin',
     'Super Admin',
-    'Full unrestricted control over all platform operations, dynamic role creation, staff accounts, storefront, finance, and field delivery.',
+    'Full unrestricted control over all platform operations, dynamic role creation, staff accounts, Store, finance, and field delivery.',
     JSON.stringify(ALL_PERMISSIONS.map((p) => p.key)),
     now
   );
@@ -393,7 +398,7 @@ function seedRolesAndMigrateUsers(): void {
   insRole.run(
     'admin',
     'Admin / Help Desk',
-    'Enquiries intake, customer complaint & service help desk routing, storefront pricing, quotation drafting, invoicing, and payment logging.',
+    'Enquiries intake, customer complaint & service help desk routing, Store pricing, quotation drafting, invoicing, and payment logging.',
     JSON.stringify(ROLE_DEFAULT_PERMISSIONS.admin),
     now
   );
@@ -413,20 +418,23 @@ function seedRolesAndMigrateUsers(): void {
   const bootstrapPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
   const bootstrapEmail = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
   const bootstrapName = (process.env.BOOTSTRAP_ADMIN_NAME || 'Platform Administrator').trim();
+  const bootstrapUsername = (process.env.BOOTSTRAP_ADMIN_USERNAME || '').trim().toLowerCase();
   const bootstrapPhone = (process.env.BOOTSTRAP_ADMIN_PHONE || '').trim();
   if (!superExists && bootstrapPassword.length >= 14
     && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(bootstrapEmail) && bootstrapEmail.length <= 190
+    && /^[a-z0-9._-]{3,50}$/.test(bootstrapUsername)
     && bootstrapName.length > 0 && bootstrapName.length <= 120 && bootstrapPhone.length <= 40) {
     const pw = hashPassword(bootstrapPassword);
     db.prepare(
-      'INSERT OR IGNORE INTO users (id, name, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO users (id, name, username, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       'super-admin',
-      'Super Admin',
+      bootstrapName,
+      bootstrapUsername,
       bootstrapEmail,
       bootstrapPhone,
       pw,
-      bootstrapName,
+      'superadmin',
       'System Super Administrator',
       'Full platform administration, custom RBAC role creation, executive overrides',
       'Active',
@@ -435,219 +443,44 @@ function seedRolesAndMigrateUsers(): void {
   }
 }
 
-function seedIfEmpty(): void {
-  seedRolesAndMigrateUsers();
-
-  const userCount = (db.prepare("SELECT COUNT(*) AS n FROM users WHERE role != 'superadmin'").get() as { n: number }).n;
-  const demoLoginEnabled = process.env.NODE_ENV !== 'production' && process.env.ALLOW_DEMO_LOGIN === 'true';
-  const bootstrapPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
-  if (userCount === 0 && demoLoginEnabled && bootstrapPassword.length >= 14) {
-    const now = new Date().toISOString();
-    const pw = hashPassword(bootstrapPassword);
-    const insUser = db.prepare(
-      'INSERT OR IGNORE INTO users (id, name, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    insUser.run('md-oseni', 'Demo Director', 'director@example.invalid', '+234 000 000 0000', pw, 'director', 'Managing Director', 'Executive approvals, payment confirmation, installation release', 'Active', now);
-    insUser.run('admin-idee', 'Demo Admin', 'admin@example.invalid', '+234 000 000 0000', pw, 'admin', 'Admin / Help Desk', 'Enquiry intake, service desk complaints, storefront, quotations, invoicing', 'Active', now);
-    insUser.run('eng-kalu', 'Demo Technician', 'technician@example.invalid', '+234 000 000 0000', pw, 'technician', 'Lead Solar Technician', 'Hybrid inverters, LiFePO4 battery banks, commissioning & diagnostics', 'Active', now);
-    insUser.run('eng-musa', 'Demo Field Technician', 'field-tech@example.invalid', '+234 000 000 0000', pw, 'technician', 'Field Technician', 'Rooftop PV arrays, DC/AC surge protection, maintenance & earthing', 'Active', now);
-  }
-
-  const catCount = (db.prepare('SELECT COUNT(*) AS n FROM catalog_items').get() as { n: number }).n;
-  if (catCount === 0) {
-    const insCat = db.prepare(
-      'INSERT INTO catalog_items (id, sku, name, item_type, category, unit, price_ngn, stock_qty, capacity_kw, watts, description, image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    insCat.run('cat-pv550', 'PV-550M', '550W Monocrystalline Tier-1 Solar Panel', 'equipment', 'Solar Panels', 'panel', 155000, 64, 0.55, 550, 'Half-cut N-Type monocrystalline module with 25-year performance warranty.', '/src/assets/images/store_solar_panel_1794824378149.jpg');
-    insCat.run('cat-pv500', 'PV-500M', '500W Mono PERC Solar Panel', 'equipment', 'Solar Panels', 'panel', 138000, 40, 0.5, 500, 'Standard commercial & residential solar module from HI-SOTECH stock.', '/assets/site/project-4-panels-500w.jpg');
-    insCat.run('cat-inv5', 'INV-5K-HYB', '5kW Hybrid MPPT Solar Inverter (48V)', 'equipment', 'Inverters', 'unit', 980000, 9, 5, 5000, 'Pure sine-wave hybrid solar inverter with integrated dual MPPT & BMS comms.', '/src/assets/images/catalog_hybrid_inverter_1794819207311.jpg');
-    insCat.run('cat-inv10', 'INV-10K-HYB', '10kW Dual-MPPT Parallel Hybrid Inverter', 'equipment', 'Inverters', 'unit', 1850000, 6, 10, 10000, 'Scalable 10kW hybrid inverter supporting generator, grid, and parallel operation.', '/assets/site/project-8-inverter-wall.jpg');
-    insCat.run('cat-inv15', 'INV-15K-3P', '15kW Three-Phase Commercial Hybrid Inverter', 'equipment', 'Inverters', 'unit', 3100000, 3, 15, 15000, 'High-voltage three-phase hybrid inverter for clinics, offices, and estates.', '/src/assets/images/store_three_phase_inverter_1794827493416.jpg');
-    insCat.run('cat-bat5', 'BAT-512L', '5.12kWh 51.2V LiFePO4 Lithium Battery Module', 'equipment', 'Battery Storage', 'unit', 1420000, 14, 5.12, null, '6000-cycle Grade-A LiFePO4 rack/wall module with smart BMS protection.', '/src/assets/images/store_lithium_battery_1794824377691.jpg');
-    insCat.run('cat-bos', 'BOS-PRO', 'DC/AC Combiner, SPD Protection & Copper Cabling Kit', 'equipment', 'Protection & BOS', 'kit', 285000, 22, null, null, 'Full DC isolator, lightning SPD, earthing rod, and 6mm/16mm copper kit.', '/src/assets/images/store_combiner_protection_kit_1794827495065.jpg');
-    insCat.run('cat-rack', 'RACK-AL', 'Anodized Aluminum Roof Mounting Rails & Clamps', 'equipment', 'Mounting', 'set', 195000, 18, null, null, 'Corrosion-proof anodized aluminum rail structure per 8-panel array.', '/src/assets/images/store_mounting_rails_1794827495998.jpg');
-    insCat.run('cat-lab', 'LAB-INST', 'Engineering Survey, Installation & Commissioning', 'service', 'Services', 'lot', 320000, 999, null, null, 'COREN-certified engineering site survey, mechanical/electrical installation & test.', '/assets/site/project-9-solar-rack.jpg');
-    insCat.run('cat-maint', 'SRV-MAINT', 'Preventive Maintenance & Battery Health Audit', 'service', 'Services', 'visit', 85000, 999, null, null, 'Scheduled array wash, thermal breaker inspection, firmware & BMS health check.', '/assets/site/project-3-ph-commercial.jpg');
-    insCat.run('cat-app-ac', 'APP-AC15', '1.5HP Low-Inrush Inverter Split AC', 'appliance', 'Appliances', 'unit', 540000, 10, 1.15, 1150, 'Solar-friendly inverter air conditioner engineered for low startup surge.', '/src/assets/images/store_inverter_ac_1794824379632.jpg');
-    insCat.run('cat-app-fridge', 'APP-FRIDGE', 'Inverter Refrigerator / Deep Freezer (A++)', 'appliance', 'Appliances', 'unit', 485000, 7, 0.18, 180, 'High-efficiency DC-inverter cold-chain refrigerator ideal for overnight battery backup.', '/src/assets/images/store_inverter_fridge_1794827495989.jpg');
-    insCat.run('cat-app-pump', 'APP-PUMP', '1HP Solar-Compatible Submersible Borehole Pump', 'appliance', 'Appliances', 'unit', 310000, 12, 0.75, 750, 'Reliable water pumping appliance compatible with hybrid solar inverters.', '/src/assets/images/store_submersible_pump_1794827496579.jpg');
-  } else {
-    // Ensure stale legacy catalog image paths are upgraded to product-accurate photography
-    const imageMigrations: [string, string, string][] = [
-      ['INV-15K-3P', '/assets/site/project-3-ph-commercial.jpg', '/src/assets/images/store_three_phase_inverter_1794827493416.jpg'],
-      ['BOS-PRO', '/assets/site/project-2-lithium-bank.jpg', '/src/assets/images/store_combiner_protection_kit_1794827495065.jpg'],
-      ['RACK-AL', '/assets/site/project-9-solar-rack.jpg', '/src/assets/images/store_mounting_rails_1794827495998.jpg'],
-      ['LAB-INST', '/assets/site/project-7-survey-team.jpg', '/assets/site/project-9-solar-rack.jpg'],
-      ['SRV-MAINT', '/assets/site/project-6-utako-16kw.jpeg', '/assets/site/project-3-ph-commercial.jpg'],
-      ['APP-FRIDGE', '/assets/site/project-5-bayelsa-15kwh.jpg', '/src/assets/images/store_inverter_fridge_1794827495989.jpg'],
-      ['APP-PUMP', '/assets/site/project-1-hybrid-10kw.jpg', '/src/assets/images/store_submersible_pump_1794827496579.jpg'],
-    ];
-    const updImg = db.prepare('UPDATE catalog_items SET image_path = ? WHERE sku = ? AND image_path = ?');
-    for (const [sku, oldPath, nextPath] of imageMigrations) {
-      updImg.run(nextPath, sku, oldPath);
+function removeKnownDemoRecords(): void {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const demoUsers = db.prepare(
+      "SELECT id FROM users WHERE id IN ('md-oseni', 'admin-idee', 'eng-kalu', 'eng-musa') AND email LIKE '%@example.invalid'"
+    ).all() as { id: string }[];
+    const demoUserIds = demoUsers.map((user) => user.id);
+    if (demoUserIds.length > 0) {
+      const placeholders = demoUserIds.map(() => '?').join(', ');
+      db.prepare(`DELETE FROM sessions WHERE user_id IN (${placeholders})`).run(...demoUserIds);
+      db.prepare(`DELETE FROM users WHERE id IN (${placeholders})`).run(...demoUserIds);
     }
+
+    db.prepare("DELETE FROM installation_photos WHERE update_id IN (SELECT u.id FROM installation_updates u JOIN installations i ON i.id = u.installation_id WHERE i.id = 'job-1001' AND i.job_code = 'JOB-1001' AND i.customer_name = 'Demo Customer')").run();
+    db.prepare("DELETE FROM installation_updates WHERE installation_id IN (SELECT id FROM installations WHERE id = 'job-1001' AND job_code = 'JOB-1001' AND customer_name = 'Demo Customer')").run();
+    db.prepare("DELETE FROM installations WHERE id = 'job-1001' AND job_code = 'JOB-1001' AND customer_name = 'Demo Customer'").run();
+    db.prepare("DELETE FROM payments WHERE id = 'pay-1001' AND payment_code = 'PAY-1001'").run();
+    db.prepare("DELETE FROM invoices WHERE id = 'inv-1001' AND invoice_code = 'INV-1001'").run();
+    db.prepare("DELETE FROM quotations WHERE (id = 'quo-1001' AND quote_code = 'QUO-1001') OR (id = 'quo-1002' AND quote_code = 'QUO-1002')").run();
+    db.prepare("DELETE FROM store_orders WHERE id = 'ord-1001' AND order_code = 'ORD-1001'").run();
+    db.prepare("DELETE FROM catalog_items WHERE (id = 'cat-pv550' AND sku = 'PV-550M' AND name = '550W Monocrystalline Tier-1 Solar Panel' AND price_ngn = 155000) OR (id = 'cat-pv500' AND sku = 'PV-500M' AND name = '500W Mono PERC Solar Panel' AND price_ngn = 138000) OR (id = 'cat-inv5' AND sku = 'INV-5K-HYB' AND name = '5kW Hybrid MPPT Solar Inverter (48V)' AND price_ngn = 980000) OR (id = 'cat-inv10' AND sku = 'INV-10K-HYB' AND name = '10kW Dual-MPPT Parallel Hybrid Inverter' AND price_ngn = 1850000) OR (id = 'cat-inv15' AND sku = 'INV-15K-3P' AND name = '15kW Three-Phase Commercial Hybrid Inverter' AND price_ngn = 3100000) OR (id = 'cat-bat5' AND sku = 'BAT-512L' AND name = '5.12kWh 51.2V LiFePO4 Lithium Battery Module' AND price_ngn = 1420000) OR (id = 'cat-bos' AND sku = 'BOS-PRO' AND name = 'DC/AC Combiner, SPD Protection & Copper Cabling Kit' AND price_ngn = 285000) OR (id = 'cat-rack' AND sku = 'RACK-AL' AND name = 'Anodized Aluminum Roof Mounting Rails & Clamps' AND price_ngn = 195000) OR (id = 'cat-lab' AND sku = 'LAB-INST' AND name = 'Engineering Survey, Installation & Commissioning' AND price_ngn = 320000) OR (id = 'cat-maint' AND sku = 'SRV-MAINT' AND name = 'Preventive Maintenance & Battery Health Audit' AND price_ngn = 85000) OR (id = 'cat-app-ac' AND sku = 'APP-AC15' AND name = '1.5HP Low-Inrush Inverter Split AC' AND price_ngn = 540000) OR (id = 'cat-app-fridge' AND sku = 'APP-FRIDGE' AND name = 'Inverter Refrigerator / Deep Freezer (A++)' AND price_ngn = 485000) OR (id = 'cat-app-pump' AND sku = 'APP-PUMP' AND name = '1HP Solar-Compatible Submersible Borehole Pump' AND price_ngn = 310000)").run();
+    db.prepare("DELETE FROM service_tickets WHERE id = 'tkt-1001' AND ticket_code = 'TKT-1001'").run();
+    db.prepare("DELETE FROM customer_equipment WHERE (id = 'ceq-1' AND serial_number = 'DEMO-INVERTER-001') OR (id = 'ceq-2' AND serial_number = 'DEMO-BATTERY-001')").run();
+    db.prepare("DELETE FROM customer_login_tokens WHERE customer_id IN (SELECT id FROM customer_profiles WHERE id = 'cust-amina' AND email = 'customer@example.invalid')").run();
+    db.prepare("DELETE FROM customer_profiles WHERE id = 'cust-amina' AND email = 'customer@example.invalid'").run();
+    db.prepare("DELETE FROM enquiries WHERE (id = 'enq-1001' AND ref_code = 'HISO-1001' AND email = 'customer@example.invalid') OR (id = 'enq-1002' AND ref_code = 'HISO-1002' AND email = 'clinic@example.invalid') OR (id = 'enq-1003' AND ref_code = 'HISO-1003' AND email = 'prospect@example.invalid') OR (id = 'enq-1004' AND ref_code = 'HISO-1004' AND email = 'retail@example.invalid')").run();
+    db.prepare("DELETE FROM notifications WHERE id IN ('notif-1', 'notif-2', 'notif-tkt-1')").run();
+    db.prepare("DELETE FROM audit_logs WHERE id = 'aud-1' AND entity_id = 'JOB-1001'").run();
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
   }
+  db.exec('COMMIT');
+}
 
-  const enqCount = (db.prepare('SELECT COUNT(*) AS n FROM enquiries').get() as { n: number }).n;
-  if (enqCount === 0) {
-    const now = new Date().toISOString();
-    const insEnq = db.prepare(
-      'INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    insEnq.run(
-      'enq-1001', 'HISO-1001', 'Demo Customer', 'customer@example.invalid', '+234 000 000 0000', 'Demo Site, Abuja',
-      'Website · Load Estimator', 'Sample residential hybrid backup with inverter AC support.',
-      JSON.stringify([
-        { id: 'led', name: 'LED Lighting', qty: 12, watts: 10, hours: 6 },
-        { id: 'fridge', name: 'Inverter Refrigerator', qty: 1, watts: 180, hours: 10 },
-        { id: 'ac', name: '1.5HP Inverter AC', qty: 1, watts: 1150, hours: 5 },
-      ]),
-      JSON.stringify({ connectedLoadWatts: 1450, dailyEnergyKwh: 8.27, inverterMinKw: 3, batteryTargetKwh: 6.3, recommendedPanels550w: 5, recommendedBatteries5kwh: 2, powerMode: 'Hybrid' }),
-      'In delivery', 'admin-idee', new Date(Date.now() - 6 * 86400000).toISOString()
-    );
-    insEnq.run(
-      'enq-1002', 'HISO-1002', 'Sample Clinic', 'clinic@example.invalid', '+234 000 000 0000', 'Demo Commercial Site, Abuja',
-      'WhatsApp · Manual Intake', 'Sample clinic 10kW hybrid solar backup with zero switchover.', '[]',
-      JSON.stringify({ connectedLoadWatts: 6800, dailyEnergyKwh: 34.5, inverterMinKw: 10, batteryTargetKwh: 26.4, recommendedPanels550w: 19, recommendedBatteries5kwh: 6, powerMode: 'Hybrid' }),
-      'Quoted', 'admin-idee', new Date(Date.now() - 2 * 86400000).toISOString()
-    );
-    insEnq.run(
-      'enq-1003', 'HISO-1003', 'Sample Prospect', 'prospect@example.invalid', '+234 000 000 0000', 'Demo Residential Site, Abuja',
-      'Website · Load Estimator', 'Sample residential load estimate awaiting technical site review.',
-      JSON.stringify([
-        { id: 'led', name: 'LED Lighting', qty: 14, watts: 10, hours: 7 },
-        { id: 'fan', name: 'Ceiling Fans', qty: 5, watts: 75, hours: 8 },
-      ]),
-      JSON.stringify({ connectedLoadWatts: 515, dailyEnergyKwh: 3.98, inverterMinKw: 1.5, batteryTargetKwh: 3.0, recommendedPanels550w: 3, recommendedBatteries5kwh: 1, powerMode: 'Hybrid' }),
-      'New', 'md-oseni', now
-    );
-
-    const q1Items: LineItem[] = [
-      { sku: 'PV-550M', description: '550W Monocrystalline Tier-1 Solar Panel', unit: 'panel', qty: 8, unitPriceNgn: 155000 },
-      { sku: 'INV-5K-HYB', description: '5kW Hybrid MPPT Solar Inverter (48V)', unit: 'unit', qty: 1, unitPriceNgn: 980000 },
-      { sku: 'BAT-512L', description: '5.12kWh 51.2V LiFePO4 Lithium Battery Module', unit: 'unit', qty: 2, unitPriceNgn: 1420000 },
-      { sku: 'BOS-PRO', description: 'DC/AC Combiner, SPD Protection & Copper Cabling Kit', unit: 'kit', qty: 1, unitPriceNgn: 285000 },
-      { sku: 'LAB-INST', description: 'Engineering Survey, Installation & Commissioning', unit: 'lot', qty: 1, unitPriceNgn: 320000 },
-    ];
-    const q1Tot = calculateDocumentTotals(q1Items, 100000, 7.5);
-    const q2Items: LineItem[] = [
-      { sku: 'PV-550M', description: '550W Monocrystalline Tier-1 Solar Panel', unit: 'panel', qty: 16, unitPriceNgn: 155000 },
-      { sku: 'INV-10K-HYB', description: '10kW Dual-MPPT Parallel Hybrid Inverter', unit: 'unit', qty: 1, unitPriceNgn: 1850000 },
-      { sku: 'BAT-512L', description: '5.12kWh 51.2V LiFePO4 Lithium Battery Module', unit: 'unit', qty: 3, unitPriceNgn: 1420000 },
-      { sku: 'BOS-PRO', description: 'DC/AC Combiner, SPD Protection & Copper Cabling Kit', unit: 'kit', qty: 1, unitPriceNgn: 285000 },
-      { sku: 'LAB-INST', description: 'Engineering Survey, Installation & Commissioning', unit: 'lot', qty: 1, unitPriceNgn: 320000 },
-    ];
-    const q2Tot = calculateDocumentTotals(q2Items, 0, 7.5);
-
-    const insQuote = db.prepare(
-      'INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by, approved_at, items_json, revisions_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    insQuote.run(
-      'quo-1001', 'QUO-1001', 'enq-1001', 'Demo Customer', 'Invoiced', 1,
-      'Supply, installation, and commissioning of 5kW hybrid solar inverter with 10.24kWh LiFePO4 battery bank.',
-      '50% deposit on acceptance, 50% prior to final commissioning handover. 7-day quote validity, 1-year workmanship warranty.',
-      'Includes roof earthing and DC/AC surge arresters.', 100000, 7.5, isoDateOffset(-6), isoDateOffset(8), 'Demo Director', now,
-      JSON.stringify(q1Items), JSON.stringify([{ revisionNo: 1, changedBy: 'Demo Admin', note: 'Sample technical specification', createdAt: now, totalNgn: q1Tot.total }]), now
-    );
-    insQuote.run(
-      'quo-1002', 'QUO-1002', 'enq-1002', 'Sample Clinic', 'Pending MD', 1,
-      '10kW commercial hybrid inverter and 15.36kWh lithium storage for a sample clinic.',
-      '60% mobilisation deposit; 40% upon commissioning.', 'Sample quotation awaiting approval.', 0, 7.5, isoDateOffset(-1), isoDateOffset(7), null, null,
-      JSON.stringify(q2Items), JSON.stringify([{ revisionNo: 1, changedBy: 'Demo Admin', note: 'Sample commercial system', createdAt: now, totalNgn: q2Tot.total }]), now
-    );
-
-    db.prepare(
-      'INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, discount_ngn, tax_percent, total_ngn, bank_details_json, customer_accepted, accepted_at, issued_date, due_date, items_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(
-      'inv-1001', 'INV-1001', 'quo-1001', 'enq-1001', 'Demo Customer', 100000, 7.5, q1Tot.total,
-      JSON.stringify({ bankName: 'Example Bank', accountName: 'DEMO ONLY - DO NOT PAY', accountNumber: '0000000000' }),
-      1, now, isoDateOffset(-6), isoDateOffset(8), JSON.stringify(q1Items), now
-    );
-
-    db.prepare(
-      'INSERT INTO payments (id, payment_code, invoice_id, amount_ngn, payment_date, method, reference, evidence_note, status, recorded_by, verified_by, verified_at, rejection_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(
-      'pay-1001', 'PAY-1001', 'inv-1001', 3500000, isoDateOffset(-5), 'Sample Bank Transfer', 'DEMO-REFERENCE',
-      'Sample payment record only; not proof of payment.', 'Pending', 'Demo Admin', null, null, null, now
-    );
-
-    db.prepare(
-      'INSERT INTO installations (id, job_code, invoice_id, enquiry_id, customer_name, location, system_summary, assigned_engineer_id, engineer_acknowledged, current_stage, target_date, release_type, release_note, released_by, released_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(
-      'job-1001', 'JOB-1001', 'inv-1001', 'enq-1001', 'Demo Customer', 'Demo Site, Abuja',
-      '5kW Hybrid Inverter · 8x 550W Panels · 10.24kWh LiFePO4', 'eng-kalu', 1, 3, isoDateOffset(5),
-      'Standard Release', 'Sample installation record; verify all details before use.', 'Demo Director', now
-    );
-
-    const insUpd = db.prepare(
-      'INSERT INTO installation_updates (id, installation_id, stage_number, activity_title, report_text, is_customer_visible, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    insUpd.run('upd-1001', 'job-1001', 1, 'Sample Site Assessment', 'Sample installation progress update for demonstration only.', 1, 'Demo Technician', new Date(Date.now() - 4 * 86400000).toISOString());
-    insUpd.run('upd-1002', 'job-1001', 2, 'Sample Design Review', 'Sample design review update for demonstration only.', 1, 'Demo Technician', new Date(Date.now() - 3 * 86400000).toISOString());
-    insUpd.run('upd-1003', 'job-1001', 3, 'Sample Materials Preparation', 'Sample materials update for demonstration only.', 1, 'Demo Technician', new Date(Date.now() - 1 * 86400000).toISOString());
-
-    db.prepare('INSERT INTO notifications (id, user_id, title, body, target_module, target_ref, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)').run(
-      'notif-1', 'md-oseni', 'Quotation awaiting approval: QUO-1002', 'Sample Clinic quotation submitted for Director review.', 'quotes', 'QUO-1002', now
-    );
-    db.prepare('INSERT INTO notifications (id, user_id, title, body, target_module, target_ref, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)').run(
-      'notif-2', 'admin-idee', 'New solar enquiry HISO-1003', 'Sample prospect enquiry awaiting initial technical review.', 'enquiries', 'HISO-1003', now
-    );
-    db.prepare('INSERT INTO audit_logs (id, actor_name, actor_role, action_type, entity_type, entity_id, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-      'aud-1', 'Demo Director', 'director', 'RELEASE_INSTALLATION', 'Installation', 'JOB-1001', 'Sample installation release record.', now
-    );
-  }
-
-  const custCount = (db.prepare('SELECT COUNT(*) AS n FROM customer_profiles').get() as { n: number }).n;
-  if (custCount === 0) {
-    const now = new Date().toISOString();
-    db.prepare(
-      'INSERT INTO customer_profiles (id, name, email, phone, location, company, ref_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run('cust-amina', 'Demo Customer', 'customer@example.invalid', '+234 000 000 0000', 'Demo Site, Abuja', 'Example Residence', 'HISO-1001', now);
-
-    db.prepare(
-      'INSERT INTO customer_equipment (id, customer_id, equipment_type, brand_model, serial_number, capacity_kw, install_date, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run('ceq-1', 'cust-amina', 'Hybrid Inverter', 'Sample 5kW 48V Dual MPPT', 'DEMO-INVERTER-001', '5.0', isoDateOffset(-90), 'Sample equipment record for demonstration only.', now);
-    db.prepare(
-      'INSERT INTO customer_equipment (id, customer_id, equipment_type, brand_model, serial_number, capacity_kw, install_date, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run('ceq-2', 'cust-amina', 'LiFePO4 Battery Bank', 'Sample 10.24kWh battery bank', 'DEMO-BATTERY-001', '10.24', isoDateOffset(-90), 'Sample equipment record for demonstration only.', now);
-
-    db.prepare(
-      'INSERT INTO service_tickets (id, ticket_code, customer_id, customer_name, customer_phone, location, equipment_id, equipment_summary, category, priority, subject, description, status, assigned_tech_id, assigned_tech_name, resolution_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(
-      'tkt-1001', 'TKT-1001', 'cust-amina', 'Demo Customer', '+234 000 000 0000', 'Demo Site, Abuja',
-      'ceq-1', 'Hybrid Inverter — Sample 5kW model', 'Preventive Maintenance', 'Normal',
-      'Sample Maintenance Request',
-      'Sample service ticket for demonstration only.',
-      'Assigned', 'eng-kalu', 'Demo Technician', 'Sample resolution note; verify details before use.', now, now
-    );
-    db.prepare('INSERT OR IGNORE INTO notifications (id, user_id, title, body, target_module, target_ref, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)').run(
-      'notif-tkt-1', 'admin-idee', 'Customer Service Request: TKT-1001', 'Demo Customer submitted a sample maintenance request.', 'tickets', 'TKT-1001', now
-    );
-  }
-
-  const orderCount = (db.prepare('SELECT COUNT(*) AS n FROM store_orders').get() as { n: number }).n;
-  if (orderCount === 0) {
-    const now = new Date().toISOString();
-    const enqId = 'enq-1004';
-    db.prepare(
-      "INSERT OR IGNORE INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id, created_at) VALUES (?, 'HISO-1004', 'Sample Retail Customer', 'retail@example.invalid', '+234 000 000 0000', 'Demo Delivery Site, Abuja', 'Website · Storefront Order', 'Sample storefront order ORD-1001', '[]', NULL, 'New', 'admin-idee', ?)"
-    ).run(enqId, now);
-    const items = [
-      { sku: 'INV-5K-HYB', name: '5kW Hybrid MPPT Solar Inverter (48V)', unit: 'unit', qty: 1, unitPriceNgn: 980000, imagePath: '/src/assets/images/catalog_hybrid_inverter_1794819207311.jpg' },
-      { sku: 'PV-550M', name: '550W Monocrystalline Tier-1 Solar Panel', unit: 'panel', qty: 2, unitPriceNgn: 155000, imagePath: '/src/assets/images/store_solar_panel_1794824378149.jpg' },
-    ];
-    const subtotal = 1290000;
-    const deliveryFee = 0;
-    const tax = Math.round(subtotal * 0.075);
-    db.prepare(
-      'INSERT INTO store_orders (id, order_code, enquiry_id, ref_code, customer_name, email, phone, location, delivery_address, delivery_method, payment_method, notes, items_json, subtotal_ngn, delivery_fee_ngn, tax_ngn, total_ngn, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(
-      'ord-1001', 'ORD-1001', enqId, 'HISO-1004', 'Sample Retail Customer', 'retail@example.invalid', '+234 000 000 0000',
-      'Demo Delivery Site, Abuja', 'Demo Address - Do Not Deliver', 'Sample Pickup', 'Sample Payment - Do Not Use',
-      'Sample storefront order for demonstration only.', JSON.stringify(items), subtotal, deliveryFee, tax, subtotal + deliveryFee + tax,
-      'New', now, now
-    );
-  }
+function seedIfEmpty(): void {
+  removeKnownDemoRecords();
+  seedRolesAndMigrateUsers();
 }
 
 seedIfEmpty();
@@ -658,6 +491,7 @@ function hydrateStaffRow(row: Record<string, unknown>, rolesMap: Map<string, Rol
   return {
     id: String(row.id),
     name: String(row.name),
+    username: row.username ? String(row.username) : undefined,
     email: String(row.email),
     phone: String(row.phone),
     role: roleId as UserRole,
@@ -712,6 +546,7 @@ export function getPublicCatalog(): CatalogItem[] {
     name: String(r.name),
     itemType: (String(r.item_type || 'equipment') as CatalogItemType),
     category: String(r.category),
+    grade: String(r.grade || 'Standard'),
     unit: String(r.unit),
     priceNgn: Number(r.price_ngn),
     stockQty: Number(r.stock_qty),
@@ -722,25 +557,15 @@ export function getPublicCatalog(): CatalogItem[] {
   }));
 }
 
-export function getPublicSampleRefs(): { ref_code: string; customer_name: string; status: string }[] {
-  return db.prepare('SELECT ref_code, customer_name, status FROM enquiries ORDER BY created_at DESC LIMIT 4').all() as {
-    ref_code: string;
-    customer_name: string;
-    status: string;
-  }[];
-}
-
-export function authenticateUser(email: string, password: string, demoQuickLogin = false): { token: string; user: StaffMember } | null {
+export function authenticateUser(identifier: string, password: string): { token: string; user: StaffMember } | null {
   const row = db
-    .prepare("SELECT * FROM users WHERE LOWER(email) = ? AND status = 'Active' LIMIT 1")
-    .get(email.trim().toLowerCase()) as Record<string, unknown> | undefined;
+    .prepare("SELECT * FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND status = 'Active' LIMIT 1")
+    .get(identifier.trim().toLowerCase(), identifier.trim().toLowerCase()) as Record<string, unknown> | undefined;
   if (!row) return null;
-  if (!demoQuickLogin) {
-    const storedHash = String(row.password_hash);
-    if (!verifyPassword(password, storedHash)) return null;
-    if (!storedHash.startsWith('scrypt$')) {
-      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), String(row.id));
-    }
+  const storedHash = String(row.password_hash);
+  if (!verifyPassword(password, storedHash)) return null;
+  if (!storedHash.startsWith('scrypt$')) {
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), String(row.id));
   }
   const token = crypto.randomBytes(24).toString('hex');
   db.prepare('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(token, String(row.id), new Date().toISOString());
@@ -839,7 +664,7 @@ export function createStoreOrder(payload: {
   const catalog = getPublicCatalog();
   const calc = calculateStoreOrderTotals(payload.items ?? [], payload.deliveryMethod, catalog, 7.5);
   if (calc.resolvedItems.length === 0) {
-    throw new Error('Your cart is empty. Add at least one storefront product or service before checking out.');
+    throw new Error('Your cart is empty. Add at least one Store product or service before checking out.');
   }
 
   const orderId = crypto.randomUUID();
@@ -849,10 +674,10 @@ export function createStoreOrder(payload: {
   const now = new Date().toISOString();
 
   const itemSummary = calc.resolvedItems.map((it) => `${it.qty}× ${it.name}`).join(', ');
-  const needSummary = `Storefront Order ${orderCode} (${payload.deliveryMethod}, ${payload.paymentMethod}): ${itemSummary}`;
+  const needSummary = `Store Order ${orderCode} (${payload.deliveryMethod}, ${payload.paymentMethod}): ${itemSummary}`;
 
   db.prepare(
-    "INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, 'Website · Storefront Order', ?, '[]', NULL, 'New', 'admin-idee', ?)"
+    "INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, 'Website · Store Order', ?, '[]', NULL, 'New', 'admin-idee', ?)"
   ).run(
     enqId,
     refCode,
@@ -891,7 +716,7 @@ export function createStoreOrder(payload: {
 
   notifyRoleMembers(
     ['superadmin', 'director', 'admin'],
-    `New Storefront Order ${orderCode}`,
+    `New Store Order ${orderCode}`,
     `${payload.customerName.trim()} (${payload.location.trim()}) placed an order totaling ₦${calc.totalNgn.toLocaleString()}.`,
     'orders',
     orderCode
@@ -901,7 +726,7 @@ export function createStoreOrder(payload: {
     'CREATE_ORDER',
     'StoreOrder',
     orderCode,
-    `Placed Storefront order ${orderCode} (${refCode}) for ₦${calc.totalNgn.toLocaleString()}.`
+    `Placed Store order ${orderCode} (${refCode}) for ₦${calc.totalNgn.toLocaleString()}.`
   );
 
   const row = db.prepare('SELECT * FROM store_orders WHERE id = ?').get(orderId) as Record<string, unknown>;
@@ -919,7 +744,7 @@ export function updateStoreOrderStatus(
   body: { orderId: string; status: StoreOrderStatus; notes?: string }
 ): void {
   const existing = db.prepare('SELECT * FROM store_orders WHERE id = ? LIMIT 1').get(body.orderId) as Record<string, unknown> | undefined;
-  if (!existing) throw new Error('Storefront order not found.');
+  if (!existing) throw new Error('Store order not found.');
   const now = new Date().toISOString();
   const nextNotes = body.notes !== undefined ? body.notes.trim() : String(existing.notes || '');
   db.prepare('UPDATE store_orders SET status = ?, notes = ?, updated_at = ? WHERE id = ?').run(
@@ -931,7 +756,7 @@ export function updateStoreOrderStatus(
   if (body.status === 'Delivered') {
     db.prepare("UPDATE enquiries SET status = 'Completed' WHERE id = ?").run(String(existing.enquiry_id));
   }
-  writeAudit(actor, 'UPDATE_ORDER', 'StoreOrder', String(existing.order_code), `Marked storefront order ${existing.order_code} as ${body.status}.`);
+  writeAudit(actor, 'UPDATE_ORDER', 'StoreOrder', String(existing.order_code), `Marked Store order ${existing.order_code} as ${body.status}.`);
 }
 
 export function getPublicTracking(refCode: string) {
@@ -1597,6 +1422,7 @@ export function upsertCatalogItem(
     name: string;
     itemType?: CatalogItemType;
     category: string;
+    grade?: string;
     unit: string;
     priceNgn: number;
     stockQty: number;
@@ -1608,57 +1434,77 @@ export function upsertCatalogItem(
   }
 ) {
   const sku = body.sku.trim();
+  const name = body.name.trim();
+  const category = body.category.trim();
+  const grade = (body.grade || 'Standard').trim();
+  const unit = body.unit.trim();
+  const itemType = body.itemType || 'equipment';
+  const priceNgn = Number(body.priceNgn);
+  const stockQty = Number(body.stockQty);
+  const capacityKw = body.capacityKw ?? null;
+  const watts = body.watts ?? null;
+  if (
+    !sku || sku.length > 60 || !name || name.length > 180 || !category || category.length > 80 ||
+    !grade || grade.length > 60 || !unit || unit.length > 40 ||
+    !['equipment', 'service', 'appliance'].includes(itemType) ||
+    !Number.isFinite(priceNgn) || priceNgn < 0 ||
+    !Number.isInteger(stockQty) || stockQty < 0 ||
+    (capacityKw !== null && (!Number.isFinite(Number(capacityKw)) || Number(capacityKw) <= 0)) ||
+    (watts !== null && (!Number.isInteger(Number(watts)) || Number(watts) <= 0))
+  ) {
+    throw new Error('Enter valid SKU, item details, grade, price, stock, and equipment capacity.');
+  }
   const existing = db.prepare('SELECT id, image_path FROM catalog_items WHERE sku = ?').get(sku) as { id: string; image_path: string } | undefined;
   let img = body.imagePath || existing?.image_path || '/src/assets/images/catalog_hybrid_inverter_1794819207311.jpg';
   if (body.imageDataUrl) {
     const saved = saveBase64Upload(body.imageDataUrl, 'cat');
-    if (saved) {
-      img = `/api/catalog-image/${saved.filename}`;
-    }
+    if (!saved) throw new Error('Choose a JPEG, PNG, or WebP product photo.');
+    img = `/api/catalog-image/${saved.filename}`;
   }
-  const itemType = body.itemType || 'equipment';
   const desc = (body.description || '').trim();
   if (existing) {
     db.prepare(
-      'UPDATE catalog_items SET name=?, item_type=?, category=?, unit=?, price_ngn=?, stock_qty=?, capacity_kw=?, watts=?, description=?, image_path=? WHERE sku=?'
+      'UPDATE catalog_items SET name=?, item_type=?, category=?, grade=?, unit=?, price_ngn=?, stock_qty=?, capacity_kw=?, watts=?, description=?, image_path=? WHERE sku=?'
     ).run(
-      body.name.trim(),
+      name,
       itemType,
-      body.category.trim(),
-      body.unit.trim(),
-      Number(body.priceNgn),
-      Number(body.stockQty),
-      body.capacityKw ?? null,
-      body.watts ?? null,
+      category,
+      grade,
+      unit,
+      priceNgn,
+      stockQty,
+      capacityKw,
+      watts,
       desc,
       img,
       sku
     );
   } else {
     db.prepare(
-      'INSERT INTO catalog_items (id, sku, name, item_type, category, unit, price_ngn, stock_qty, capacity_kw, watts, description, image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO catalog_items (id, sku, name, item_type, category, grade, unit, price_ngn, stock_qty, capacity_kw, watts, description, image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       crypto.randomUUID(),
       sku,
-      body.name.trim(),
+      name,
       itemType,
-      body.category.trim(),
-      body.unit.trim(),
-      Number(body.priceNgn),
-      Number(body.stockQty),
-      body.capacityKw ?? null,
-      body.watts ?? null,
+      category,
+      grade,
+      unit,
+      priceNgn,
+      stockQty,
+      capacityKw,
+      watts,
       desc,
       img
     );
   }
-  writeAudit(actor, 'UPSERT_CATALOG', 'Catalog', sku, `Saved storefront SKU ${sku} at ₦${Number(body.priceNgn).toLocaleString()}`);
+  writeAudit(actor, 'UPSERT_CATALOG', 'Catalog', sku, `Saved Store SKU ${sku} at ₦${Number(body.priceNgn).toLocaleString()}`);
   return { imagePath: img };
 }
 
 export function deleteCatalogItem(actor: StaffMember, sku: string) {
   db.prepare('DELETE FROM catalog_items WHERE sku = ?').run(sku.trim());
-  writeAudit(actor, 'DELETE_CATALOG', 'Catalog', sku, `Removed SKU ${sku} from storefront`);
+  writeAudit(actor, 'DELETE_CATALOG', 'Catalog', sku, `Removed SKU ${sku} from Store`);
 }
 
 export function saveQuotation(
@@ -1970,8 +1816,21 @@ export function saveRoleDefinition(
 
 export function saveStaffMember(
   actor: StaffMember,
-  body: { id?: string; name: string; email: string; phone: string; role: UserRole; title: string; skills: string; status: StaffStatus; password?: string }
+  body: { id?: string; name: string; username: string; email: string; phone: string; role: UserRole; title: string; skills: string; status: StaffStatus; password?: string }
 ) {
+  const username = body.username.trim().toLowerCase();
+  if ((!body.id && !username) || (username && !/^[a-z0-9._-]{3,50}$/.test(username))) {
+    throw new Error('Username must be 3–50 characters using letters, numbers, dots, underscores, or hyphens.');
+  }
+  const usernameOwner = username
+    ? db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(username) as { id: string } | undefined
+    : undefined;
+  if (usernameOwner && usernameOwner.id !== body.id) {
+    throw new Error('That username is already in use.');
+  }
+  if (!body.id && actor.role !== 'superadmin') {
+    throw new Error('Only Super Admin can create staff accounts.');
+  }
   if (body.password !== undefined && body.password.trim().length > 0 && body.password.trim().length < 12) {
     throw new Error('Staff passwords must be at least 12 characters.');
   }
@@ -1985,10 +1844,16 @@ export function saveStaffMember(
   }));
 
   if (body.id) {
+    const existing = db.prepare('SELECT role, username FROM users WHERE id = ?').get(body.id) as { role: string; username: string | null } | undefined;
+    if (!existing) throw new Error('Staff account not found.');
+    const nextUsername = username || existing.username;
+    if (actor.role !== 'superadmin' && (existing.role !== body.role || existing.username !== nextUsername)) {
+      throw new Error('Only Super Admin can change usernames or assign roles.');
+    }
     const check = canUpdateStaffStatusOrRole(body.id, body.role, body.status, jobs);
     if (!check.allowed) throw new Error(check.reason);
-    db.prepare('UPDATE users SET name=?, phone=?, role=?, title=?, skills=?, status=? WHERE id=?').run(
-      body.name.trim(), body.phone.trim(), body.role, body.title.trim(), body.skills.trim(), body.status, body.id
+    db.prepare('UPDATE users SET name=?, username=?, phone=?, role=?, title=?, skills=?, status=? WHERE id=?').run(
+      body.name.trim(), nextUsername ?? null, body.phone.trim(), body.role, body.title.trim(), body.skills.trim(), body.status, body.id
     );
     if (body.password && body.password.trim().length >= 12) {
       db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(body.password.trim()), body.id);
@@ -2002,8 +1867,8 @@ export function saveStaffMember(
     throw new Error('A staff password of at least 12 characters is required.');
   }
   db.prepare(
-    "INSERT INTO users (id, name, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Active', ?)"
-  ).run(id, body.name.trim(), body.email.trim().toLowerCase(), body.phone.trim(), hashPassword(body.password.trim()), body.role, body.title.trim(), body.skills.trim(), new Date().toISOString());
+    "INSERT INTO users (id, name, username, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', ?)"
+  ).run(id, body.name.trim(), username, body.email.trim().toLowerCase(), body.phone.trim(), hashPassword(body.password.trim()), body.role, body.title.trim(), body.skills.trim(), new Date().toISOString());
   writeAudit(actor, 'CREATE_STAFF', 'Staff', id, `Created staff account for ${body.name} (${body.role})`);
   return { id };
 }

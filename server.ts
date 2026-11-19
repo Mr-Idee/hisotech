@@ -28,7 +28,6 @@ import {
   getPhotoFile,
   getPublicCatalog,
   getPublicDocument,
-  getPublicSampleRefs,
   getPublicTracking,
   getUploadedCatalogImage,
   getUserBySessionToken,
@@ -53,6 +52,7 @@ import {
 } from './src/server/db';
 
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '127.0.0.1';
 const COOKIE_NAME = 'hiso_preview_session';
 const CUSTOMER_COOKIE_NAME = 'hiso_customer_session';
 const UPLOAD_DIR = path.resolve(process.cwd(), '.hiso_uploads');
@@ -356,7 +356,7 @@ async function startServer() {
 
   // --- Public API ---
   app.get('/api/public/bootstrap', (_req, res) => {
-    res.json({ catalog: getPublicCatalog(), sampleRefs: getPublicSampleRefs() });
+    res.json({ catalog: getPublicCatalog() });
   });
 
   app.post('/api/public/enquiries', (req, res) => {
@@ -553,21 +553,20 @@ async function startServer() {
 
   // --- Staff Auth API ---
   app.post('/api/auth/login', (req, res) => {
-    const { email, password, demoQuickLogin } = req.body ?? {};
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-    if (normalizedEmail.length > 190 || String(password || '').length > 128) {
+    const { identifier, password } = req.body ?? {};
+    const normalizedIdentifier = String(identifier || '').trim().toLowerCase();
+    if (normalizedIdentifier.length > 190 || String(password || '').length > 128) {
       res.status(422).json({ error: 'Invalid email or password.' });
       return;
     }
     const address = req.ip || req.socket.remoteAddress || 'unknown';
     const allowed = checkAuthRateLimit(`staff-ip:${address}`, 10, 15 * 60)
-      && checkAuthRateLimit(`staff-email:${normalizedEmail}`, 5, 15 * 60);
+      && checkAuthRateLimit(`staff-identifier:${normalizedIdentifier}`, 5, 15 * 60);
     if (!allowed) {
       res.status(429).json({ error: 'Too many sign-in attempts. Please try again later.' });
       return;
     }
-    const allowDemoLogin = process.env.NODE_ENV !== 'production' && process.env.ALLOW_DEMO_LOGIN === 'true';
-    const auth = authenticateUser(normalizedEmail, String(password || ''), allowDemoLogin && Boolean(demoQuickLogin));
+    const auth = authenticateUser(normalizedIdentifier, String(password || ''));
     if (!auth) {
       res.status(401).json({ error: 'Invalid staff email or password.' });
       return;
@@ -624,17 +623,21 @@ async function startServer() {
   app.post('/api/catalog', (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_storefront')) {
-      res.status(403).json({ error: 'Storefront pricing permission required.' });
+      res.status(403).json({ error: 'Store pricing permission required.' });
       return;
     }
-    const result = upsertCatalogItem(user!, req.body);
-    res.json({ ok: true, imagePath: result.imagePath });
+    try {
+      const result = upsertCatalogItem(user!, req.body);
+      res.json({ ok: true, imagePath: result.imagePath });
+    } catch (err) {
+      res.status(422).json({ error: (err as Error).message });
+    }
   });
 
   app.post('/api/catalog/delete', (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_storefront')) {
-      res.status(403).json({ error: 'Storefront permission required.' });
+      res.status(403).json({ error: 'Store permission required.' });
       return;
     }
     deleteCatalogItem(user!, String(req.body?.sku || ''));
@@ -805,7 +808,7 @@ async function startServer() {
 
   app.post('/api/roles', (req, res) => {
     const { user } = getSessionUser(req);
-    if (!hasPermission(user, 'manage_roles')) {
+    if (user?.role !== 'superadmin' || !hasPermission(user, 'manage_roles')) {
       res.status(403).json({ error: 'Only Super Admin can create or edit roles.' });
       return;
     }
@@ -820,6 +823,10 @@ async function startServer() {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_staff')) {
       res.status(403).json({ error: 'Staff management permission required.' });
+      return;
+    }
+    if (!req.body?.id && user?.role !== 'superadmin') {
+      res.status(403).json({ error: 'Only Super Admin can create staff accounts.' });
       return;
     }
     try {
@@ -938,7 +945,7 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, HOST, () => {
     console.log(`HI-SOTECH platform server listening on http://localhost:${PORT}`);
   });
 }

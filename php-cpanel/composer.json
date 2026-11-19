@@ -1,0 +1,13 @@
+{
+  "name": "hisotech/solar-platform",
+  "description": "HI-SOTECH PHP/MySQL production runtime",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.2",
+    "phpmailer/phpmailer": "^6.10"
+  },
+  "config": {
+    "sort-packages": true,
+    "vendor-dir": "hiso_private/vendor"
+  }
+}

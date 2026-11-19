@@ -187,7 +187,7 @@ export function StorefrontView({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-6 dark:border-slate-800">
         <div className="min-w-0">
           <p className="text-xs font-semibold tracking-wider text-[#D61F26]">
-            HI-SOTECH STOREFRONT &amp; ORDER DESK
+            HI-SOTECH STORE &amp; ORDER DESK
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-[#081E3E] sm:text-3xl dark:text-white">
             Solar Equipment, Appliances &amp; Engineering Services
@@ -249,7 +249,7 @@ export function StorefrontView({
         </div>
 
         <label className="relative block w-full sm:w-72">
-          <span className="sr-only">Search storefront catalogue</span>
+          <span className="sr-only">Search Store catalogue</span>
           <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             type="search"
@@ -391,12 +391,12 @@ export function StorefrontView({
         </div>
       )}
 
-      {/* Storefront Cart & Checkout Drawer */}
+      {/* Store Cart & Checkout Drawer */}
       {cartOpen && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Storefront Cart & Checkout"
+          aria-label="Store Cart & Checkout"
           className="fixed inset-0 z-50 flex justify-end bg-black/60"
         >
           <div className="flex h-full w-full max-w-lg flex-col bg-white shadow-xl dark:bg-[#0B1D39]">
@@ -404,7 +404,7 @@ export function StorefrontView({
               <div className="flex items-center gap-2">
                 <ShoppingCart className="h-5 w-5 text-[#D61F26]" />
                 <h2 className="text-base font-bold text-[#081E3E] dark:text-white">
-                  Storefront Order Cart ({totalCartItems})
+                  Store Order Cart ({totalCartItems})
                 </h2>
               </div>
               <button
@@ -474,7 +474,7 @@ export function StorefrontView({
               ) : cartTotals.resolvedItems.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
                   <Package className="mx-auto h-8 w-8 text-slate-400" />
-                  <p className="mt-3 font-medium">Your storefront cart is empty.</p>
+                  <p className="mt-3 font-medium">Your Store cart is empty.</p>
                   <p className="mt-1 text-xs">Add solar panels, inverters, batteries, or appliances to place an order.</p>
                 </div>
               ) : (
@@ -706,7 +706,7 @@ export function StorefrontView({
                     >
                       {checkoutBusy
                         ? 'Submitting Order...'
-                        : `Place Storefront Order · ${formatNgn(cartTotals.totalNgn)}`}
+                        : `Place Store Order · ${formatNgn(cartTotals.totalNgn)}`}
                     </button>
                   </form>
                 </div>

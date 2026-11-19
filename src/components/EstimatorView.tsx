@@ -72,6 +72,11 @@ export function EstimatorView({
   const [autonomyHours, setAutonomyHours] = useState(10);
   const [peakSunHours, setPeakSunHours] = useState(4.5);
   const [usableDepthPercent, setUsableDepthPercent] = useState(85);
+  const [equipmentGrade, setEquipmentGrade] = useState('Standard');
+  const equipmentGrades = useMemo(
+    () => [...new Set(catalog.map((item) => item.grade?.trim()).filter((grade): grade is string => Boolean(grade)))].sort(),
+    [catalog]
+  );
 
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
@@ -117,15 +122,23 @@ export function EstimatorView({
         autonomyHours,
         peakSunHours,
         usableDepthPercent,
+        equipmentGrade,
       }),
-    [appliances, powerMode, autonomyHours, peakSunHours, usableDepthPercent]
+    [appliances, powerMode, autonomyHours, peakSunHours, usableDepthPercent, equipmentGrade]
   );
+
+  useEffect(() => {
+    if (equipmentGrades.length > 0 && !equipmentGrades.includes(equipmentGrade)) {
+      setEquipmentGrade(equipmentGrades[0]);
+    }
+  }, [equipmentGrade, equipmentGrades]);
 
   // Directly import prices from Storefront Catalog
   const costBreakdown = useMemo(
     () => computeEstimateCostFromCatalog(estimate, catalog),
     [estimate, catalog]
   );
+  const hasCatalogPricing = costBreakdown.lines.length > 0;
 
   const storeAppliances = useMemo(
     () => catalog.filter((c) => c.itemType === 'appliance'),
@@ -222,7 +235,7 @@ export function EstimatorView({
         needSummary.trim() ||
         `Offline ${powerMode} load estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day.`,
       appliances,
-      estimate: { ...estimate, estimatedTotalNgn: costBreakdown.total },
+      estimate: { ...estimate, estimatedTotalNgn: hasCatalogPricing ? costBreakdown.total : undefined },
     };
 
     const next = [entry, ...offlineQueue];
@@ -243,7 +256,7 @@ export function EstimatorView({
 
     const finalEstimate: SolarEstimateResult = {
       ...estimate,
-      estimatedTotalNgn: costBreakdown.total,
+      estimatedTotalNgn: hasCatalogPricing ? costBreakdown.total : undefined,
     };
 
     if (!isOnline) {
@@ -260,7 +273,7 @@ export function EstimatorView({
         location,
         needSummary:
           needSummary.trim() ||
-          `${powerMode} solar estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day, est. ${formatNgn(costBreakdown.total)}.`,
+          `${powerMode} solar estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day${hasCatalogPricing ? `, est. ${formatNgn(costBreakdown.total)}` : ''}.`,
         appliances,
         estimate: finalEstimate,
       });
@@ -318,7 +331,7 @@ export function EstimatorView({
               <div className="font-semibold">
                 {offlineSavedBanner ||
                   (!isOnline
-                    ? 'You are currently offline. Calculations and Storefront pricing run 100% locally.'
+                    ? 'You are currently offline. Calculations and Store pricing run 100% locally.'
                     : `${offlineQueue.length} local offline estimate(s) ready to sync to the HI-SOTECH server.`)}
               </div>
               {offlineQueue.length > 0 && (
@@ -352,12 +365,12 @@ export function EstimatorView({
               <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                 {storeAppliances.length > 0 && (
                   <select
-                    aria-label="Import appliance from Storefront"
+                    aria-label="Import appliance from the Store"
                     value=""
                     onChange={(e) => importStoreAppliance(e.target.value)}
                     className="w-full max-w-full min-w-0 truncate rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 sm:w-56 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-200"
                   >
-                    <option value="">+ Import Storefront Appliance...</option>
+                    <option value="">+ Import from the Store...</option>
                     {storeAppliances.map((app) => (
                       <option key={app.sku} value={app.sku}>
                         {app.name} ({app.watts ?? 150}W)
@@ -472,7 +485,7 @@ export function EstimatorView({
               ))}
             </div>
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <label className="block min-w-0 text-xs">
                 <span className="font-medium text-slate-600 dark:text-slate-300">Backup Autonomy (Hours)</span>
                 <input
@@ -507,11 +520,23 @@ export function EstimatorView({
                   className="font-mono-num mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-white"
                 />
               </label>
+              <label className="block min-w-0 text-xs">
+                <span className="font-medium text-slate-600 dark:text-slate-300">Equipment Grade</span>
+                <select
+                  value={equipmentGrade}
+                  onChange={(e) => setEquipmentGrade(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-white"
+                >
+                  {(equipmentGrades.length > 0 ? equipmentGrades : ['Standard']).map((grade) => (
+                    <option key={grade} value={grade}>{grade}</option>
+                  ))}
+                </select>
+              </label>
             </div>
           </div>
         </div>
 
-        {/* Right: Live Sizing, Storefront Cost Sync & Submission */}
+        {/* Right: Live Sizing, Store Cost Sync & Submission */}
         <div className="min-w-0 space-y-6 lg:col-span-5">
           <div className="rounded-xl bg-[#081E3E] p-4 text-white sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -561,20 +586,20 @@ export function EstimatorView({
               </div>
             </div>
 
-            {/* Imported Storefront Prices Breakdown */}
+            {/* Imported Store Prices Breakdown */}
             <div className="mt-5 border-t border-white/15 pt-4">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="font-semibold text-red-300">IMPORTED STOREFRONT COST</span>
+                <span className="font-semibold text-red-300">IMPORTED STORE COST</span>
                 <button
                   type="button"
                   onClick={onOpenStorefront}
                   className="inline-flex shrink-0 items-center gap-1 text-slate-300 underline hover:text-white"
                 >
-                  <ShoppingBag className="h-3 w-3" /> Edit in Storefront
+                  <ShoppingBag className="h-3 w-3" /> Edit in Store
                 </button>
               </div>
 
-              {costBreakdown.lines.length > 0 ? (
+              {hasCatalogPricing ? (
                 <div className="mt-3 space-y-2 text-xs">
                   {costBreakdown.lines.map((line) => (
                     <div key={line.sku} className="flex items-center justify-between gap-2 text-slate-200">
@@ -597,9 +622,13 @@ export function EstimatorView({
                     </span>
                   </div>
                 </div>
+              ) : catalog.length === 0 ? (
+                <p className="mt-2 text-xs text-amber-100">
+                  Equipment pricing is being configured. Your load calculation can be submitted, but a priced quotation is not available yet.
+                </p>
               ) : (
                 <p className="mt-2 text-xs text-slate-300">
-                  Add appliances above to compute live hardware &amp; installation pricing from the Storefront.
+                  Add appliances above to compute live hardware &amp; installation pricing from the Store.
                 </p>
               )}
             </div>

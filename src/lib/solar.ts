@@ -26,7 +26,7 @@ export const INSTALLATION_STAGES = [
 export const ALL_PERMISSIONS: { key: PermissionKey; label: string; group: string }[] = [
   { key: 'manage_enquiries', label: 'Intake & Review Enquiries', group: 'Commercial' },
   { key: 'manage_tickets', label: 'Help Desk & Service Complaints', group: 'Support' },
-  { key: 'manage_storefront', label: 'Storefront Prices, Images & Stock', group: 'Catalogue' },
+  { key: 'manage_storefront', label: 'Store Prices, Images & Stock', group: 'Catalogue' },
   { key: 'draft_quotes', label: 'Draft & Revise Quotations', group: 'Commercial' },
   { key: 'approve_quotes', label: 'Approve / Reject Quotations', group: 'Executive' },
   { key: 'manage_invoices', label: 'Issue Invoices & Log Receipts', group: 'Finance' },
@@ -100,6 +100,7 @@ export function calculateSolarEstimate(
 
   const peakSunHours = Math.max(2, Math.min(8, Number(opts.peakSunHours) || 4.5));
   const powerMode: PowerMode = opts.powerMode ?? 'Hybrid';
+  const equipmentGrade = opts.equipmentGrade?.trim() || 'Standard';
   const usableDepthPercent = Math.max(50, Math.min(95, Number(opts.usableDepthPercent) || 85));
   const dodFactor = usableDepthPercent / 100;
   const autonomyHours = Math.max(2, Math.min(48, Number(opts.autonomyHours) || (powerMode === 'Off-grid' ? 16 : 10)));
@@ -132,10 +133,14 @@ export function calculateSolarEstimate(
       : ((dailyEnergyKwh * modeMultiplier * Math.max(0.75, autonomyRatio)) / dodFactor);
   const batteryTargetKwh = Math.round(rawBatteryKwh * 10) / 10;
 
-  const recommendedPanels550w =
+  const recommendedArrayWatts =
     dailyEnergyKwh === 0 || powerMode === 'Grid-backup'
       ? 0
-      : Math.max(2, Math.ceil((dailyEnergyKwh * (powerMode === 'Off-grid' ? 1.35 : 1.25)) / (0.55 * peakSunHours)));
+      : Math.ceil((dailyEnergyKwh * (powerMode === 'Off-grid' ? 1.35 : 1.25) * 1000) / peakSunHours);
+
+  const recommendedPanels550w = recommendedArrayWatts === 0
+    ? 0
+    : Math.max(2, Math.ceil(recommendedArrayWatts / 550));
 
   const recommendedBatteries5kwh =
     batteryTargetKwh === 0 ? 0 : Math.max(1, Math.ceil(batteryTargetKwh / 5.12));
@@ -151,6 +156,8 @@ export function calculateSolarEstimate(
     autonomyHours,
     peakSunHours,
     usableDepthPercent,
+    recommendedArrayWatts,
+    equipmentGrade,
   };
 }
 
@@ -169,25 +176,42 @@ export function buildQuoteLinesFromEstimate(
     }));
   }
 
-  const findSkuOrCategory = (sku: string, cat?: string) =>
-    hardwareAndServices.find((c) => c.sku === sku) ??
-    (cat ? hardwareAndServices.find((c) => c.category === cat) : undefined);
+  const grade = estimate.equipmentGrade?.trim().toLowerCase() || 'standard';
+  const filterGrade = (items: CatalogItem[]) => {
+    const matchingGrade = items.filter((item) => item.grade?.trim().toLowerCase() === grade);
+    const ungraded = items.filter((item) => !item.grade?.trim());
+    if (matchingGrade.length > 0) return matchingGrade;
+    return ungraded.length > 0 ? ungraded : items;
+  };
 
-  const inverters = hardwareAndServices
-    .filter((c) => c.category === 'Inverters' && c.capacityKw !== null)
-    .sort((a, b) => (a.capacityKw ?? 0) - (b.capacityKw ?? 0));
+  const inverters = filterGrade(
+    hardwareAndServices
+      .filter((c) => c.category === 'Inverters' && c.capacityKw !== null)
+      .sort((a, b) => (a.capacityKw ?? 0) - (b.capacityKw ?? 0))
+  );
   const chosenInverter =
     inverters.find((inv) => (inv.capacityKw ?? 0) >= estimate.inverterMinKw) ??
     inverters[inverters.length - 1];
 
   const lines: LineItem[] = [];
-  const pv = findSkuOrCategory('PV-550M', 'Solar Panels');
-  if (pv && estimate.recommendedPanels550w > 0) {
+  const panelCandidates = filterGrade(
+    hardwareAndServices.filter((item) => item.category === 'Solar Panels' && (item.watts ?? 0) > 0)
+  );
+  const pv = panelCandidates.sort(
+    (a, b) => a.priceNgn / (a.watts ?? 1) - b.priceNgn / (b.watts ?? 1)
+  )[0];
+  const panelQty = pv
+    ? Math.max(
+        estimate.recommendedArrayWatts ? 2 : 0,
+        Math.ceil((estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) / (pv.watts ?? 550))
+      )
+    : 0;
+  if (pv && panelQty > 0) {
     lines.push({
       sku: pv.sku,
       description: pv.name,
       unit: pv.unit,
-      qty: estimate.recommendedPanels550w,
+      qty: panelQty,
       unitPriceNgn: pv.priceNgn,
     });
   }
@@ -200,49 +224,75 @@ export function buildQuoteLinesFromEstimate(
       unitPriceNgn: chosenInverter.priceNgn,
     });
   }
-  const bat = findSkuOrCategory('BAT-512L', 'Battery Storage');
-  if (bat && estimate.recommendedBatteries5kwh > 0) {
+  const batteryCandidates = filterGrade(
+    hardwareAndServices.filter((item) => item.category === 'Battery Storage' && (item.capacityKw ?? 0) > 0)
+  );
+  const bat = batteryCandidates.sort(
+    (a, b) => a.priceNgn / (a.capacityKw ?? 1) - b.priceNgn / (b.capacityKw ?? 1)
+  )[0];
+  const batteryQty = bat
+    ? Math.max(0, Math.ceil(estimate.batteryTargetKwh / (bat.capacityKw ?? 5.12)))
+    : 0;
+  if (bat && batteryQty > 0) {
     lines.push({
       sku: bat.sku,
       description: bat.name,
       unit: bat.unit,
-      qty: estimate.recommendedBatteries5kwh,
+      qty: batteryQty,
       unitPriceNgn: bat.priceNgn,
     });
   }
 
-  const bos = findSkuOrCategory('BOS-PRO', 'Protection & BOS');
-  if (bos) {
+  const coreCategories = new Set(['Solar Panels', 'Inverters', 'Battery Storage']);
+  const accessoryCategories = [
+    ...new Set(
+      hardwareAndServices
+        .filter((item) => item.itemType === 'equipment' && !coreCategories.has(item.category))
+        .map((item) => item.category)
+    ),
+  ];
+  const accessories = accessoryCategories.flatMap((category) =>
+    filterGrade(
+      hardwareAndServices.filter(
+        (item) => item.itemType === 'equipment' && item.category === category
+      )
+    )
+  );
+  for (const accessory of accessories) {
+    const isMounting = /mount/i.test(`${accessory.category} ${accessory.name}`);
+    const qty = isMounting ? Math.max(1, Math.ceil(panelQty / 8)) : 1;
     lines.push({
-      sku: bos.sku,
-      description: bos.name,
-      unit: bos.unit,
-      qty: 1,
-      unitPriceNgn: bos.priceNgn,
+      sku: accessory.sku,
+      description: accessory.name,
+      unit: accessory.unit,
+      qty,
+      unitPriceNgn: accessory.priceNgn,
     });
   }
 
-  if (estimate.recommendedPanels550w > 0) {
-    const rack = findSkuOrCategory('RACK-AL', 'Mounting');
-    if (rack) {
-      lines.push({
-        sku: rack.sku,
-        description: rack.name,
-        unit: rack.unit,
-        qty: Math.max(1, Math.ceil(estimate.recommendedPanels550w / 8)),
-        unitPriceNgn: rack.priceNgn,
-      });
-    }
-  }
-
-  const labour = findSkuOrCategory('LAB-INST', 'Services');
-  if (labour) {
+  const services = hardwareAndServices.filter((item) => item.itemType === 'service');
+  const installation = filterGrade(services.filter((item) =>
+    /install|commission|survey/i.test(`${item.category} ${item.name} ${item.sku}`)
+  ))[0];
+  if (installation) {
     lines.push({
-      sku: labour.sku,
-      description: labour.name,
-      unit: labour.unit,
+      sku: installation.sku,
+      description: installation.name,
+      unit: installation.unit,
       qty: 1,
-      unitPriceNgn: labour.priceNgn,
+      unitPriceNgn: installation.priceNgn,
+    });
+  }
+  const logistics = filterGrade(
+    services.filter((item) => /logistic|delivery|transport/i.test(`${item.category} ${item.name} ${item.sku}`))
+  );
+  for (const item of logistics) {
+    lines.push({
+      sku: item.sku,
+      description: item.name,
+      unit: item.unit,
+      qty: 1,
+      unitPriceNgn: item.priceNgn,
     });
   }
 
@@ -258,6 +308,17 @@ export function computeEstimateCostFromCatalog(
     return { lines: [], subtotal: 0, tax: 0, total: 0 };
   }
   const lines = buildQuoteLinesFromEstimate(estimate, catalog);
+  const requiredCategories = [
+    'Inverters',
+    (estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) > 0 ? 'Solar Panels' : null,
+    estimate.batteryTargetKwh > 0 ? 'Battery Storage' : null,
+  ].filter((category): category is string => Boolean(category));
+  const pricedSkus = new Set(lines.map((line) => line.sku));
+  if (requiredCategories.some(
+    (category) => !catalog.some((item) => item.category === category && pricedSkus.has(item.sku))
+  )) {
+    return { lines: [], subtotal: 0, tax: 0, total: 0 };
+  }
   const totals = calculateDocumentTotals(lines, 0, taxPercent);
   return {
     lines,

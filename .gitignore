@@ -12,4 +12,5 @@ dev-dist/
 .hiso_uploads/
 php-cpanel/hiso_private/storage/
 php-cpanel/hiso_private/backups/
+php-cpanel/hiso_private/vendor/
 public/assets/aistudio/

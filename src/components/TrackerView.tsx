@@ -5,12 +5,11 @@ import { formatNgn, INSTALLATION_STAGES } from '../lib/solar';
 
 interface TrackerViewProps {
   initialRef?: string;
-  sampleRefs: { ref_code: string; customer_name: string; status: string }[];
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
 }
 
-export function TrackerView({ initialRef, sampleRefs, onOpenDocument }: TrackerViewProps) {
-  const [refInput, setRefInput] = useState(initialRef || sampleRefs[0]?.ref_code || 'HISO-1001');
+export function TrackerView({ initialRef, onOpenDocument }: TrackerViewProps) {
+  const [refInput, setRefInput] = useState(initialRef || '');
   const [data, setData] = useState<Awaited<ReturnType<typeof api.trackRequest>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -34,9 +33,9 @@ export function TrackerView({ initialRef, sampleRefs, onOpenDocument }: TrackerV
   }
 
   useEffect(() => {
-    const startRef = initialRef || sampleRefs[0]?.ref_code || 'HISO-1001';
+    const startRef = initialRef || '';
     setRefInput(startRef);
-    lookup(startRef);
+    if (startRef) void lookup(startRef);
   }, [initialRef]);
 
   async function handleAcceptInvoice(invoiceId: string) {
@@ -88,24 +87,6 @@ export function TrackerView({ initialRef, sampleRefs, onOpenDocument }: TrackerV
           </button>
         </form>
 
-        {sampleRefs.length > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-300">
-            <span>Quick lookup:</span>
-            {sampleRefs.map((s) => (
-              <button
-                key={s.ref_code}
-                type="button"
-                onClick={() => {
-                  setRefInput(s.ref_code);
-                  lookup(s.ref_code);
-                }}
-                className="font-mono-num rounded border border-white/25 px-2.5 py-1 hover:bg-white/15"
-              >
-                {s.ref_code} · {s.customer_name}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {error && (
@@ -157,7 +138,7 @@ export function TrackerView({ initialRef, sampleRefs, onOpenDocument }: TrackerV
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <span className="font-mono-num text-xs font-semibold text-[#D61F26]">
-                      STOREFRONT ORDER · {data.order.orderCode}
+                      STORE ORDER · {data.order.orderCode}
                     </span>
                     <h3 className="mt-1 text-base font-bold text-[#081E3E] dark:text-white">
                       {data.order.deliveryMethod}
@@ -279,7 +260,7 @@ export function TrackerView({ initialRef, sampleRefs, onOpenDocument }: TrackerV
                         onClick={() => handleAcceptInvoice(data.invoice!.id)}
                         className="w-full rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
                       >
-                        {acceptBusy ? 'Recording Acceptance...' : 'Confirm Acceptance of Proforma Invoice'}
+                        {acceptBusy ? 'Recording Acceptance...' : 'Confirm Acceptance of Invoice'}
                       </button>
                     )}
                   </div>

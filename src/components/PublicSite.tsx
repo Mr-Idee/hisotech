@@ -6,6 +6,7 @@ import {
   Clock,
   Mail,
   MapPin,
+  Monitor,
   Moon,
   Phone,
   ShieldCheck,
@@ -15,12 +16,14 @@ import { useState } from 'react';
 import { api } from '../lib/api';
 import { formatNgn } from '../lib/solar';
 import type { CatalogItem } from '../lib/types';
+import heroImage from '../assets/images/hero_solar_array_1794819204906.jpg';
 import { Reveal } from './Reveal';
 import type { AppRoute } from './TopBar';
 
 interface PublicSiteProps {
   catalog: CatalogItem[];
   darkMode: boolean;
+  themeMode: 'system' | 'light' | 'dark';
   onToggleTheme: () => void;
   onNavigate: (route: AppRoute, sectionId?: string) => void;
 }
@@ -35,7 +38,7 @@ const WORKFLOW_STEPS = [
     deliverables: [
       'Physical roof geometry & shading check',
       'Earthing resistance & DB phase audit',
-      'Itemised bill of quantities from Storefront prices',
+      'Itemised bill of quantities from Store prices',
     ],
     ctaLabel: 'Open Load Estimator',
     ctaRoute: 'estimator' as AppRoute,
@@ -45,13 +48,13 @@ const WORKFLOW_STEPS = [
     title: 'Design',
     subtitle: 'Modular Redundancy & Formal Approval',
     description:
-      'Every quotation is built directly from verified Storefront equipment & service rates, reviewed by the Managing Director, and issued with 7-day price protection.',
+      'Every quotation is built directly from verified Store equipment & service rates, reviewed by the Managing Director, and issued with 7-day price protection.',
     deliverables: [
       'Modular parallel inverter sizing (3kVA to 120kW+)',
       'LiFePO4 storage sizing for 5–15 year lifespan',
-      'Proforma invoice & bank payment verification gate',
+      'Invoice & bank payment verification gate',
     ],
-    ctaLabel: 'Browse Storefront Prices',
+    ctaLabel: 'Browse Store Prices',
     ctaRoute: 'store' as AppRoute,
   },
   {
@@ -210,7 +213,7 @@ const PARTNERS = [
 const FAQS = [
   {
     q: 'How can I get an accurate, itemized solar price quote?',
-    a: 'Use our offline-capable Load Estimator to size your appliances using live Storefront prices and submit directly for an engineering HISO reference, or reach our Abuja desk on +234 703 777 0002.',
+    a: 'Use our offline-capable Load Estimator to size your appliances using live Store prices and submit directly for an engineering HISO reference, or reach our Abuja desk on +234 703 777 0002.',
   },
   {
     q: 'Do you work with government ministries and corporate institutions?',
@@ -226,7 +229,7 @@ const FAQS = [
   },
 ];
 
-export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: PublicSiteProps) {
+export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavigate }: PublicSiteProps) {
   const [workflowIdx, setWorkflowIdx] = useState(0);
   const [projectSector, setProjectSector] = useState<'All' | 'Residential' | 'Commercial' | 'Institutional'>('All');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
@@ -312,7 +315,7 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
                 onClick={() => onNavigate('store')}
                 className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-slate-400 px-5 py-3.5 text-sm font-semibold text-white transition-colors hover:border-white hover:bg-white/10"
               >
-                Browse Storefront
+                Browse Store
               </button>
               <button
                 type="button"
@@ -341,7 +344,7 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
           <div className="lg:col-span-6">
             <div className="relative h-full min-h-[300px] overflow-hidden rounded-xl border border-white/15 bg-[#0F2D59] sm:min-h-[360px]">
               <img
-                src="/src/assets/images/hero_solar_array_1794819204906.jpg"
+                src={heroImage}
                 alt="Architectural Nigerian commercial and residential complex powered by HI-SOTECH solar arrays at golden hour"
                 className="h-full w-full object-cover"
                 referrerPolicy="no-referrer"
@@ -589,12 +592,12 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
         </div>
       </section>
 
-      {/* Pricing Tiers & Storefront Snapshot */}
+      {/* Pricing Tiers & Store Snapshot */}
       <section id="pricing" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
         <Reveal>
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="max-w-2xl">
-              <p className="text-xs font-semibold tracking-wider text-[#D61F26]">PACKAGES &amp; STOREFRONT PRICING</p>
+              <p className="text-xs font-semibold tracking-wider text-[#D61F26]">PACKAGES &amp; STORE PRICING</p>
               <h2 className="mt-2 text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white">
                 Transparent packages aligned with live hardware prices.
               </h2>
@@ -604,7 +607,7 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
               onClick={() => onNavigate('store')}
               className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#D61F26]"
             >
-              View Full Storefront
+              View Store
               <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -669,13 +672,13 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
           {catalog.length > 0 && (
             <div className="mt-8 rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
               <div className="flex flex-wrap items-center justify-between gap-4">
-                <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Live Storefront Rate Snapshot</h3>
+                <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Live Store Rate Snapshot</h3>
                 <button
                   type="button"
                   onClick={() => onNavigate('store')}
                   className="text-xs font-semibold text-[#D61F26] hover:underline"
                 >
-                  Open All {catalog.length} Items in Storefront →
+                  Open All {catalog.length} Items in Store →
                 </button>
               </div>
               <div className="mt-4 overflow-x-auto">
@@ -685,7 +688,7 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
                       <th className="py-2.5 pr-4 font-semibold">SKU</th>
                       <th className="py-2.5 pr-4 font-semibold">Equipment / Service</th>
                       <th className="py-2.5 pr-4 font-semibold">Type</th>
-                      <th className="py-2.5 text-right font-semibold">Storefront Price</th>
+                      <th className="py-2.5 text-right font-semibold">Store Price</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -890,14 +893,14 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
           </div>
 
           <div className="flex flex-wrap items-center gap-4 text-xs">
-            <button type="button" onClick={() => onNavigate('store')} className="hover:text-white">
-              Storefront
-            </button>
             <button type="button" onClick={() => onNavigate('estimator')} className="hover:text-white">
               Load Estimator
             </button>
             <button type="button" onClick={() => onNavigate('customer')} className="hover:text-white">
               Customer Portal
+            </button>
+            <button type="button" onClick={() => onNavigate('store')} className="hover:text-white">
+              Store
             </button>
             <button type="button" onClick={() => onNavigate('track')} className="hover:text-white">
               Track Request
@@ -905,11 +908,11 @@ export function PublicSite({ catalog, darkMode, onToggleTheme, onNavigate }: Pub
             <button
               type="button"
               onClick={onToggleTheme}
-              aria-label="Toggle light or dark theme"
+              aria-label={`Theme: ${themeMode}. Change theme`}
               className="inline-flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10"
             >
-              {darkMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-              {darkMode ? 'Light' : 'Dark'}
+              {themeMode === 'system' ? <Monitor className="h-3.5 w-3.5" /> : darkMode ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
+              <span className="capitalize">{themeMode}</span>
             </button>
           </div>
         </div>

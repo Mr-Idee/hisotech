@@ -12,6 +12,8 @@ import {
   LayoutDashboard,
   LifeBuoy,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Receipt,
   RefreshCw,
@@ -70,38 +72,11 @@ interface WorkspaceViewProps {
   onCatalogChange?: (catalog: CatalogItem[]) => void;
 }
 
-const DEMO_ACCOUNTS = [
-  {
-    email: 'superadmin@example.invalid',
-    short: 'Super Admin',
-    label: 'Super Admin · Full Control & Roles',
-    role: 'All Modules & Custom Role Builder',
-  },
-  {
-    email: 'director@example.invalid',
-    short: 'Director',
-    label: 'Demo Director',
-    role: 'Quote Approvals, Payments & Job Release',
-  },
-  {
-    email: 'admin@example.invalid',
-    short: 'Admin',
-    label: 'Demo Admin · Help Desk',
-    role: 'Storefront, Enquiries, Complaints & Quotes',
-  },
-  {
-    email: 'technician@example.invalid',
-    short: 'Technician',
-    label: 'Demo Technician',
-    role: 'Assigned Field Stages & Service Tickets',
-  },
-];
-const SHOW_DEMO_LOGINS = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEMO_LOGIN === 'true';
-
 export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceViewProps) {
   const [data, setData] = useState<WorkspaceBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<WorkspaceTab>('overview');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -126,6 +101,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
   const [catName, setCatName] = useState('');
   const [catType, setCatType] = useState<CatalogItemType>('equipment');
   const [catCategory, setCatCategory] = useState('Accessories');
+  const [catGrade, setCatGrade] = useState('Standard');
   const [catUnit, setCatUnit] = useState('unit');
   const [catPrice, setCatPrice] = useState('45000');
   const [catStock, setCatStock] = useState('10');
@@ -161,6 +137,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
   const [staffModal, setStaffModal] = useState(false);
   const [editStaffId, setEditStaffId] = useState<string | undefined>(undefined);
   const [staffName, setStaffName] = useState('');
+  const [staffUsername, setStaffUsername] = useState('');
   const [staffEmail, setStaffEmail] = useState('');
   const [staffPhone, setStaffPhone] = useState('');
   const [staffRole, setStaffRole] = useState<UserRole>('technician');
@@ -232,11 +209,11 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
       });
   }, [tab, pkgManifest]);
 
-  async function handleLogin(email: string, password: string, demoQuickLogin = false) {
+  async function handleLogin(email: string, password: string) {
     setErrorMsg('');
     setLoginBusy(true);
     try {
-      await api.login(email, password, demoQuickLogin);
+      await api.login(email, password);
       setTab('overview');
       await loadWorkspace();
     } catch (err) {
@@ -316,17 +293,18 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              handleLogin(loginEmail, loginPassword, false);
+              handleLogin(loginEmail, loginPassword);
             }}
             className="mt-6 space-y-4 text-sm"
           >
             <label className="block">
-              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Staff Email</span>
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Username or Email</span>
               <input
-                type="email"
+                type="text"
                 required
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
+                autoComplete="username"
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
               />
             </label>
@@ -349,27 +327,6 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
             </button>
           </form>
 
-          {SHOW_DEMO_LOGINS && (
-            <div className="mt-6 border-t border-slate-200 pt-5 dark:border-slate-800">
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Development-only role preview</p>
-              <div className="mt-3 space-y-2">
-                {DEMO_ACCOUNTS.map((acc) => (
-                  <button
-                    key={acc.email}
-                    type="button"
-                    onClick={() => handleLogin(acc.email, '', true)}
-                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 px-3.5 py-2.5 text-left text-xs transition-colors hover:border-[#D61F26] dark:border-slate-700"
-                  >
-                    <div>
-                      <div className="font-bold text-[#081E3E] dark:text-white">{acc.label}</div>
-                      <div className="text-slate-500 dark:text-slate-400">{acc.role}</div>
-                    </div>
-                    <span className="font-semibold text-[#D61F26]">Enter</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -394,7 +351,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
       icon: LifeBuoy,
       allowed: hasPermission(user, 'manage_tickets'),
     },
-    { id: 'catalog', label: 'Storefront & Prices', icon: Layers, allowed: hasPermission(user, 'manage_storefront') },
+    { id: 'catalog', label: 'Store Items & Prices', icon: Layers, allowed: hasPermission(user, 'manage_storefront') },
     {
       id: 'orders',
       label: `Store Orders (${pendingOrders})`,
@@ -448,33 +405,30 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
   return (
     <div className="mx-auto grid min-h-[calc(100vh-65px)] max-w-7xl lg:grid-cols-12">
       {/* Sidebar */}
-      <aside className="border-b border-slate-200 bg-[#081E3E] p-4 text-slate-200 lg:col-span-3 lg:border-r lg:border-b-0 dark:border-slate-800">
+      <aside className={`border-b border-slate-200 bg-[#081E3E] p-3 text-slate-200 lg:border-r lg:border-b-0 dark:border-slate-800 ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
         <div className="rounded-lg bg-white/10 p-3.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-red-300">
-              {user.roleName || user.role}
-            </span>
-            <PWAInstallButton variant="workspace" />
+            {!sidebarCollapsed && (
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-red-300">
+                {user.roleName || user.role}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+              aria-label={sidebarCollapsed ? 'Expand workspace navigation' : 'Collapse workspace navigation'}
+              aria-expanded={!sidebarCollapsed}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-200 hover:bg-white/10"
+            >
+              {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </button>
           </div>
-          <div className="mt-0.5 text-base font-bold text-white">{user.name}</div>
-          <div className="text-[11px] text-slate-300">{user.title}</div>
-          {SHOW_DEMO_LOGINS && (
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.email}
-                  type="button"
-                  onClick={() => handleLogin(acc.email, '', true)}
-                  className={`rounded px-2 py-0.5 text-[11px] font-medium ${
-                    user.email === acc.email
-                      ? 'bg-[#D61F26] text-white'
-                      : 'bg-white/10 text-slate-300 hover:bg-white/20'
-                  }`}
-                >
-                  {acc.short}
-                </button>
-              ))}
-            </div>
+          {!sidebarCollapsed && (
+            <>
+              <div className="mt-0.5 text-base font-bold text-white">{user.name}</div>
+              <div className="text-[11px] text-slate-300">{user.title}</div>
+              <div className="mt-3"><PWAInstallButton variant="workspace" /></div>
+            </>
           )}
         </div>
 
@@ -489,12 +443,14 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                   key={item.id}
                   type="button"
                   onClick={() => setTab(item.id)}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${
+                  aria-label={item.label}
+                  title={sidebarCollapsed ? item.label : undefined}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${sidebarCollapsed ? 'justify-center' : ''} ${
                     active ? 'bg-[#D61F26] text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
                   }`}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  <span className="truncate">{item.label}</span>
+                  <span className={sidebarCollapsed ? 'sr-only' : 'truncate'}>{item.label}</span>
                 </button>
               );
             })}
@@ -507,16 +463,17 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
               await api.logout();
               setData(null);
             }}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white"
+            aria-label="Sign Out"
+            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white ${sidebarCollapsed ? 'justify-center' : ''}`}
           >
             <LogOut className="h-4 w-4" />
-            Sign Out
+            {!sidebarCollapsed && 'Sign Out'}
           </button>
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className="min-w-0 p-4 sm:p-6 lg:col-span-9 lg:p-8">
+      <main className={`min-w-0 p-4 sm:p-6 lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
         {toastMsg && (
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-sm font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
@@ -560,12 +517,12 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {[
                 { label: 'Enquiries', val: data.enquiries.length, target: 'enquiries' as WorkspaceTab, ok: hasPermission(user, 'manage_enquiries') },
-                { label: 'Storefront Orders', val: pendingOrders, target: 'orders' as WorkspaceTab, ok: hasPermission(user, 'manage_storefront') || hasPermission(user, 'manage_enquiries') || hasPermission(user, 'manage_invoices') },
+                { label: 'Store Orders', val: pendingOrders, target: 'orders' as WorkspaceTab, ok: hasPermission(user, 'manage_storefront') || hasPermission(user, 'manage_enquiries') || hasPermission(user, 'manage_invoices') },
                 { label: 'Open Help Desk Tickets', val: openTicketsCount, target: 'tickets' as WorkspaceTab, ok: hasPermission(user, 'manage_tickets') },
                 { label: 'Quotes Pending Director', val: pendingQuotes, target: 'quotes' as WorkspaceTab, ok: hasPermission(user, 'draft_quotes') || hasPermission(user, 'approve_quotes') },
                 { label: 'Receipts Pending Review', val: pendingPayments, target: 'finance' as WorkspaceTab, ok: hasPermission(user, 'verify_payments') || hasPermission(user, 'manage_invoices') },
                 { label: 'Active Installations', val: data.installations.length, target: 'installations' as WorkspaceTab, ok: hasPermission(user, 'update_installations') || hasPermission(user, 'release_installations') },
-                { label: 'Storefront SKUs', val: data.catalog.length, target: 'catalog' as WorkspaceTab, ok: hasPermission(user, 'manage_storefront') },
+                { label: 'Store Items', val: data.catalog.length, target: 'catalog' as WorkspaceTab, ok: hasPermission(user, 'manage_storefront') },
                 { label: 'Staff & Custom Roles', val: data.roles.length, target: 'staff' as WorkspaceTab, ok: hasPermission(user, 'manage_staff') || hasPermission(user, 'manage_roles') },
                 { label: 'Unread Alerts', val: unreadCount, target: 'notifications' as WorkspaceTab, ok: true },
               ]
@@ -775,16 +732,16 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
           </div>
         )}
 
-        {/* STOREFRONT & CATALOGUE */}
+        {/* STORE ITEMS & CATALOGUE */}
         {tab === 'catalog' && (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">
-                  Storefront Pricing, Images &amp; Appliances
+                  Store Pricing, Images &amp; Appliances
                 </h1>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Price and specification changes here automatically update the public Storefront, Load Estimator, and Quotation Builder.
+                  Price and specification changes here automatically update the public Store, Load Estimator, and Quotation Builder.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -802,6 +759,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                     setCatName('');
                     setCatType('equipment');
                     setCatCategory('Accessories');
+                    setCatGrade('Standard');
                     setCatUnit('unit');
                     setCatPrice('45000');
                     setCatStock('10');
@@ -815,7 +773,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                   }}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
                 >
-                  <Plus className="h-4 w-4" /> Add Storefront Item
+                  <Plus className="h-4 w-4" /> Add Store Item
                 </button>
               </div>
             </div>
@@ -833,7 +791,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                       </div>
                       <div className="p-4">
                         <div className="font-mono-num text-xs text-slate-500">
-                          {c.sku} · <span className="capitalize">{c.itemType}</span> · {c.category}
+                          {c.sku} · <span className="capitalize">{c.itemType}</span> · {c.category} · {c.grade || 'Standard'}
                         </div>
                         <h3 className="mt-1 font-bold text-[#081E3E] dark:text-white">{c.name}</h3>
                         {c.description && (
@@ -859,6 +817,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                           setCatName(c.name);
                           setCatType(c.itemType);
                           setCatCategory(c.category);
+                          setCatGrade(c.grade || 'Standard');
                           setCatUnit(c.unit);
                           setCatPrice(String(c.priceNgn));
                           setCatStock(String(c.stockQty));
@@ -880,7 +839,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                         onClick={async () => {
                           await api.deleteCatalogItem(c.sku);
                           await loadWorkspace();
-                          showToast(`Removed ${c.sku} from Storefront.`);
+                          showToast(`Removed ${c.sku} from Store.`);
                         }}
                         className="inline-flex items-center justify-center rounded-lg border border-slate-200 px-2.5 text-slate-500 hover:border-red-300 hover:text-[#D61F26] dark:border-slate-700"
                       >
@@ -923,7 +882,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
         {tab === 'orders' && (
           <div className="space-y-4">
             <div>
-              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Storefront Customer Orders</h1>
+              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Store Customer Orders</h1>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Manage equipment and appliance checkout orders, update dispatch status, or draft an itemized quote from a linked reference.
               </p>
@@ -932,7 +891,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
             <div className="space-y-4">
               {data.orders.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-[#0B1D39]">
-                  No storefront orders placed yet.
+                  No Store orders placed yet.
                 </div>
               ) : (
                 data.orders.map((ord) => {
@@ -1151,7 +1110,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                           onClick={async () => {
                             const inv = await api.issueInvoice(q.id);
                             await loadWorkspace();
-                            showToast(`Issued proforma invoice ${inv.invoiceCode}.`);
+                            showToast(`Issued invoice ${inv.invoiceCode}.`);
                           }}
                           className="rounded-lg bg-[#D61F26] px-3 py-1.5 text-xs font-semibold text-white"
                         >
@@ -1249,12 +1208,13 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
             <section className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-xl font-bold text-[#081E3E] dark:text-white">Staff Accounts</h2>
-                {hasPermission(user, 'manage_staff') && (
+                {user.role === 'superadmin' && (
                   <button
                     type="button"
                     onClick={() => {
                       setEditStaffId(undefined);
                       setStaffName('');
+                      setStaffUsername('');
                       setStaffEmail('');
                       setStaffPhone('');
                       setStaffRole('technician');
@@ -1294,6 +1254,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                           onClick={() => {
                             setEditStaffId(s.id);
                             setStaffName(s.name);
+                            setStaffUsername(s.username || '');
                             setStaffEmail(s.email);
                             setStaffPhone(s.phone);
                             setStaffRole(s.role);
@@ -1509,7 +1470,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
             <div className="mt-4 space-y-3 text-sm">
               <input
                 type="text"
-                required
+                required={!editStaffId}
                 placeholder="Customer / Organization Name *"
                 value={enqName}
                 onChange={(e) => setEnqName(e.target.value)}
@@ -1573,9 +1534,9 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
         </div>
       )}
 
-      {/* Storefront / Catalogue Modal */}
+      {/* Store / Catalogue Modal */}
       {catModal && (
-        <div role="dialog" aria-modal="true" aria-label="Storefront Item and Pricing" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
+        <div role="dialog" aria-modal="true" aria-label="Store Item and Pricing" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
           <form
             onSubmit={async (e) => {
               e.preventDefault();
@@ -1585,6 +1546,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                 name: catName,
                 itemType: catType,
                 category: catCategory,
+                grade: catGrade,
                 unit: catUnit,
                 priceNgn: Number(catPrice),
                 stockQty: Number(catStock),
@@ -1597,13 +1559,13 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
               });
               setCatModal(false);
               await loadWorkspace();
-              showToast(`Storefront item ${catSku} updated & synced to Load Estimator.`);
+              showToast(`Store item ${catSku} updated & synced to Load Estimator.`);
             }}
             className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
           >
-            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Storefront Item &amp; Pricing</h3>
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Store Item &amp; Pricing</h3>
             <div className="mt-4 space-y-3 text-sm">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <input
                   type="text"
                   required
@@ -1629,6 +1591,15 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                   onChange={(e) => setCatCategory(e.target.value)}
                   className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
                 />
+                <input
+                  type="text"
+                  required
+                  maxLength={60}
+                  placeholder="Grade"
+                  value={catGrade}
+                  onChange={(e) => setCatGrade(e.target.value)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
               </div>
               <input
                 type="text"
@@ -1640,7 +1611,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
               />
               <textarea
                 rows={2}
-                placeholder="Technical description shown on public Storefront..."
+                placeholder="Technical description shown in the public Store..."
                 value={catDescription}
                 onChange={(e) => setCatDescription(e.target.value)}
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
@@ -1676,7 +1647,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                     className="font-mono-num mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
                   />
                 </label>
-                {catType === 'appliance' ? (
+                {catType === 'appliance' || catCategory === 'Solar Panels' ? (
                   <label className="block text-xs">
                     <span className="text-slate-500">Watts</span>
                     <input
@@ -1689,7 +1660,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                   </label>
                 ) : (
                   <label className="block text-xs">
-                    <span className="text-slate-500">kW (opt.)</span>
+                    <span className="text-slate-500">{catCategory === 'Battery Storage' ? 'kWh capacity' : 'kW capacity'}</span>
                     <input
                       type="number"
                       step="0.5"
@@ -1731,7 +1702,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                 Cancel
               </button>
               <button type="submit" className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white">
-                Save &amp; Sync Storefront
+                Save &amp; Sync Store
               </button>
             </div>
           </form>
@@ -1750,12 +1721,12 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                 type="button"
                 onClick={() => {
                   setQuoteItems((prev) => syncLineItemsWithCatalog(prev, data.catalog));
-                  showToast('Synced quote line items with latest Storefront prices.');
+                  showToast('Synced quote line items with latest Store prices.');
                 }}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-[#081E3E] hover:border-[#D61F26] dark:border-slate-600 dark:text-white"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                Sync Storefront Prices
+                Sync Store Prices
               </button>
             </div>
 
@@ -2097,6 +2068,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                 await api.saveStaff({
                   id: editStaffId,
                   name: staffName,
+                  username: staffUsername,
                   email: staffEmail,
                   phone: staffPhone,
                   role: staffRole,
@@ -2137,6 +2109,18 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 disabled:opacity-60 dark:border-slate-700 dark:bg-[#061327]"
               />
               <input
+                type="text"
+                required
+                maxLength={50}
+                pattern="[A-Za-z0-9._-]{3,50}"
+                placeholder="Username (3–50 characters)"
+                value={staffUsername}
+                onChange={(e) => setStaffUsername(e.target.value)}
+                autoComplete="username"
+                disabled={Boolean(editStaffId && user.role !== 'superadmin')}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+              <input
                 type="tel"
                 required
                 placeholder="Phone"
@@ -2148,6 +2132,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
                 <select
                   value={staffRole}
                   onChange={(e) => setStaffRole(e.target.value as UserRole)}
+                  disabled={user.role !== 'superadmin'}
                   className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
                 >
                   {data.roles.map((r) => (
