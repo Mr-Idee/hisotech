@@ -7,6 +7,7 @@ import type {
   ServiceTicket,
   TicketCategory,
 } from '../lib/types';
+import { PushSubscriptionControl } from './PushSubscriptionControl';
 
 export function CustomerProfileView() {
   const [profile, setProfile] = useState<CustomerProfile | null>(null);
@@ -28,6 +29,9 @@ export function CustomerProfileView() {
   const [profLocation, setProfLocation] = useState('');
   const [profCompany, setProfCompany] = useState('');
   const [profRef, setProfRef] = useState('');
+  const [emailMarketingConsent, setEmailMarketingConsent] = useState(false);
+  const [whatsappMarketingConsent, setWhatsappMarketingConsent] = useState(false);
+  const [whatsappUpdatesConsent, setWhatsappUpdatesConsent] = useState(false);
 
   // Equipment Add state
   const [eqType, setEqType] = useState('Hybrid Inverter');
@@ -56,6 +60,9 @@ export function CustomerProfileView() {
     setProfile(data.profile);
     setEquipment(data.equipment);
     setTickets(data.tickets);
+    setEmailMarketingConsent(Boolean(data.profile.emailMarketingConsent));
+    setWhatsappMarketingConsent(Boolean(data.profile.whatsappMarketingConsent));
+    setWhatsappUpdatesConsent(Boolean(data.profile.whatsappUpdatesConsent));
     setProfName(data.profile.name);
     setProfPhone(data.profile.phone);
     setProfLocation(data.profile.location);
@@ -133,11 +140,39 @@ export function CustomerProfileView() {
         refCode: profRef,
       });
       setProfile(res.profile);
+      setEmailMarketingConsent(Boolean(res.profile.emailMarketingConsent));
+      setWhatsappMarketingConsent(Boolean(res.profile.whatsappMarketingConsent));
+      setWhatsappUpdatesConsent(Boolean(res.profile.whatsappUpdatesConsent));
       setNotice('Customer profile details updated.');
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleSaveConsents(e: React.FormEvent) {
+      e.preventDefault();
+      setError('');
+      setNotice('');
+      setBusy(true);
+      try {
+        const result = await api.saveCustomerMarketingConsent({
+          email: emailMarketingConsent,
+          whatsapp: whatsappMarketingConsent,
+          whatsappUpdates: whatsappUpdatesConsent,
+        });
+        setProfile((current) => current ? {
+          ...current,
+          emailMarketingConsent: result.emailMarketingConsent,
+          whatsappMarketingConsent: result.whatsappMarketingConsent,
+          whatsappUpdatesConsent: result.whatsappUpdatesConsent,
+        } : current);
+        setNotice('Your marketing communication preferences were saved.');
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setBusy(false);
     }
   }
 
@@ -355,7 +390,7 @@ export function CustomerProfileView() {
               </label>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="block">
-                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Phone / WhatsApp</span>
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">WhatsApp Number</span>
                   <input
                     type="tel"
                     value={profPhone}
@@ -401,6 +436,35 @@ export function CustomerProfileView() {
               Update Profile Information
             </button>
           </form>
+
+          <form onSubmit={handleSaveConsents}
+            className="rounded-xl border border-slate-200 bg-white p-4 sm:p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Optional marketing preferences</h2>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              These choices are optional and separate. You can withdraw consent at any time.
+            </p>
+            <label className="mt-4 flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={emailMarketingConsent}
+                onChange={(event) => setEmailMarketingConsent(event.target.checked)} className="mt-0.5" />
+              <span>I explicitly agree to receive HI-SOTECH newsletters and promotional emails at {profile.email}.</span>
+            </label>
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={whatsappMarketingConsent}
+                onChange={(event) => setWhatsappMarketingConsent(event.target.checked)} className="mt-0.5" />
+              <span>I explicitly agree to receive HI-SOTECH marketing messages on WhatsApp at {profile.phone || 'my saved phone number'}.</span>
+            </label>
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={whatsappUpdatesConsent}
+                onChange={(event) => setWhatsappUpdatesConsent(event.target.checked)} className="mt-0.5" />
+              <span>I separately agree to receive service updates about my enquiries, quotations, invoices, tickets, and installations on WhatsApp.</span>
+            </label>
+            <button type="submit" disabled={busy}
+              className="mt-4 rounded-lg border border-[#081E3E] px-4 py-2 text-xs font-semibold text-[#081E3E] hover:bg-[#081E3E] hover:text-white dark:border-slate-600 dark:text-white disabled:opacity-60">
+              Save marketing preferences
+            </button>
+          </form>
+
+          <PushSubscriptionControl />
 
           {/* Registered Solar Equipment */}
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">

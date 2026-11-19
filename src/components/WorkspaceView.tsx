@@ -7,11 +7,13 @@ import {
   ExternalLink,
   FileSpreadsheet,
   FileText,
+  Globe2,
   HardHat,
   Layers,
   LayoutDashboard,
   LifeBuoy,
   LogOut,
+  MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -48,9 +50,12 @@ import type {
   UserRole,
   WorkspaceBootstrap,
 } from '../lib/types';
+import type { HomepageContent } from '../lib/homepage';
 import { PWAInstallButton } from './PWAInstallButton';
 import { WorkspaceFinance } from './WorkspaceFinance';
 import { WorkspaceInstallations } from './WorkspaceInstallations';
+import { WebsiteEditorView } from './WebsiteEditorView';
+import { WorkspaceCommunications } from './WorkspaceCommunications';
 
 type WorkspaceTab =
   | 'overview'
@@ -64,15 +69,18 @@ type WorkspaceTab =
   | 'installations'
   | 'staff'
   | 'notifications'
+  | 'communications'
   | 'audit'
-  | 'cpanel';
+  | 'cpanel'
+  | 'website';
 
 interface WorkspaceViewProps {
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
   onCatalogChange?: (catalog: CatalogItem[]) => void;
+  onHomepageChange?: (content: HomepageContent) => void;
 }
 
-export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceViewProps) {
+export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChange }: WorkspaceViewProps) {
   const [data, setData] = useState<WorkspaceBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<WorkspaceTab>('overview');
@@ -392,8 +400,10 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
       allowed: hasPermission(user, 'manage_staff') || hasPermission(user, 'manage_roles'),
     },
     { id: 'notifications', label: `Notifications (${unreadCount})`, icon: Bell, allowed: true },
+    { id: 'communications', label: 'Communications', icon: MessageSquareText, allowed: hasPermission(user, 'manage_communications') },
     { id: 'audit', label: 'Audit Trail', icon: ShieldCheck, allowed: hasPermission(user, 'view_audit') },
     { id: 'cpanel', label: 'cPanel PHP + MySQL', icon: Database, allowed: true },
+    { id: 'website', label: 'Website Builder', icon: Globe2, allowed: user.role === 'superadmin' },
   ];
 
   const quoteTotals = calculateDocumentTotals(
@@ -1342,6 +1352,14 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange }: WorkspaceView
               </table>
             </div>
           </div>
+        )}
+
+        {tab === 'website' && (
+          <WebsiteEditorView onSaved={onHomepageChange} />
+        )}
+
+        {tab === 'communications' && hasPermission(user, 'manage_communications') && (
+          <WorkspaceCommunications staff={data.staff} />
         )}
 
         {/* CPANEL PHP + MYSQL EXPORT */}

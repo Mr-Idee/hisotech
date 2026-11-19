@@ -29,6 +29,8 @@ interface PendingOfflineEstimate {
   needSummary: string;
   appliances: ApplianceItem[];
   estimate: SolarEstimateResult;
+  whatsappUpdatesConsent?: boolean;
+  whatsappMarketingConsent?: boolean;
 }
 
 const OFFLINE_QUEUE_KEY = 'hiso_offline_estimates_queue';
@@ -83,6 +85,8 @@ export function EstimatorView({
   const [email, setEmail] = useState('');
   const [location, setLocation] = useState('');
   const [needSummary, setNeedSummary] = useState('');
+  const [whatsappUpdatesConsent, setWhatsappUpdatesConsent] = useState(false);
+  const [whatsappMarketingConsent, setWhatsappMarketingConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [error, setError] = useState('');
@@ -162,6 +166,8 @@ export function EstimatorView({
           needSummary: item.needSummary,
           appliances: item.appliances,
           estimate: item.estimate,
+          whatsappUpdatesConsent: item.whatsappUpdatesConsent,
+          whatsappMarketingConsent: item.whatsappMarketingConsent,
         });
         lastUploadedRef = res.refCode;
       } catch {
@@ -236,6 +242,8 @@ export function EstimatorView({
         `Offline ${powerMode} load estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day.`,
       appliances,
       estimate: { ...estimate, estimatedTotalNgn: hasCatalogPricing ? costBreakdown.total : undefined },
+      whatsappUpdatesConsent,
+      whatsappMarketingConsent,
     };
 
     const next = [entry, ...offlineQueue];
@@ -276,6 +284,8 @@ export function EstimatorView({
           `${powerMode} solar estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day${hasCatalogPricing ? `, est. ${formatNgn(costBreakdown.total)}` : ''}.`,
         appliances,
         estimate: finalEstimate,
+        whatsappUpdatesConsent,
+        whatsappMarketingConsent,
       });
       setSubmittedRef(res.refCode);
     } catch {
@@ -685,13 +695,13 @@ export function EstimatorView({
                   </label>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <label className="block min-w-0">
-                      <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Phone / WhatsApp *</span>
+                      <span className="text-xs font-medium text-slate-600 dark:text-slate-300">WhatsApp Number *</span>
                       <input
                         type="tel"
                         required
                         value={phone}
                         onChange={(e) => setPhone(e.target.value)}
-                        placeholder="+234 803..."
+                        placeholder="+2348030000000"
                         className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-white"
                       />
                     </label>
@@ -726,6 +736,19 @@ export function EstimatorView({
                       placeholder="Roof type, generator changeover, or preferred contact time..."
                       className="mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-white"
                     />
+                  </label>
+                </div>
+
+                <div className="mt-4 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                  <label className="flex items-start gap-2">
+                    <input type="checkbox" checked={whatsappUpdatesConsent}
+                      onChange={(event) => setWhatsappUpdatesConsent(event.target.checked)} className="mt-0.5" />
+                    <span>Optional: I agree to WhatsApp updates about this enquiry, quotes, invoices, and installation. I can withdraw consent at any time.</span>
+                  </label>
+                  <label className="flex items-start gap-2">
+                    <input type="checkbox" checked={whatsappMarketingConsent}
+                      onChange={(event) => setWhatsappMarketingConsent(event.target.checked)} className="mt-0.5" />
+                    <span>Optional: I separately agree to promotional WhatsApp messages. I can withdraw consent at any time.</span>
                   </label>
                 </div>
 

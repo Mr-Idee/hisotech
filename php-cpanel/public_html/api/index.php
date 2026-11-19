@@ -13,6 +13,7 @@ if (!is_dir($privateDir)) {
 
 require_once $privateDir . '/config.php';
 require_once $privateDir . '/auth.php';
+require_once $privateDir . '/communications.php';
 require_once $privateDir . '/upload.php';
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -324,6 +325,106 @@ function hiso_hydrate_workspace(array $user): array {
 }
 
 try {
+    if ($method === 'GET' && $route === 'push/config') {
+        global $CONFIG;
+        $publicKey = trim((string)($CONFIG['VAPID_PUBLIC_KEY'] ?? ''));
+        $publicBytes = hiso_b64url_decode($publicKey);
+        $privateBytes = hiso_b64url_decode((string)($CONFIG['VAPID_PRIVATE_KEY'] ?? ''));
+        $subject = trim((string)($CONFIG['VAPID_SUBJECT'] ?? ''));
+        if ($publicBytes === false || $privateBytes === false
+            || !hiso_vapid_key_pair_is_valid($privateBytes, $publicBytes)
+            || !preg_match('/^(mailto:[^@\s]+@[^@\s]+|https:\/\/[^\/\s]+)$/', $subject)) {
+            hiso_json_response(['error' => 'Web Push is not configured correctly on the private server.'], 503);
+        }
+        hiso_json_response(['publicKey' => $publicKey]);
+    }
+
+    if ($method === 'GET' && $route === 'website/content') {
+        $rows = hiso_pdo()->query('SELECT section_id, heading, body, enabled FROM homepage_sections')
+            ->fetchAll(PDO::FETCH_ASSOC);
+        $homepage = [];
+        foreach ($rows as $row) {
+            $homepage[(string)$row['section_id']] = [
+                'heading' => (string)$row['heading'],
+                'body' => (string)$row['body'],
+                'enabled' => (bool)$row['enabled'],
+            ];
+        }
+        hiso_json_response(['homepage' => $homepage]);
+    }
+
+    if ($method === 'POST' && $route === 'website/content') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        if (($user['role'] ?? '') !== 'superadmin') {
+            hiso_json_response(['error' => 'Superuser access required.'], 403);
+        }
+
+        $body = hiso_json_body();
+        $homepage = $body['homepage'] ?? null;
+        $sectionIds = ['hero', 'workflow', 'about', 'services', 'projects', 'pricing'];
+        if (!is_array($homepage)) {
+            hiso_json_response(['error' => 'Homepage sections are invalid.'], 422);
+        }
+
+        $validated = [];
+        foreach ($sectionIds as $sectionId) {
+            $section = $homepage[$sectionId] ?? null;
+            if (
+                !is_array($section) ||
+                !isset($section['heading'], $section['body'], $section['enabled']) ||
+                !is_string($section['heading']) ||
+                trim($section['heading']) === '' ||
+                strlen($section['heading']) > 180 ||
+                !is_string($section['body']) ||
+                strlen($section['body']) > 1200 ||
+                !is_bool($section['enabled'])
+            ) {
+                hiso_json_response(['error' => 'Homepage sections are invalid.'], 422);
+            }
+            $validated[$sectionId] = [
+                'heading' => trim($section['heading']),
+                'body' => trim($section['body']),
+                'enabled' => $section['enabled'],
+            ];
+        }
+
+        $pdo = hiso_pdo();
+        $statement = $pdo->prepare(
+            'INSERT INTO homepage_sections (section_id, heading, body, enabled, updated_by) VALUES (?, ?, ?, ?, ?) ' .
+            'ON DUPLICATE KEY UPDATE heading = VALUES(heading), body = VALUES(body), enabled = VALUES(enabled), ' .
+            'updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP'
+        );
+        $pdo->beginTransaction();
+        try {
+            foreach ($validated as $sectionId => $section) {
+                $statement->execute([
+                    $sectionId,
+                    $section['heading'],
+                    $section['body'],
+                    $section['enabled'] ? 1 : 0,
+                    $user['id'],
+                ]);
+            }
+            $pdo->commit();
+        } catch (Throwable $error) {
+            $pdo->rollBack();
+            throw $error;
+        }
+
+        $rows = $pdo->query('SELECT section_id, heading, body, enabled FROM homepage_sections')
+            ->fetchAll(PDO::FETCH_ASSOC);
+        $savedHomepage = [];
+        foreach ($rows as $row) {
+            $savedHomepage[(string)$row['section_id']] = [
+                'heading' => (string)$row['heading'],
+                'body' => (string)$row['body'],
+                'enabled' => (bool)$row['enabled'],
+            ];
+        }
+        hiso_json_response(['homepage' => $savedHomepage]);
+    }
+
     if ($method === 'GET' && $route === 'public/bootstrap') {
         hiso_json_response(['catalog' => hiso_hydrate_catalog()]);
     }
@@ -333,8 +434,16 @@ try {
         $name = trim((string)($body['customerName'] ?? ''));
         $phone = trim((string)($body['phone'] ?? ''));
         $location = trim((string)($body['location'] ?? ''));
+        $updatesConsent = $body['whatsappUpdatesConsent'] ?? false;
+        $marketingConsent = $body['whatsappMarketingConsent'] ?? false;
         if ($name === '' || $phone === '' || $location === '') {
             hiso_json_response(['error' => 'Name, phone number, and site location are required.'], 422);
+        }
+        if (!is_bool($updatesConsent) || !is_bool($marketingConsent)) {
+            hiso_json_response(['error' => 'WhatsApp consent choices are invalid.'], 422);
+        }
+        if (($updatesConsent || $marketingConsent) && !preg_match('/^\+[1-9][0-9]{7,14}$/', $phone)) {
+            hiso_json_response(['error' => 'WhatsApp consent requires a valid E.164 phone number.'], 422);
         }
         $id = hiso_uuid();
         $ref = hiso_next_code('enquiries', 'ref_code', 'HISO');
@@ -346,7 +455,14 @@ try {
             json_encode($body['appliances'] ?? []),
             json_encode($body['estimate'] ?? null),
         ]);
+        if ($updatesConsent) {
+            hiso_save_whatsapp_recipient_consent('enquiry', $id, 'operational', $phone, true, 'public_enquiry_form');
+        }
+        if ($marketingConsent) {
+            hiso_save_whatsapp_recipient_consent('enquiry', $id, 'marketing', $phone, true, 'public_enquiry_form');
+        }
         hiso_notify_roles(['superadmin', 'director', 'admin'], 'New solar enquiry ' . $ref, $name . ' (' . $location . ') submitted an enquiry.', 'enquiries', $id);
+        hiso_send_lifecycle_whatsapp('new_enquiry', 'enquiry', $id, 'New enquiry ' . $ref . ' received. Our team will follow up.');
         hiso_audit(['name' => $name, 'role' => 'customer'], 'CREATE_ENQUIRY', 'Enquiry', $ref, 'Public enquiry submitted.');
         hiso_json_response(['refCode' => $ref, 'id' => $id], 201);
     }
@@ -494,7 +610,9 @@ try {
 
     if ($method === 'POST' && $route === 'public/accept-invoice') {
         $body = hiso_json_body();
-        hiso_pdo()->prepare('UPDATE invoices SET customer_accepted = 1, accepted_at = NOW() WHERE id = ?')->execute([(string)($body['invoiceId'] ?? '')]);
+        $invoiceId = (string)($body['invoiceId'] ?? '');
+        hiso_pdo()->prepare('UPDATE invoices SET customer_accepted = 1, accepted_at = NOW() WHERE id = ?')->execute([$invoiceId]);
+        hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invoiceId, 'Your invoice was acknowledged.');
         hiso_json_response(['accepted' => true]);
     }
 
@@ -655,16 +773,64 @@ try {
             hiso_json_response(['error' => 'Customer profile details are invalid or too long.'], 422);
         }
         $pdo = hiso_pdo();
+        $previousPhoneStmt = $pdo->prepare('SELECT phone FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL LIMIT 1');
+        $previousPhoneStmt->execute([$customer['id']]);
+        $previousPhone = (string)($previousPhoneStmt->fetchColumn() ?: '');
         $pdo->prepare('UPDATE customer_profiles SET name=?, phone=?, location=?, company=?, ref_code=? WHERE id=? AND email_verified_at IS NOT NULL')
             ->execute([$name, $phone, $location, $company, $refCode, $customer['id']]);
+        if (trim($previousPhone) !== $phone) {
+            $pdo->prepare('UPDATE communications_consents SET revoked_at = UTC_TIMESTAMP(), updated_at = UTC_TIMESTAMP() WHERE customer_id = ? AND channel = "whatsapp" AND revoked_at IS NULL')
+                ->execute([$customer['id']]);
+            $pdo->prepare('UPDATE whatsapp_recipient_consents SET revoked_at = UTC_TIMESTAMP() WHERE recipient_type = "customer" AND recipient_id = ? AND revoked_at IS NULL')
+                ->execute([$customer['id']]);
+        }
         $stmt = $pdo->prepare('SELECT id, name, email, phone, location, company, ref_code, created_at FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL');
         $stmt->execute([$customer['id']]);
         $updated = $stmt->fetch();
         if (!$updated) hiso_json_response(['error' => 'Verified customer profile not found.'], 404);
+        $consents = hiso_customer_consent_state((string)$updated['id']);
         hiso_json_response(['profile' => [
             'id' => $updated['id'], 'name' => $updated['name'], 'email' => $updated['email'], 'phone' => $updated['phone'],
             'location' => $updated['location'], 'company' => $updated['company'], 'refCode' => $updated['ref_code'], 'createdAt' => $updated['created_at'],
+            'emailMarketingConsent' => $consents['email'],
+            'whatsappMarketingConsent' => $consents['whatsapp'],
+            'whatsappUpdatesConsent' => hiso_customer_whatsapp_updates_consent((string)$updated['id'], (string)$updated['phone']),
         ]]);
+    }
+
+    if ($method === 'POST' && $route === 'customer/communications/consent') {
+        $customer = hiso_require_customer();
+        $body = hiso_json_body();
+        if (!is_bool($body['email'] ?? null) || !is_bool($body['whatsapp'] ?? null) || !is_bool($body['whatsappUpdates'] ?? null)) {
+            hiso_json_response(['error' => 'Email, WhatsApp marketing, and WhatsApp service-update consent choices are required.'], 422);
+        }
+        if (($body['whatsapp'] || $body['whatsappUpdates']) && !preg_match('/^\+[1-9][0-9]{7,14}$/', trim((string)$customer['phone']))) {
+            hiso_json_response(['error' => 'Save a valid E.164 phone number (+country code and digits) before opting in to WhatsApp.'], 422);
+        }
+        $pdo = hiso_pdo();
+        $save = $pdo->prepare(
+            'INSERT INTO communications_consents (customer_id, channel, consented_at, revoked_at) VALUES (?, ?, ?, ?) ' .
+            'ON DUPLICATE KEY UPDATE consented_at = IF(VALUES(consented_at) IS NOT NULL AND (consented_at IS NULL OR revoked_at IS NOT NULL), VALUES(consented_at), consented_at), ' .
+            'revoked_at = VALUES(revoked_at), updated_at = CURRENT_TIMESTAMP'
+        );
+        foreach (['email' => $body['email'], 'whatsapp' => $body['whatsapp']] as $channel => $enabled) {
+            $now = gmdate('Y-m-d H:i:s');
+            $save->execute([$customer['id'], $channel, $enabled ? $now : null, $enabled ? null : $now]);
+        }
+        hiso_save_whatsapp_recipient_consent(
+            'customer',
+            (string)$customer['id'],
+            'operational',
+            trim((string)$customer['phone']),
+            $body['whatsappUpdates'],
+            'customer_portal'
+        );
+        hiso_json_response([
+            'ok' => true,
+            'emailMarketingConsent' => $body['email'],
+            'whatsappMarketingConsent' => $body['whatsapp'],
+            'whatsappUpdatesConsent' => $body['whatsappUpdates'],
+        ]);
     }
 
     if ($method === 'POST' && $route === 'customer/equipment') {
@@ -725,6 +891,7 @@ try {
             $equipmentId !== '' ? $equipmentId : null, $eqSummary, $category, $priority, $subject, $description,
         ]);
         hiso_notify_roles(['admin', 'superadmin', 'director'], 'New ' . $category . ': ' . $code, $customer['name'] . ' — ' . $subject, 'tickets', $code);
+        hiso_send_lifecycle_whatsapp('ticket_status', 'ticket', $code, 'Service ticket ' . $code . ' was received.');
         hiso_audit(['name' => $customer['name'], 'role' => 'customer'], 'CREATE_TICKET', 'ServiceTicket', $code, 'Customer filed ' . $category);
         $tStmt = $pdo->prepare('SELECT * FROM service_tickets WHERE customer_id = ? ORDER BY created_at DESC');
         $tStmt->execute([$customer['id']]);
@@ -831,6 +998,293 @@ try {
         hiso_json_response(hiso_hydrate_workspace($user));
     }
 
+    if ($method === 'GET' && $route === 'communications/my-whatsapp-consent') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        $operational = hiso_whatsapp_consent_contact('staff', (string)$user['id'], 'operational');
+        $marketing = hiso_whatsapp_consent_contact('staff', (string)$user['id'], 'marketing');
+        hiso_json_response([
+            'operational' => $operational !== null,
+            'marketing' => $marketing !== null,
+            'phone' => (string)($user['phone'] ?? ''),
+        ]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/my-whatsapp-consent') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        $body = hiso_json_body();
+        if (!is_bool($body['operational'] ?? null) || !is_bool($body['marketing'] ?? null)) {
+            hiso_json_response(['error' => 'Explicit operational and marketing consent choices are required.'], 422);
+        }
+        try {
+            $phone = trim((string)($user['phone'] ?? ''));
+            hiso_save_whatsapp_recipient_consent('staff', (string)$user['id'], 'operational', $phone, $body['operational'], 'staff_self_service');
+            hiso_save_whatsapp_recipient_consent('staff', (string)$user['id'], 'marketing', $phone, $body['marketing'], 'staff_self_service');
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+        hiso_json_response(['operational' => $body['operational'], 'marketing' => $body['marketing']]);
+    }
+
+    if ($method === 'GET' && $route === 'communications/contacts') {
+        $user = hiso_require_permission('manage_communications');
+        $pushCustomers = hiso_pdo()->query(
+            "SELECT DISTINCT c.id, c.name FROM customer_profiles c JOIN push_subscriptions p ON p.owner_id = c.id " .
+            "WHERE p.owner_type = 'customer' AND c.email_verified_at IS NOT NULL ORDER BY c.name LIMIT 500"
+        )->fetchAll(PDO::FETCH_ASSOC);
+        hiso_json_response([
+            'email' => hiso_marketing_contacts('email'),
+            'whatsapp' => hiso_whatsapp_consent_contacts('marketing'),
+            'whatsappOperational' => hiso_whatsapp_consent_contacts('operational'),
+            'pushCustomers' => $pushCustomers,
+            'myWhatsappConsents' => [
+                'operational' => hiso_whatsapp_consent_contact('staff', (string)$user['id'], 'operational') !== null,
+                'marketing' => hiso_whatsapp_consent_contact('staff', (string)$user['id'], 'marketing') !== null,
+                'phone' => (string)($user['phone'] ?? ''),
+            ],
+        ]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/whatsapp') {
+        $user = hiso_require_permission('manage_communications');
+        hiso_require_communications_rate_limit($user, 'whatsapp-single', 30);
+        $body = hiso_json_body();
+        $recipientType = (string)($body['recipientType'] ?? '');
+        $recipientId = trim((string)($body['recipientId'] ?? ''));
+        if (!in_array($recipientType, ['customer', 'staff', 'enquiry'], true) || $recipientId === '' || !is_string($body['message'] ?? null)) {
+            hiso_json_response(['error' => 'Select a recipient with active WhatsApp marketing consent and enter a message.'], 422);
+        }
+        $message = trim((string)($body['message'] ?? ''));
+        $messageLength = preg_match_all('/./us', $message);
+        if ($message === '' || $messageLength === false || $messageLength > 1024 || strlen($message) > 4096) {
+            hiso_json_response(['error' => 'Enter a template body parameter of at most 1024 characters.'], 422);
+        }
+        $contact = hiso_whatsapp_consent_contact($recipientType, $recipientId, 'marketing');
+        if (!$contact) hiso_json_response(['error' => 'This recipient has not opted in to WhatsApp marketing or has withdrawn consent.'], 422);
+        $attachments = $body['attachments'] ?? [];
+        if (!is_array($attachments) || count($attachments) > 1) {
+            hiso_json_response(['error' => 'A WhatsApp message may include at most one image or PDF attachment.'], 422);
+        }
+        try {
+            $media = count($attachments) ? hiso_validate_whatsapp_media($attachments[0]) : null;
+            $config = hiso_whatsapp_template_config('manual', $media['mime'] ?? null);
+            $mediaId = $media ? hiso_whatsapp_upload_media($config, $media) : null;
+            hiso_whatsapp_send_template($config, (string)$contact['phone'], $message, $mediaId, $media['mime'] ?? null);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        } catch (Throwable $error) {
+            $configured = str_contains(strtolower($error->getMessage()), 'not configured')
+                || str_contains(strtolower($error->getMessage()), 'configuration')
+                || str_contains(strtolower($error->getMessage()), 'template header');
+            hiso_json_response(['error' => $configured ? $error->getMessage() : 'WhatsApp provider delivery failed. Check private configuration and provider status.'], $configured ? 503 : 502);
+        }
+        hiso_audit($user, 'SEND_WHATSAPP_MARKETING', ucfirst($recipientType), $recipientId, 'Sent approved-template WhatsApp marketing message.');
+        hiso_json_response(['ok' => true]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/whatsapp-newsletter') {
+        $user = hiso_require_permission('manage_communications');
+        hiso_require_communications_rate_limit($user, 'whatsapp-newsletter', 3);
+        $body = hiso_json_body();
+        $message = trim((string)($body['message'] ?? ''));
+        $length = preg_match_all('/./us', $message);
+        $recipients = $body['recipients'] ?? null;
+        $attachments = $body['attachments'] ?? [];
+        if ($message === '' || $length === false || $length > 1024 || strlen($message) > 4096) {
+            hiso_json_response(['error' => 'WhatsApp newsletter template text is required and limited to 1024 characters.'], 422);
+        }
+        if (!is_array($recipients) || count($recipients) < 1 || count($recipients) > 200
+            || !is_array($attachments) || count($attachments) > 1) {
+            hiso_json_response(['error' => 'Select 1–200 recipients and at most one validated image or PDF attachment.'], 422);
+        }
+        $contacts = [];
+        foreach ($recipients as $recipient) {
+            if (!is_array($recipient) || !in_array($recipient['recipientType'] ?? null, ['customer', 'staff', 'enquiry'], true)
+                || !is_string($recipient['recipientId'] ?? null)) {
+                hiso_json_response(['error' => 'Recipient selection is invalid.'], 422);
+            }
+            $contact = hiso_whatsapp_consent_contact((string)$recipient['recipientType'], (string)$recipient['recipientId'], 'marketing');
+            if (!$contact) hiso_json_response(['error' => 'One or more recipients lack active WhatsApp marketing consent.'], 422);
+            $contacts[] = $contact;
+        }
+        try {
+            $media = count($attachments) ? hiso_validate_whatsapp_media($attachments[0]) : null;
+            $config = hiso_whatsapp_template_config('newsletter', $media['mime'] ?? null);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        } catch (Throwable $error) {
+            hiso_json_response(['error' => $error->getMessage()], 503);
+        }
+        try {
+            $mediaId = $media ? hiso_whatsapp_upload_media($config, $media) : null;
+            foreach ($contacts as $contact) {
+                hiso_whatsapp_send_template($config, (string)$contact['phone'], $message, $mediaId, $media['mime'] ?? null);
+            }
+        } catch (Throwable $error) {
+            $status = str_contains($error->getMessage(), 'HTTP ') ? 502 : 503;
+            hiso_json_response(['error' => $status === 503 ? $error->getMessage() : 'WhatsApp newsletter delivery failed.'], $status);
+        }
+        hiso_audit($user, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', hiso_uuid(), 'Sent to ' . count($contacts) . ' marketing-consented recipients.');
+        hiso_json_response(['ok' => true, 'delivered' => count($contacts)]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/newsletter') {
+        $user = hiso_require_permission('manage_communications');
+        hiso_require_communications_rate_limit($user, 'email-newsletter', 3);
+        $body = hiso_json_body();
+        if (!is_string($body['subject'] ?? null) || !is_string($body['message'] ?? null)) {
+            hiso_json_response(['error' => 'Newsletter subject and message are required.'], 422);
+        }
+        $attachments = $body['attachments'] ?? [];
+        if (!is_array($attachments)) hiso_json_response(['error' => 'Attachment data is invalid.'], 422);
+        try {
+            $delivered = hiso_newsletter_send(
+                (string)($body['subject'] ?? ''),
+                (string)($body['message'] ?? ''),
+                $attachments
+            );
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        } catch (Throwable $error) {
+            $configured = str_contains($error->getMessage(), 'not configured') || str_contains($error->getMessage(), 'dependency is unavailable');
+            hiso_json_response(['error' => $configured ? $error->getMessage() : 'Newsletter delivery failed. Check the private SMTP configuration and mail server status.'], $configured ? 503 : 502);
+        }
+        hiso_audit($user, 'SEND_OPTED_IN_NEWSLETTER', 'Newsletter', hiso_uuid(), 'Sent newsletter to ' . $delivered . ' consented recipients.');
+        hiso_json_response(['ok' => true, 'delivered' => $delivered]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/push') {
+        $user = hiso_require_permission('manage_communications');
+        hiso_require_communications_rate_limit($user, 'push', 60);
+        global $CONFIG;
+        $vapidPublic = hiso_b64url_decode((string)($CONFIG['VAPID_PUBLIC_KEY'] ?? ''));
+        $vapidPrivate = hiso_b64url_decode((string)($CONFIG['VAPID_PRIVATE_KEY'] ?? ''));
+        $vapidSubject = trim((string)($CONFIG['VAPID_SUBJECT'] ?? ''));
+        if ($vapidPublic === false || strlen($vapidPublic) !== 65 || $vapidPublic[0] !== "\x04"
+            || $vapidPrivate === false || strlen($vapidPrivate) !== 32
+            || !hiso_vapid_key_pair_is_valid($vapidPrivate, $vapidPublic)
+            || !preg_match('/^(mailto:[^@\s]+@[^@\s]+|https:\/\/[^\/\s]+)$/', $vapidSubject)
+            || !function_exists('curl_init') || !function_exists('openssl_pkey_derive')) {
+            hiso_json_response(['error' => 'VAPID Web Push is not configured correctly on the private server.'], 503);
+        }
+        $body = hiso_json_body();
+        if (!is_string($body['title'] ?? null) || !is_string($body['body'] ?? null)) {
+            hiso_json_response(['error' => 'Push title and body are required.'], 422);
+        }
+        $title = trim((string)($body['title'] ?? ''));
+        $message = trim((string)($body['body'] ?? ''));
+        $targets = $body['userIds'] ?? [];
+        $customerTargets = $body['customerIds'] ?? [];
+        $titleLength = preg_match_all('/./us', $title);
+        $messageLength = preg_match_all('/./us', $message);
+        if ($title === '' || $titleLength === false || $titleLength > 120 || strlen($title) > 480
+            || $message === '' || $messageLength === false || $messageLength > 500 || strlen($message) > 2000) {
+            hiso_json_response(['error' => 'Push title (max 120 characters) and body (max 500 characters) are required.'], 422);
+        }
+        if (!is_array($targets) || !is_array($customerTargets) || count($targets) + count($customerTargets) < 1
+            || count($targets) + count($customerTargets) > 50
+            || count(array_filter(array_merge($targets, $customerTargets), fn($id) => !is_string($id) || strlen($id) > 36)) > 0) {
+            hiso_json_response(['error' => 'Select between 1 and 50 staff or subscribed customer recipients.'], 422);
+        }
+        $targets = array_values(array_unique(array_filter($targets, fn($id) => is_string($id) && strlen($id) <= 36)));
+        $customerTargets = array_values(array_unique(array_filter($customerTargets, fn($id) => is_string($id) && strlen($id) <= 36)));
+        $pdo = hiso_pdo();
+        $validTargets = [];
+        if ($targets) {
+            $userStmt = $pdo->prepare("SELECT id FROM users WHERE status = 'Active' AND id IN (" . implode(',', array_fill(0, count($targets), '?')) . ')');
+            $userStmt->execute($targets);
+            $validTargets = array_column($userStmt->fetchAll(PDO::FETCH_ASSOC), 'id');
+        }
+        $validCustomerTargets = [];
+        if ($customerTargets) {
+            $customerStmt = $pdo->prepare('SELECT id FROM customer_profiles WHERE email_verified_at IS NOT NULL AND id IN (' . implode(',', array_fill(0, count($customerTargets), '?')) . ')');
+            $customerStmt->execute($customerTargets);
+            $validCustomerTargets = array_column($customerStmt->fetchAll(PDO::FETCH_ASSOC), 'id');
+        }
+        if (!$validTargets && !$validCustomerTargets) hiso_json_response(['error' => 'No active staff or verified customer recipients were found.'], 422);
+        $conditions = [];
+        $parameters = [];
+        if ($validTargets) {
+            $conditions[] = '(owner_type = "staff" AND owner_id IN (' . implode(',', array_fill(0, count($validTargets), '?')) . '))';
+            array_push($parameters, ...$validTargets);
+        }
+        if ($validCustomerTargets) {
+            $conditions[] = '(owner_type = "customer" AND owner_id IN (' . implode(',', array_fill(0, count($validCustomerTargets), '?')) . '))';
+            array_push($parameters, ...$validCustomerTargets);
+        }
+        $pushStmt = $pdo->prepare(
+            'SELECT id, owner_type, owner_id, endpoint, endpoint_hash, p256dh, auth_key FROM push_subscriptions WHERE ' . implode(' OR ', $conditions)
+        );
+        $pushStmt->execute($parameters);
+        $subscriptions = $pushStmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$subscriptions) hiso_json_response(['error' => 'Selected users have no active Web Push subscriptions.'], 422);
+        $delivered = 0;
+        $failed = 0;
+        foreach ($subscriptions as $subscription) {
+            try {
+                hiso_push_send($subscription, [
+                    'title' => $title,
+                    'body' => $message,
+                    'url' => $subscription['owner_type'] === 'customer' ? '/#customer' : '/#workspace',
+                ]);
+                $delivered++;
+            } catch (Throwable $error) {
+                $failed++;
+            }
+        }
+        foreach ($validTargets as $targetId) {
+            hiso_notify((string)$targetId, $title, $message, 'communications', 'push');
+        }
+        hiso_audit($user, 'SEND_WEB_PUSH', 'User', 'multiple', 'Sent push notification to ' . $delivered . ' subscribed device(s).');
+        hiso_json_response(['ok' => true, 'delivered' => $delivered, 'failed' => $failed]);
+    }
+
+    if ($method === 'POST' && $route === 'push/subscriptions') {
+        $user = hiso_current_user();
+        $customer = $user ? null : hiso_current_customer();
+        if (!$user && !$customer) hiso_json_response(['error' => 'Sign in to subscribe to notifications.'], 401);
+        $body = hiso_json_body();
+        $subscription = $body['subscription'] ?? null;
+        $endpoint = is_array($subscription) ? trim((string)($subscription['endpoint'] ?? '')) : '';
+        $keys = is_array($subscription) ? ($subscription['keys'] ?? []) : [];
+        $url = parse_url($endpoint);
+        $host = strtolower((string)($url['host'] ?? ''));
+        $allowedHost = $host === 'fcm.googleapis.com' || str_ends_with($host, '.push.services.mozilla.com')
+            || str_ends_with($host, '.notify.windows.com') || $host === 'web.push.apple.com';
+        $p256dh = is_array($keys) ? (string)($keys['p256dh'] ?? '') : '';
+        $authKey = is_array($keys) ? (string)($keys['auth'] ?? '') : '';
+        if (($url['scheme'] ?? '') !== 'https' || !$allowedHost || isset($url['user']) || isset($url['pass'])
+            || (isset($url['port']) && (int)$url['port'] !== 443) || isset($url['fragment']) || strlen($endpoint) > 2048
+            || !preg_match('/^[A-Za-z0-9_-]{80,100}$/', $p256dh)
+            || !preg_match('/^[A-Za-z0-9_-]{20,30}$/', $authKey)) {
+            hiso_json_response(['error' => 'Push subscription data is invalid.'], 422);
+        }
+        $ownerType = $user ? 'staff' : 'customer';
+        $ownerId = $user ? $user['id'] : $customer['id'];
+        $endpointHash = hash('sha256', $endpoint);
+        hiso_pdo()->prepare(
+            'INSERT INTO push_subscriptions (id, owner_type, owner_id, endpoint_hash, endpoint, p256dh, auth_key) ' .
+            'VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE owner_type = VALUES(owner_type), owner_id = VALUES(owner_id), ' .
+            'endpoint = VALUES(endpoint), p256dh = VALUES(p256dh), auth_key = VALUES(auth_key), updated_at = CURRENT_TIMESTAMP'
+        )->execute([hiso_uuid(), $ownerType, $ownerId, $endpointHash, $endpoint, $p256dh, $authKey]);
+        hiso_json_response(['ok' => true]);
+    }
+
+    if ($method === 'DELETE' && $route === 'push/subscriptions') {
+        $user = hiso_current_user();
+        $customer = $user ? null : hiso_current_customer();
+        if (!$user && !$customer) hiso_json_response(['error' => 'Sign in to manage notification subscriptions.'], 401);
+        $body = hiso_json_body();
+        $endpoint = trim((string)($body['endpoint'] ?? ''));
+        if ($endpoint === '' || strlen($endpoint) > 2048) hiso_json_response(['error' => 'Invalid push subscription endpoint.'], 422);
+        $ownerType = $user ? 'staff' : 'customer';
+        $ownerId = $user ? $user['id'] : $customer['id'];
+        hiso_pdo()->prepare('DELETE FROM push_subscriptions WHERE endpoint_hash = ? AND owner_type = ? AND owner_id = ?')
+            ->execute([hash('sha256', $endpoint), $ownerType, $ownerId]);
+        hiso_json_response(['ok' => true]);
+    }
+
     if ($method === 'POST' && $route === 'enquiries') {
         $user = hiso_require_permission('manage_enquiries');
         $body = hiso_json_body();
@@ -842,6 +1296,7 @@ try {
             trim((string)$body['needSummary']), $user['id'],
         ]);
         hiso_audit($user, 'CREATE_ENQUIRY', 'Enquiry', $ref, 'Logged manual enquiry for ' . $body['customerName']);
+        hiso_send_lifecycle_whatsapp('new_enquiry', 'enquiry', $id, 'New enquiry ' . $ref . ' received. Our team will follow up.');
         hiso_json_response(['id' => $id, 'refCode' => $ref], 201);
     }
 
@@ -937,6 +1392,7 @@ try {
         $decision = ($body['decision'] ?? '') === 'Approved' ? 'Approved' : 'Rejected';
         hiso_pdo()->prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = NOW() WHERE id = ?')->execute([$decision, $user['name'], $body['quoteId']]);
         hiso_notify_roles(['admin'], 'Quotation ' . $decision, $user['name'] . ' marked quotation ' . $decision . '.', 'quotes', (string)$body['quoteId']);
+        hiso_send_lifecycle_whatsapp('quote_status', 'quote', (string)$body['quoteId'], 'Quotation ' . (string)$body['quoteId'] . ' status: ' . $decision . '.');
         hiso_audit($user, 'DECIDE_QUOTE', 'Quotation', (string)$body['quoteId'], 'Quotation ' . $decision);
         hiso_json_response(['status' => $decision]);
     }
@@ -962,6 +1418,8 @@ try {
         $pdo->prepare('UPDATE quotations SET status = "Invoiced" WHERE id = ?')->execute([$quote['id']]);
         $pdo->prepare('UPDATE enquiries SET status = "Invoiced" WHERE id = ?')->execute([$quote['enquiry_id']]);
         hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);
+        hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invId, 'Invoice ' . $invCode . ' has been issued.');
+        hiso_send_lifecycle_whatsapp('quote_status', 'quote', (string)$quote['id'], 'Your approved quotation has been converted to an invoice.');
         hiso_json_response(['id' => $invId, 'invoiceCode' => $invCode], 201);
     }
 
@@ -981,8 +1439,12 @@ try {
         $user = hiso_require_permission('verify_payments');
         $body = hiso_json_body();
         $decision = ($body['decision'] ?? '') === 'Confirmed' ? 'Confirmed' : 'Rejected';
+        $paymentStmt = hiso_pdo()->prepare('SELECT invoice_id FROM payments WHERE id = ? LIMIT 1');
+        $paymentStmt->execute([$body['paymentId']]);
+        $invoiceId = (string)($paymentStmt->fetchColumn() ?: '');
         hiso_pdo()->prepare('UPDATE payments SET status = ?, verified_by = ?, verified_at = NOW(), rejection_reason = ? WHERE id = ?')->execute([$decision, $user['name'], $body['reason'] ?? null, $body['paymentId']]);
         hiso_audit($user, 'VERIFY_PAYMENT', 'Payment', (string)$body['paymentId'], 'Receipt ' . $decision);
+        if ($invoiceId !== '') hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invoiceId, 'A payment receipt for your invoice was ' . strtolower($decision) . '.');
         hiso_json_response(['status' => $decision]);
     }
 
@@ -1011,6 +1473,7 @@ try {
         $pdo->prepare('UPDATE enquiries SET status = "In delivery" WHERE id = ?')->execute([$inv['enquiry_id']]);
         if ($engId) hiso_notify($engId, 'New installation assigned: ' . $jobCode, $inv['customer_name'] . ' (' . $inv['location'] . ') released for delivery.', 'jobs', $jobId);
         hiso_audit($user, 'RELEASE_INSTALLATION', 'Installation', $jobCode, 'Released installation (' . $releaseType . ').');
+        hiso_send_lifecycle_whatsapp('installation_status', 'installation', $jobId, 'Installation ' . $jobCode . ' has been scheduled.');
         hiso_json_response(['id' => $jobId, 'jobCode' => $jobCode], 201);
     }
 
@@ -1020,6 +1483,7 @@ try {
         hiso_pdo()->prepare('UPDATE installations SET assigned_engineer_id = ?, engineer_acknowledged = 0 WHERE id = ?')->execute([$body['engineerId'], $body['installationId']]);
         hiso_notify((string)$body['engineerId'], 'Installation assigned', 'Please review and acknowledge your assigned installation.', 'jobs', (string)$body['installationId']);
         hiso_audit($user, 'ASSIGN_TECHNICIAN', 'Installation', (string)$body['installationId'], 'Assigned technician.');
+        hiso_send_lifecycle_whatsapp('installation_status', 'installation', (string)$body['installationId'], 'Your installation has been assigned to a field engineer.');
         hiso_json_response(['ok' => true]);
     }
 
@@ -1115,6 +1579,7 @@ try {
             }
             throw $e;
         }
+        hiso_send_lifecycle_whatsapp('installation_status', 'installation', $jobId, 'Installation update: stage ' . $stage . ', ' . $activityTitle . '.');
         hiso_json_response(['updateId' => $updId], 201);
     }
 
@@ -1143,6 +1608,7 @@ try {
         $pdo->prepare('UPDATE service_tickets SET status=?, assigned_tech_id=?, assigned_tech_name=?, resolution_note=? WHERE id=?')
             ->execute([$body['status'], $techId, $techName, trim((string)($body['resolutionNote'] ?? $t['resolution_note'])), $body['ticketId']]);
         hiso_audit($user, 'UPDATE_TICKET', 'ServiceTicket', $t['ticket_code'], 'Marked ' . $body['status']);
+        hiso_send_lifecycle_whatsapp('ticket_status', 'ticket', (string)$body['ticketId'], 'Service ticket ' . $t['ticket_code'] . ' status changed to ' . (string)$body['status'] . '.');
         hiso_json_response(['ok' => true]);
     }
 
@@ -1239,6 +1705,9 @@ try {
             hiso_json_response(['error' => 'Select a valid staff role.'], 422);
         }
         if ($id) {
+           $oldPhoneStmt = $pdo->prepare('SELECT phone FROM users WHERE id = ? LIMIT 1');
+           $oldPhoneStmt->execute([$id]);
+           $oldPhone = (string)($oldPhoneStmt->fetchColumn() ?: '');
             $active = $pdo->prepare('SELECT COUNT(*) FROM installations WHERE assigned_engineer_id = ? AND current_stage < 5');
             $active->execute([$id]);
             if ((int)$active->fetchColumn() > 0 && ($role !== 'technician' || $status !== 'Active')) {
@@ -1249,6 +1718,10 @@ try {
             }
             $pdo->prepare('UPDATE users SET name=?, username=?, phone=?, role=?, title=?, skills=?, status=? WHERE id=?')
                 ->execute([$name, $usernameValue, $phone, $role, $title, $skills, $status, $id]);
+            if (trim($oldPhone) !== $phone) {
+                $pdo->prepare('UPDATE whatsapp_recipient_consents SET revoked_at = UTC_TIMESTAMP() WHERE recipient_type = "staff" AND recipient_id = ? AND revoked_at IS NULL')
+                    ->execute([$id]);
+            }
             if ($password !== '') {
                 $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?')
                     ->execute([password_hash($password, PASSWORD_DEFAULT), $id]);

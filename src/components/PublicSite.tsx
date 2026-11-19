@@ -16,12 +16,14 @@ import { useState } from 'react';
 import { api } from '../lib/api';
 import { formatNgn } from '../lib/solar';
 import type { CatalogItem } from '../lib/types';
+import type { HomepageContent } from '../lib/homepage';
 import heroImage from '../assets/images/hero_solar_array_1794819204906.jpg';
 import { Reveal } from './Reveal';
 import type { AppRoute } from './TopBar';
 
 interface PublicSiteProps {
   catalog: CatalogItem[];
+  homepage: HomepageContent;
   darkMode: boolean;
   themeMode: 'system' | 'light' | 'dark';
   onToggleTheme: () => void;
@@ -229,7 +231,7 @@ const FAQS = [
   },
 ];
 
-export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavigate }: PublicSiteProps) {
+export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleTheme, onNavigate }: PublicSiteProps) {
   const [workflowIdx, setWorkflowIdx] = useState(0);
   const [projectSector, setProjectSector] = useState<'All' | 'Residential' | 'Commercial' | 'Institutional'>('All');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
@@ -239,6 +241,8 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
   const [contactEmail, setContactEmail] = useState('');
   const [contactLocation, setContactLocation] = useState('');
   const [contactMessage, setContactMessage] = useState('');
+  const [whatsappUpdatesConsent, setWhatsappUpdatesConsent] = useState(false);
+  const [whatsappMarketingConsent, setWhatsappMarketingConsent] = useState(false);
   const [contactBusy, setContactBusy] = useState(false);
   const [contactError, setContactError] = useState('');
   const [submittedRef, setSubmittedRef] = useState('');
@@ -271,6 +275,8 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
           recommendedPanels550w: 0,
           recommendedBatteries5kwh: 0,
         },
+        whatsappUpdatesConsent,
+        whatsappMarketingConsent,
       });
       setSubmittedRef(created.refCode);
       setContactName('');
@@ -278,6 +284,8 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
       setContactEmail('');
       setContactLocation('');
       setContactMessage('');
+      setWhatsappUpdatesConsent(false);
+      setWhatsappMarketingConsent(false);
     } catch (err) {
       setContactError((err as Error).message);
     } finally {
@@ -288,18 +296,17 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
   return (
     <div id="home">
       {/* Hero Section (Immediate render above the fold) */}
-      <section className="relative overflow-hidden bg-[#081E3E] text-white">
+      <section className={`relative overflow-hidden bg-[#081E3E] text-white ${homepage.hero.enabled ? '' : 'hidden'}`}>
         <div className="mx-auto grid max-w-7xl items-stretch gap-10 px-4 py-12 sm:px-6 lg:grid-cols-12 lg:px-8 lg:py-20">
           <div className="flex flex-col justify-center lg:col-span-6">
             <p className="text-xs font-semibold tracking-widest text-red-300">
               CAC REGISTERED SINCE 2016 · COREN · SPVI · NERC COMPLIANT
             </p>
             <h1 className="mt-4 max-w-xl text-balance text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">
-              Motivated by success, powered by knowledge, driven by passion.
+              {homepage.hero.heading}
             </h1>
             <p className="mt-5 max-w-lg text-base leading-relaxed text-slate-300">
-              HI-SOTECH Solar Inverter Co. Ltd designs, engineers, and commissions dependable hybrid, off-grid, and
-              commercial solar installations across Nigeria—from site load assessment to 5-stage handover.
+              {homepage.hero.body}
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3.5">
               <button
@@ -361,14 +368,15 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
       </section>
 
       {/* Interactive Workflow Stepper (bamcore.tech/hiso architecture) */}
-      <section className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+      <section className={`mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 ${homepage.workflow.enabled ? '' : 'hidden'}`}>
         <Reveal>
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="max-w-2xl">
               <p className="text-xs font-semibold tracking-wider text-[#D61F26]">ENGINEERING DELIVERY WORKFLOW</p>
               <h2 className="mt-2 text-balance text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white">
-                How HI-SOTECH takes your property from energy audit to 24/7 power.
+                {homepage.workflow.heading}
               </h2>
+              <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{homepage.workflow.body}</p>
             </div>
             <button
               type="button"
@@ -444,7 +452,7 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
       </section>
 
       {/* About & Leadership */}
-      <section id="about" className="border-y border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830]">
+      <section id="about" className={`border-y border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830] ${homepage.about.enabled ? '' : 'hidden'}`}>
         <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-12 lg:px-8">
           <div className="lg:col-span-5">
             <Reveal>
@@ -470,13 +478,10 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
             <Reveal delayMs={90}>
               <p className="text-xs font-semibold tracking-wider text-[#D61F26]">ABOUT HI-SOTECH</p>
               <h2 className="mt-2 text-balance text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white">
-                Nigeria’s trusted partner for transparent solar engineering since 2016.
+                {homepage.about.heading}
               </h2>
               <p className="mt-4 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-                Founded in 2016 and registered under Nigeria’s Corporate Affairs Commission (CAC), HI-SOTECH Solar
-                Inverter Co. Ltd operates in strict compliance with the Nigerian Electricity Regulatory Commission (NERC).
-                We bridge precision engineering, COREN/SPVI-certified field execution, and ongoing youth technician
-                training across Abuja, Lagos, Plateau, Rivers, Bayelsa, Ekiti, and Akwa Ibom.
+                {homepage.about.body}
               </p>
 
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -507,13 +512,14 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
       </section>
 
       {/* Services Section */}
-      <section id="services" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+      <section id="services" className={`mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 ${homepage.services.enabled ? '' : 'hidden'}`}>
         <Reveal>
           <div className="max-w-2xl">
             <p className="text-xs font-semibold tracking-wider text-[#D61F26]">SERVICES &amp; CAPABILITIES</p>
             <h2 className="mt-2 text-balance text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white">
-              Comprehensive solar systems for homes, SMEs, and institutions.
+              {homepage.services.heading}
             </h2>
+            <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{homepage.services.body}</p>
           </div>
 
           <div className="mt-10 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -531,15 +537,16 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
       </section>
 
       {/* Selected Projects with Real HI-SOTECH Photography */}
-      <section id="projects" className="border-y border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830]">
+      <section id="projects" className={`border-y border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830] ${homepage.projects.enabled ? '' : 'hidden'}`}>
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Reveal>
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold tracking-wider text-[#D61F26]">PROJECTS PORTFOLIO</p>
                 <h2 className="mt-2 text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white">
-                  Verified field installations across Nigeria.
+                  {homepage.projects.heading}
                 </h2>
+                <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{homepage.projects.body}</p>
               </div>
               <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1 dark:bg-[#061327]">
                 {(['All', 'Residential', 'Commercial', 'Institutional'] as const).map((sec) => (
@@ -593,14 +600,15 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
       </section>
 
       {/* Pricing Tiers & Store Snapshot */}
-      <section id="pricing" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+      <section id="pricing" className={`mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 ${homepage.pricing.enabled ? '' : 'hidden'}`}>
         <Reveal>
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="max-w-2xl">
               <p className="text-xs font-semibold tracking-wider text-[#D61F26]">PACKAGES &amp; STORE PRICING</p>
               <h2 className="mt-2 text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white">
-                Transparent packages aligned with live hardware prices.
+                {homepage.pricing.heading}
               </h2>
+              <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{homepage.pricing.body}</p>
             </div>
             <button
               type="button"
@@ -819,13 +827,13 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
                   />
                 </label>
                 <label className="block text-sm">
-                  <span className="font-medium text-slate-700 dark:text-slate-300">Phone / WhatsApp *</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-300">WhatsApp Number *</span>
                   <input
                     type="tel"
                     required
                     value={contactPhone}
                     onChange={(e) => setContactPhone(e.target.value)}
-                    placeholder="+234 803 000 0000"
+                    placeholder="+2348030000000"
                     className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-[#081E3E] focus:outline-none dark:border-slate-700 dark:bg-[#061327] dark:text-white"
                   />
                 </label>
@@ -861,6 +869,19 @@ export function PublicSite({ catalog, darkMode, themeMode, onToggleTheme, onNavi
                   className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-[#081E3E] focus:outline-none dark:border-slate-700 dark:bg-[#061327] dark:text-white"
                 />
               </label>
+
+              <div className="mt-4 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                <label className="flex items-start gap-2">
+                  <input type="checkbox" checked={whatsappUpdatesConsent}
+                    onChange={(event) => setWhatsappUpdatesConsent(event.target.checked)} className="mt-0.5" />
+                  <span>I agree to receive WhatsApp updates about this enquiry, quotations, invoices, and installation. This is optional and I can withdraw consent at any time.</span>
+                </label>
+                <label className="flex items-start gap-2">
+                  <input type="checkbox" checked={whatsappMarketingConsent}
+                    onChange={(event) => setWhatsappMarketingConsent(event.target.checked)} className="mt-0.5" />
+                  <span>I separately agree to receive HI-SOTECH promotional WhatsApp messages. This is optional and can be withdrawn at any time.</span>
+                </label>
+              </div>
 
               <div className="mt-5 flex justify-end">
                 <button

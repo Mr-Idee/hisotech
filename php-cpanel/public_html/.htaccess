@@ -32,7 +32,7 @@ RewriteRule ^ index.html [L]
 </IfModule>
 
 <IfModule mod_authz_core.c>
-  <FilesMatch "(?i)\.(?:sql|sqlite|db|log|lock)$">
+  <FilesMatch "(?i)\.(?:sql|sqlite|db|log|lock|zip|7z|tar|gz|tgz|rar)$">
     Require all denied
   </FilesMatch>
 </IfModule>

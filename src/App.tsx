@@ -9,6 +9,11 @@ import { TopBar, type AppRoute } from './components/TopBar';
 import { TrackerView } from './components/TrackerView';
 import { WorkspaceView } from './components/WorkspaceView';
 import { api } from './lib/api';
+import {
+  DEFAULT_HOMEPAGE_CONTENT,
+  normalizeHomepageContent,
+  type HomepageContent,
+} from './lib/homepage';
 import type { ApplianceItem, CatalogItem } from './lib/types';
 
 const CACHED_CATALOG_KEY = 'hiso_cached_catalog';
@@ -54,6 +59,7 @@ export default function App() {
   const [trackRef, setTrackRef] = useState<string | undefined>(undefined);
   const [docView, setDocView] = useState<{ type: 'quote' | 'invoice'; id: string } | null>(null);
   const [catalog, setCatalog] = useState<CatalogItem[]>(() => readCachedCatalog());
+  const [homepage, setHomepage] = useState<HomepageContent>(DEFAULT_HOMEPAGE_CONTENT);
   const [importedAppliances, setImportedAppliances] = useState<ApplianceItem[]>([]);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
   const [systemDarkMode, setSystemDarkMode] = useState(
@@ -78,6 +84,11 @@ export default function App() {
       })
       .catch(() => {
         // Offline mode: fallback cleanly to cached catalog from localStorage
+      });
+    api.getHomepageContent()
+      .then(({ homepage: content }) => setHomepage(normalizeHomepageContent(content)))
+      .catch(() => {
+        // Keep the built-in homepage copy available offline.
       });
 
     const onHashChange = () => setRoute(readRouteFromHash());
@@ -163,6 +174,7 @@ export default function App() {
       ) : route === 'home' ? (
         <PublicSite
           catalog={catalog}
+          homepage={homepage}
           darkMode={darkMode}
           themeMode={themeMode}
           onToggleTheme={cycleThemeMode}
@@ -200,6 +212,7 @@ export default function App() {
         <WorkspaceView
           onOpenDocument={(type, id) => setDocView({ type, id })}
           onCatalogChange={saveAndSetCatalog}
+          onHomepageChange={setHomepage}
         />
       )}
 

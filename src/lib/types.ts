@@ -14,7 +14,8 @@ export type PermissionKey =
   | 'update_installations'
   | 'manage_staff'
   | 'manage_roles'
-  | 'view_audit';
+  | 'view_audit'
+  | 'manage_communications';
 
 export interface RoleDefinition {
   id: string;
@@ -233,6 +234,9 @@ export interface CustomerProfile {
   company: string;
   refCode: string;
   createdAt: string;
+  emailMarketingConsent?: boolean;
+  whatsappMarketingConsent?: boolean;
+  whatsappUpdatesConsent?: boolean;
 }
 
 export interface CustomerEquipment {

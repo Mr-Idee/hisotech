@@ -302,6 +302,66 @@ CREATE TABLE IF NOT EXISTS `notifications` (
   KEY `idx_notif_user` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `homepage_sections` (
+  `section_id` VARCHAR(32) NOT NULL,
+  `heading` VARCHAR(180) NOT NULL,
+  `body` TEXT NOT NULL,
+  `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+  `updated_by` VARCHAR(36) NULL,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`section_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `communications_consents` (
+  `customer_id` VARCHAR(36) NOT NULL,
+  `channel` ENUM('email', 'whatsapp') NOT NULL,
+  `consented_at` DATETIME NULL,
+  `revoked_at` DATETIME NULL,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`customer_id`, `channel`),
+  KEY `idx_consent_channel_active` (`channel`, `revoked_at`),
+  CONSTRAINT `fk_consent_customer` FOREIGN KEY (`customer_id`) REFERENCES `customer_profiles` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `whatsapp_recipient_consents` (
+  `recipient_type` ENUM('customer', 'staff', 'enquiry') NOT NULL,
+  `recipient_id` VARCHAR(36) NOT NULL,
+  `purpose` ENUM('operational', 'marketing') NOT NULL,
+  `phone_at_consent` VARCHAR(20) NOT NULL,
+  `consented_at` DATETIME NOT NULL,
+  `revoked_at` DATETIME NULL,
+  `consent_source` VARCHAR(60) NOT NULL,
+  PRIMARY KEY (`recipient_type`, `recipient_id`, `purpose`),
+  KEY `idx_whatsapp_consent_active` (`purpose`, `recipient_type`, `revoked_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `communications_delivery_events` (
+  `id` VARCHAR(36) NOT NULL PRIMARY KEY,
+  `event_key` VARCHAR(60) NOT NULL,
+  `recipient_type` ENUM('customer', 'staff', 'enquiry') NOT NULL,
+  `recipient_id` VARCHAR(36) NOT NULL,
+  `channel` ENUM('email', 'push', 'whatsapp') NOT NULL,
+  `status` ENUM('sent', 'not_configured', 'failed', 'skipped') NOT NULL,
+  `error_code` VARCHAR(60) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY `idx_delivery_event_created` (`event_key`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `push_subscriptions` (
+  `id` VARCHAR(36) NOT NULL,
+  `owner_type` ENUM('staff', 'customer') NOT NULL,
+  `owner_id` VARCHAR(36) NOT NULL,
+  `endpoint_hash` CHAR(64) NOT NULL,
+  `endpoint` TEXT NOT NULL,
+  `p256dh` VARCHAR(255) NOT NULL,
+  `auth_key` VARCHAR(255) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_push_endpoint_hash` (`endpoint_hash`),
+  KEY `idx_push_owner` (`owner_type`, `owner_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `audit_logs` (
   `id` VARCHAR(36) NOT NULL,
   `actor_name` VARCHAR(120) NOT NULL,
@@ -326,9 +386,9 @@ CREATE TABLE IF NOT EXISTS `app_setup` (
 -- ============================================================================
 
 INSERT INTO `roles` (`id`, `name`, `description`, `permissions_json`, `is_system`) VALUES
-('superadmin', 'Super Admin', 'Full unrestricted control over all platform operations, dynamic role creation, staff accounts, Store, finance, and field delivery.', '["manage_enquiries","manage_tickets","manage_storefront","draft_quotes","approve_quotes","manage_invoices","verify_payments","release_installations","update_installations","manage_staff","manage_roles","view_audit"]', 1),
-('director', 'Managing Director', 'Executive approval of quotations, payment receipt verification, and authorization of installation job release.', '["manage_enquiries","manage_tickets","manage_storefront","draft_quotes","approve_quotes","manage_invoices","verify_payments","release_installations","update_installations","manage_staff","view_audit"]', 1),
-('admin', 'Admin / Help Desk', 'Enquiries intake, customer complaint & service help desk routing, Store pricing, quotation drafting, invoicing, and payment logging.', '["manage_enquiries","manage_tickets","manage_storefront","draft_quotes","manage_invoices","manage_staff","view_audit"]', 1),
+('superadmin', 'Super Admin', 'Full unrestricted control over all platform operations, dynamic role creation, staff accounts, Store, finance, field delivery, and communications.', '["manage_enquiries","manage_tickets","manage_storefront","draft_quotes","approve_quotes","manage_invoices","verify_payments","release_installations","update_installations","manage_staff","manage_roles","view_audit","manage_communications"]', 1),
+('director', 'Managing Director', 'Executive approval of quotations, payment receipt verification, and authorization of installation job release.', '["manage_enquiries","manage_tickets","manage_storefront","draft_quotes","approve_quotes","manage_invoices","verify_payments","release_installations","update_installations","manage_staff","view_audit","manage_communications"]', 1),
+('admin', 'Admin / Help Desk', 'Enquiries intake, customer complaint & service help desk routing, Store pricing, quotation drafting, invoicing, payment logging, and customer communications.', '["manage_enquiries","manage_tickets","manage_storefront","draft_quotes","manage_invoices","manage_staff","view_audit","manage_communications"]', 1),
 ('technician', 'Technician', 'Field execution of assigned 5-stage solar installations, site photo uploads, and assigned customer service/repair tickets.', '["update_installations","manage_tickets"]', 1)
 ON DUPLICATE KEY UPDATE `name` = VALUES(`name`);
 

@@ -46,8 +46,30 @@ function hiso_require_customer(): array {
     return $customer;
 }
 
+function hiso_customer_consent_state(string $customerId): array {
+    $stmt = hiso_pdo()->prepare(
+        'SELECT channel, consented_at, revoked_at FROM communications_consents WHERE customer_id = ?'
+    );
+    $stmt->execute([$customerId]);
+    $state = ['email' => false, 'whatsapp' => false];
+    foreach ($stmt->fetchAll() as $row) {
+        $state[(string)$row['channel']] = !empty($row['consented_at']) && empty($row['revoked_at']);
+    }
+    return $state;
+}
+
+function hiso_customer_whatsapp_updates_consent(string $customerId, string $phone): bool {
+    $stmt = hiso_pdo()->prepare(
+        'SELECT consented_at FROM whatsapp_recipient_consents WHERE recipient_type = "customer" AND recipient_id = ? ' .
+        'AND purpose = "operational" AND revoked_at IS NULL AND phone_at_consent = ? LIMIT 1'
+    );
+    $stmt->execute([$customerId, $phone]);
+    return (bool)$stmt->fetchColumn();
+}
+
 function hiso_customer_portal_data(array $customer): array {
     $pdo = hiso_pdo();
+    $consents = hiso_customer_consent_state((string)$customer['id']);
     $equipmentStmt = $pdo->prepare('SELECT * FROM customer_equipment WHERE customer_id = ? ORDER BY created_at DESC');
     $equipmentStmt->execute([$customer['id']]);
     $ticketStmt = $pdo->prepare('SELECT * FROM service_tickets WHERE customer_id = ? ORDER BY created_at DESC');
@@ -62,6 +84,9 @@ function hiso_customer_portal_data(array $customer): array {
             'company' => $customer['company'],
             'refCode' => $customer['ref_code'],
             'createdAt' => $customer['created_at'],
+            'emailMarketingConsent' => $consents['email'],
+            'whatsappMarketingConsent' => $consents['whatsapp'],
+            'whatsappUpdatesConsent' => hiso_customer_whatsapp_updates_consent((string)$customer['id'], (string)$customer['phone']),
         ],
         'equipment' => array_map(fn($e) => [
             'id' => $e['id'],
@@ -101,6 +126,7 @@ function hiso_user_permissions(string $role): array {
             'manage_enquiries', 'manage_tickets', 'manage_storefront', 'draft_quotes',
             'approve_quotes', 'manage_invoices', 'verify_payments', 'release_installations',
             'update_installations', 'manage_staff', 'manage_roles', 'view_audit',
+            'manage_communications',
         ];
     }
     $stmt = hiso_pdo()->prepare('SELECT name, permissions_json FROM roles WHERE id = ? LIMIT 1');

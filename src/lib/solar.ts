@@ -36,6 +36,7 @@ export const ALL_PERMISSIONS: { key: PermissionKey; label: string; group: string
   { key: 'manage_staff', label: 'Manage Staff Accounts', group: 'Administration' },
   { key: 'manage_roles', label: 'Create & Edit Custom Roles', group: 'Super Admin' },
   { key: 'view_audit', label: 'Inspect Security Audit Logs', group: 'Administration' },
+  { key: 'manage_communications', label: 'Send Approved Communications & Push Notifications', group: 'Communications' },
 ];
 
 export const ROLE_DEFAULT_PERMISSIONS: Record<string, PermissionKey[]> = {
@@ -52,6 +53,7 @@ export const ROLE_DEFAULT_PERMISSIONS: Record<string, PermissionKey[]> = {
     'update_installations',
     'manage_staff',
     'view_audit',
+    'manage_communications',
   ],
   admin: [
     'manage_enquiries',
@@ -61,6 +63,7 @@ export const ROLE_DEFAULT_PERMISSIONS: Record<string, PermissionKey[]> = {
     'manage_invoices',
     'manage_staff',
     'view_audit',
+    'manage_communications',
   ],
   technician: ['update_installations', 'manage_tickets'],
 };

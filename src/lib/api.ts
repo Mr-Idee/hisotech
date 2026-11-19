@@ -19,6 +19,8 @@ import type {
   UserRole,
   WorkspaceBootstrap,
 } from './types';
+import type { HomepageContent } from './homepage';
+import type { NewsletterAttachment } from './communications';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData;
@@ -42,6 +44,15 @@ export const api = {
   getPublicBootstrap: () =>
     request<{ catalog: WorkspaceBootstrap['catalog'] }>('/api/public/bootstrap'),
 
+  getHomepageContent: () =>
+    request<{ homepage: Partial<HomepageContent> }>('/api/website/content'),
+
+  saveHomepageContent: (homepage: HomepageContent) =>
+    request<{ homepage: Partial<HomepageContent> }>('/api/website/content', {
+      method: 'POST',
+      body: JSON.stringify({ homepage }),
+    }),
+
   submitPublicEnquiry: (payload: {
     customerName: string;
     email: string;
@@ -50,6 +61,8 @@ export const api = {
     needSummary: string;
     appliances: ApplianceItem[];
     estimate: SolarEstimateResult;
+    whatsappUpdatesConsent?: boolean;
+    whatsappMarketingConsent?: boolean;
   }) =>
     request<{ id: string; refCode: string }>('/api/public/enquiries', {
       method: 'POST',
@@ -161,6 +174,67 @@ export const api = {
     }>('/api/customer/session'),
 
   customerLogout: () => request<{ ok: boolean }>('/api/customer/logout', { method: 'POST' }),
+
+  saveCustomerMarketingConsent: (payload: { email: boolean; whatsapp: boolean; whatsappUpdates: boolean }) =>
+    request<{ ok: boolean; emailMarketingConsent: boolean; whatsappMarketingConsent: boolean; whatsappUpdatesConsent: boolean }>('/api/customer/communications/consent', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getCommunicationContacts: () =>
+    request<{
+      email: { id: string; name: string; email: string; phone: string }[];
+      whatsapp: { id: string; name: string; email: string; phone: string; recipientType: 'customer' | 'staff' | 'enquiry' }[];
+      pushCustomers: { id: string; name: string }[];
+      myWhatsappConsents: { operational: boolean; marketing: boolean; phone: string };
+    }>('/api/communications/contacts'),
+
+  getMyWhatsAppConsent: () =>
+    request<{ operational: boolean; marketing: boolean; phone: string }>('/api/communications/my-whatsapp-consent'),
+
+  saveMyWhatsAppConsent: (payload: { operational: boolean; marketing: boolean }) =>
+    request<{ operational: boolean; marketing: boolean }>('/api/communications/my-whatsapp-consent', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  sendWhatsAppMarketing: (recipientType: 'customer' | 'staff' | 'enquiry', recipientId: string, message: string, attachments: NewsletterAttachment[] = []) =>
+    request<{ ok: boolean }>('/api/communications/whatsapp', {
+      method: 'POST',
+      body: JSON.stringify({ recipientType, recipientId, message, attachments }),
+    }),
+
+  sendWhatsAppNewsletter: (payload: { message: string; recipients: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }[]; attachments: NewsletterAttachment[] }) =>
+    request<{ ok: boolean; delivered: number }>('/api/communications/whatsapp-newsletter', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  sendNewsletter: (payload: { subject: string; message: string; attachments: NewsletterAttachment[] }) =>
+    request<{ ok: boolean; delivered: number }>('/api/communications/newsletter', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  sendPushNotification: (payload: { title: string; body: string; userIds: string[]; customerIds: string[] }) =>
+    request<{ ok: boolean; delivered: number; failed: number }>('/api/communications/push', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getPushConfig: () => request<{ publicKey: string }>('/api/push/config'),
+
+  savePushSubscription: (subscription: PushSubscriptionJSON) =>
+    request<{ ok: boolean }>('/api/push/subscriptions', {
+      method: 'POST',
+      body: JSON.stringify({ subscription }),
+    }),
+
+  deletePushSubscription: (endpoint: string) =>
+    request<{ ok: boolean }>('/api/push/subscriptions', {
+      method: 'DELETE',
+      body: JSON.stringify({ endpoint }),
+    }),
 
   saveCustomerProfile: (payload: {
     name: string;

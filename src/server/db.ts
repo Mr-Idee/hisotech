@@ -315,6 +315,62 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   summary TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS homepage_sections (
+  section_id TEXT PRIMARY KEY,
+  heading TEXT NOT NULL,
+  body TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  updated_by TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS communications_consents (
+  customer_id TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('email', 'whatsapp')),
+  consented_at TEXT,
+  revoked_at TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (customer_id, channel)
+);
+
+CREATE TABLE IF NOT EXISTS whatsapp_recipient_consents (
+  recipient_type TEXT NOT NULL CHECK (recipient_type IN ('customer', 'staff', 'enquiry')),
+  recipient_id TEXT NOT NULL,
+  purpose TEXT NOT NULL CHECK (purpose IN ('operational', 'marketing')),
+  phone_at_consent TEXT NOT NULL,
+  consented_at TEXT NOT NULL,
+  revoked_at TEXT,
+  consent_source TEXT NOT NULL,
+  PRIMARY KEY (recipient_type, recipient_id, purpose)
+);
+
+CREATE TABLE IF NOT EXISTS communications_delivery_events (
+  id TEXT PRIMARY KEY,
+  event_key TEXT NOT NULL,
+  recipient_type TEXT NOT NULL CHECK (recipient_type IN ('customer', 'staff', 'enquiry')),
+  recipient_id TEXT NOT NULL,
+  channel TEXT NOT NULL CHECK (channel IN ('email', 'push', 'whatsapp')),
+  status TEXT NOT NULL CHECK (status IN ('sent', 'not_configured', 'failed', 'skipped')),
+  error_code TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id TEXT PRIMARY KEY,
+  owner_type TEXT NOT NULL CHECK (owner_type IN ('staff', 'customer')),
+  owner_id TEXT NOT NULL,
+  endpoint_hash TEXT NOT NULL UNIQUE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
 `);
 
 function ensureColumn(table: string, col: string, ddl: string): void {
@@ -485,6 +541,24 @@ function seedIfEmpty(): void {
 
 seedIfEmpty();
 
+const communicationPermissionMigration = 'communications-default-role-permissions-v1';
+if (!db.prepare('SELECT id FROM app_migrations WHERE id = ?').get(communicationPermissionMigration)) {
+  for (const roleId of ['director', 'admin']) {
+    const role = db.prepare('SELECT permissions_json, is_system FROM roles WHERE id = ?')
+      .get(roleId) as { permissions_json: string; is_system: number } | undefined;
+    if (!role?.is_system) continue;
+    const permissions = JSON.parse(role.permissions_json || '[]') as PermissionKey[];
+    if (!permissions.includes('manage_communications')) {
+      permissions.push('manage_communications');
+      db.prepare('UPDATE roles SET permissions_json = ? WHERE id = ?').run(JSON.stringify(permissions), roleId);
+    }
+  }
+  db.prepare('INSERT INTO app_migrations (id, applied_at) VALUES (?, ?)').run(
+    communicationPermissionMigration,
+    new Date().toISOString()
+  );
+}
+
 function hydrateStaffRow(row: Record<string, unknown>, rolesMap: Map<string, RoleDefinition>): StaffMember {
   const roleId = String(row.role);
   const roleDef = rolesMap.get(roleId);
@@ -601,7 +675,13 @@ export function createPublicEnquiry(payload: {
   needSummary: string;
   appliances?: unknown[];
   estimate?: unknown;
+  whatsappUpdatesConsent?: boolean;
+  whatsappMarketingConsent?: boolean;
 }): { id: string; refCode: string } {
+  if ((payload.whatsappUpdatesConsent || payload.whatsappMarketingConsent)
+      && !/^\+[1-9]\d{7,14}$/.test(payload.phone.trim())) {
+    throw new Error('WhatsApp consent requires a valid E.164 phone number.');
+  }
   const id = crypto.randomUUID();
   const refCode = nextCode('enquiries', 'ref_code', 'HISO');
   const now = new Date().toISOString();
@@ -620,6 +700,14 @@ export function createPublicEnquiry(payload: {
     payload.estimate ? JSON.stringify(payload.estimate) : null,
     now
   );
+  if (payload.whatsappUpdatesConsent || payload.whatsappMarketingConsent) {
+    if (payload.whatsappUpdatesConsent) {
+      recordWhatsAppRecipientConsent('enquiry', id, 'operational', payload.phone.trim(), true, 'public_enquiry_form');
+    }
+    if (payload.whatsappMarketingConsent) {
+      recordWhatsAppRecipientConsent('enquiry', id, 'marketing', payload.phone.trim(), true, 'public_enquiry_form');
+    }
+  }
   notifyRoleMembers(['superadmin', 'director', 'admin'], `New solar enquiry ${refCode}`, `${payload.customerName} (${payload.location}) submitted an enquiry.`, 'enquiries', id);
   writeAudit({ name: payload.customerName, role: 'customer' }, 'CREATE_ENQUIRY', 'Enquiry', refCode, 'Submitted enquiry via website / estimator.');
   return { id, refCode };
@@ -962,12 +1050,439 @@ function customerPortalData(customerId: string): {
     company: String(row.company),
     refCode: String(row.ref_code),
     createdAt: String(row.created_at),
+    emailMarketingConsent: hasCustomerConsent(customerId, 'email'),
+    whatsappMarketingConsent: hasCustomerConsent(customerId, 'whatsapp'),
+    whatsappUpdatesConsent: hasWhatsAppRecipientConsent('customer', customerId, 'operational'),
   };
   const equipment = getCustomerEquipmentList(customerId);
   const tickets = (
     db.prepare('SELECT * FROM service_tickets WHERE customer_id = ? ORDER BY created_at DESC').all(customerId) as Record<string, unknown>[]
   ).map(hydrateTicketRow);
   return { profile, equipment, tickets };
+}
+
+function hasCustomerConsent(customerId: string, channel: 'email' | 'whatsapp'): boolean {
+  const consent = db.prepare(
+    'SELECT consented_at, revoked_at FROM communications_consents WHERE customer_id = ? AND channel = ? LIMIT 1'
+  ).get(customerId, channel) as { consented_at: string | null; revoked_at: string | null } | undefined;
+  return Boolean(consent?.consented_at && !consent.revoked_at);
+}
+
+function hasWhatsAppRecipientConsent(
+  recipientType: 'customer' | 'staff' | 'enquiry',
+  recipientId: string,
+  purpose: 'operational' | 'marketing',
+): boolean {
+  const consent = db.prepare(
+    'SELECT consented_at, revoked_at, phone_at_consent FROM whatsapp_recipient_consents WHERE recipient_type = ? AND recipient_id = ? AND purpose = ?'
+  ).get(recipientType, recipientId, purpose) as { consented_at: string; revoked_at: string | null; phone_at_consent: string } | undefined;
+  const table = recipientType === 'customer' ? 'customer_profiles' : recipientType === 'staff' ? 'users' : 'enquiries';
+  const phoneRow = db.prepare(`SELECT phone FROM ${table} WHERE id = ? LIMIT 1`).get(recipientId) as { phone: string } | undefined;
+  return Boolean(consent?.consented_at && !consent.revoked_at && phoneRow?.phone === consent.phone_at_consent);
+}
+
+function recordWhatsAppRecipientConsent(
+  recipientType: 'customer' | 'staff' | 'enquiry',
+  recipientId: string,
+  purpose: 'operational' | 'marketing',
+  phone: string,
+  enabled: boolean,
+  source: string,
+): void {
+  const now = new Date().toISOString();
+  const existing = db.prepare(
+    'SELECT phone_at_consent, consented_at, revoked_at FROM whatsapp_recipient_consents WHERE recipient_type = ? AND recipient_id = ? AND purpose = ?'
+  ).get(recipientType, recipientId, purpose) as { phone_at_consent: string; consented_at: string; revoked_at: string | null } | undefined;
+
+  if (!enabled) {
+    if (existing && !existing.revoked_at) {
+      db.prepare(
+        'UPDATE whatsapp_recipient_consents SET revoked_at = ? WHERE recipient_type = ? AND recipient_id = ? AND purpose = ?'
+      ).run(now, recipientType, recipientId, purpose);
+    }
+    return;
+  }
+
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new Error('WhatsApp consent requires a valid E.164 phone number.');
+  db.prepare(
+    'INSERT INTO whatsapp_recipient_consents (recipient_type, recipient_id, purpose, phone_at_consent, consented_at, revoked_at, consent_source) VALUES (?, ?, ?, ?, ?, NULL, ?) ' +
+    'ON CONFLICT(recipient_type, recipient_id, purpose) DO UPDATE SET phone_at_consent = excluded.phone_at_consent, consented_at = CASE WHEN whatsapp_recipient_consents.revoked_at IS NOT NULL OR whatsapp_recipient_consents.phone_at_consent <> excluded.phone_at_consent THEN excluded.consented_at ELSE whatsapp_recipient_consents.consented_at END, revoked_at = NULL, consent_source = excluded.consent_source'
+  ).run(recipientType, recipientId, purpose, phone, now, source);
+}
+
+export function updateCustomerWhatsAppUpdates(customerId: string, enabled: boolean): void {
+  const customer = db.prepare('SELECT phone FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL LIMIT 1')
+    .get(customerId) as { phone: string } | undefined;
+  if (!customer) throw new Error('Verified customer profile not found.');
+  recordWhatsAppRecipientConsent('customer', customerId, 'operational', customer.phone.trim(), enabled, 'customer_portal');
+}
+
+export function updateStaffWhatsAppConsents(
+  staffId: string,
+  consent: { operational: boolean; marketing: boolean },
+): { operational: boolean; marketing: boolean } {
+  const staff = db.prepare("SELECT phone FROM users WHERE id = ? AND status = 'Active' LIMIT 1").get(staffId) as { phone: string } | undefined;
+  if (!staff) throw new Error('Active staff account not found.');
+  if ((consent.operational || consent.marketing) && !/^\+[1-9]\d{7,14}$/.test(staff.phone.trim())) {
+    throw new Error('Save a valid E.164 phone number in your staff profile before opting in.');
+  }
+  recordWhatsAppRecipientConsent('staff', staffId, 'operational', staff.phone.trim(), consent.operational, 'staff_self_service');
+  recordWhatsAppRecipientConsent('staff', staffId, 'marketing', staff.phone.trim(), consent.marketing, 'staff_self_service');
+  return consent;
+}
+
+export function getStaffWhatsAppConsents(staffId: string): { operational: boolean; marketing: boolean; phone: string } {
+  const staff = db.prepare("SELECT phone FROM users WHERE id = ? AND status = 'Active' LIMIT 1").get(staffId) as { phone: string } | undefined;
+  if (!staff) return { operational: false, marketing: false, phone: '' };
+  const active = (purpose: 'operational' | 'marketing') => {
+    const row = db.prepare(
+      'SELECT consented_at, revoked_at, phone_at_consent FROM whatsapp_recipient_consents WHERE recipient_type = ? AND recipient_id = ? AND purpose = ?'
+    ).get('staff', staffId, purpose) as { consented_at: string; revoked_at: string | null; phone_at_consent: string } | undefined;
+    return Boolean(row?.consented_at && !row.revoked_at && row.phone_at_consent === staff.phone && /^\+[1-9]\d{7,14}$/.test(staff.phone));
+  };
+  return { operational: active('operational'), marketing: active('marketing'), phone: staff.phone };
+}
+
+export function listWhatsAppConsentContacts(purpose: 'operational' | 'marketing') {
+  const rows = purpose === 'marketing'
+    ? db.prepare(
+      'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c ' +
+      'JOIN communications_consents x ON x.customer_id = c.id ' +
+      'WHERE x.channel = "whatsapp" AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL ' +
+      'AND c.email_verified_at IS NOT NULL AND c.phone <> "" ' +
+      'UNION ALL SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u ' +
+      'JOIN whatsapp_recipient_consents x ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
+      'AND x.purpose = "marketing" AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone ' +
+      'WHERE u.status = "Active" AND u.phone <> "" ' +
+      'UNION ALL SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e ' +
+      'JOIN whatsapp_recipient_consents x ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
+      'AND x.purpose = "marketing" AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone WHERE e.phone <> "" ORDER BY name'
+    ).all()
+    : db.prepare(
+      'SELECT x.recipient_id AS id, u.name, u.email, u.phone, x.recipient_type FROM whatsapp_recipient_consents x ' +
+      'JOIN users u ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
+      'WHERE x.purpose = "operational" AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone AND u.status = "Active" ' +
+      'UNION ALL SELECT x.recipient_id AS id, e.customer_name AS name, e.email, e.phone, x.recipient_type FROM whatsapp_recipient_consents x ' +
+      'JOIN enquiries e ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
+      'WHERE x.purpose = "operational" AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone ' +
+      'UNION ALL SELECT x.recipient_id AS id, c.name, c.email, c.phone, x.recipient_type FROM whatsapp_recipient_consents x ' +
+      'JOIN customer_profiles c ON x.recipient_type = "customer" AND x.recipient_id = c.id ' +
+      'WHERE x.purpose = "operational" AND x.revoked_at IS NULL AND x.phone_at_consent = c.phone AND c.email_verified_at IS NOT NULL ORDER BY name'
+    ).all() as Record<string, unknown>[];
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    email: String(row.email || ''),
+    phone: String(row.phone || ''),
+    recipientType: String(row.recipient_type) as 'customer' | 'staff' | 'enquiry',
+  })).filter((row) => /^\+[1-9]\d{7,14}$/.test(row.phone));
+}
+
+export function getWhatsAppConsentContact(
+  recipientType: 'customer' | 'staff' | 'enquiry',
+  recipientId: string,
+  purpose: 'operational' | 'marketing',
+) {
+  const row = purpose === 'marketing' && recipientType === 'customer'
+    ? db.prepare(
+      'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c ' +
+      'JOIN communications_consents x ON x.customer_id = c.id AND x.channel = "whatsapp" ' +
+      'WHERE c.id = ? AND c.email_verified_at IS NOT NULL AND c.phone <> "" ' +
+      'AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL LIMIT 1'
+    ).get(recipientId)
+    : purpose === 'marketing' && recipientType === 'staff'
+      ? db.prepare(
+        'SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u ' +
+        'JOIN whatsapp_recipient_consents x ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
+        'WHERE u.id = ? AND u.status = "Active" AND u.phone <> "" AND x.purpose = "marketing" ' +
+        'AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone LIMIT 1'
+      ).get(recipientId)
+      : purpose === 'marketing'
+        ? db.prepare(
+          'SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e ' +
+          'JOIN whatsapp_recipient_consents x ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
+          'WHERE e.id = ? AND e.phone <> "" AND x.purpose = "marketing" ' +
+          'AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone LIMIT 1'
+        ).get(recipientId)
+        : recipientType === 'customer'
+          ? db.prepare(
+            'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c ' +
+            'JOIN whatsapp_recipient_consents x ON x.recipient_type = "customer" AND x.recipient_id = c.id ' +
+            'WHERE c.id = ? AND c.email_verified_at IS NOT NULL AND c.phone <> "" AND x.purpose = "operational" ' +
+            'AND x.revoked_at IS NULL AND x.phone_at_consent = c.phone LIMIT 1'
+          ).get(recipientId)
+          : recipientType === 'staff'
+            ? db.prepare(
+              'SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u ' +
+              'JOIN whatsapp_recipient_consents x ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
+              'WHERE u.id = ? AND u.status = "Active" AND u.phone <> "" AND x.purpose = "operational" ' +
+              'AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone LIMIT 1'
+            ).get(recipientId)
+            : db.prepare(
+              'SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e ' +
+              'JOIN whatsapp_recipient_consents x ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
+              'WHERE e.id = ? AND e.phone <> "" AND x.purpose = "operational" ' +
+              'AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone LIMIT 1'
+            ).get(recipientId);
+  if (!row) return null;
+  const contact = row as { id: string; name: string; email: string; phone: string; recipient_type: string };
+  if (!/^\+[1-9]\d{7,14}$/.test(contact.phone)) return null;
+  return {
+    id: String(contact.id),
+    name: String(contact.name),
+    email: String(contact.email || ''),
+    phone: String(contact.phone),
+    recipientType: contact.recipient_type as 'customer' | 'staff' | 'enquiry',
+  };
+}
+
+export function getLifecycleWhatsAppRecipients(
+  entity: 'enquiry' | 'quote' | 'invoice' | 'ticket' | 'installation',
+  entityId: string,
+): ReturnType<typeof listWhatsAppConsentContacts> {
+  let enquiryId: string | null = null;
+  let customerId: string | null = null;
+  if (entity === 'enquiry') {
+    enquiryId = entityId;
+  } else if (entity === 'quote') {
+    const row = db.prepare('SELECT enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1').get(entityId, entityId) as { enquiry_id: string } | undefined;
+    enquiryId = row?.enquiry_id ?? null;
+  } else if (entity === 'invoice') {
+    const row = db.prepare('SELECT enquiry_id FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1').get(entityId, entityId) as { enquiry_id: string } | undefined;
+    enquiryId = row?.enquiry_id ?? null;
+  } else if (entity === 'ticket') {
+    const row = db.prepare('SELECT customer_id FROM service_tickets WHERE id = ? OR ticket_code = ? LIMIT 1').get(entityId, entityId) as { customer_id: string } | undefined;
+    customerId = row?.customer_id ?? null;
+  } else {
+    const row = db.prepare('SELECT enquiry_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1').get(entityId, entityId) as { enquiry_id: string } | undefined;
+    enquiryId = row?.enquiry_id ?? null;
+  }
+
+  const recipients = listWhatsAppConsentContacts('operational');
+  if (entity === 'enquiry') {
+    return [
+      ...recipients.filter((contact) => contact.recipientType === 'staff'),
+      ...recipients.filter((contact) => contact.recipientType === 'enquiry' && contact.id === entityId),
+    ];
+  }
+  if (enquiryId) {
+    const enquiryRecipient = recipients.find((contact) => contact.recipientType === 'enquiry' && contact.id === enquiryId);
+    if (enquiryRecipient) return [enquiryRecipient];
+    const enquiry = db.prepare('SELECT email FROM enquiries WHERE id = ?').get(enquiryId) as { email: string } | undefined;
+    const customer = enquiry?.email
+      ? db.prepare('SELECT id FROM customer_profiles WHERE LOWER(email) = LOWER(?) AND email_verified_at IS NOT NULL LIMIT 1').get(enquiry.email) as { id: string } | undefined
+      : undefined;
+    const customerRecipient = customer
+      ? recipients.find((contact) => contact.recipientType === 'customer' && contact.id === customer.id)
+      : undefined;
+    return customerRecipient ? [customerRecipient] : [];
+  }
+  if (customerId) {
+    const customerRecipient = recipients.find((contact) => contact.recipientType === 'customer' && contact.id === customerId);
+    return customerRecipient ? [customerRecipient] : [];
+  }
+  return [];
+}
+
+export function getLifecycleNotificationTargets(
+  entity: 'enquiry' | 'quote' | 'invoice' | 'ticket' | 'installation',
+  entityId: string,
+): {
+  recipientType: 'customer' | 'staff' | 'enquiry';
+  recipientId: string;
+  name: string;
+  email: string;
+  phone: string;
+  whatsappOperational: boolean;
+  pushOwnerType: 'customer' | 'staff' | null;
+  pushOwnerId: string | null;
+}[] {
+  const targets: {
+    recipientType: 'customer' | 'staff' | 'enquiry';
+    recipientId: string;
+    name: string;
+    email: string;
+    phone: string;
+    whatsappOperational: boolean;
+    pushOwnerType: 'customer' | 'staff' | null;
+    pushOwnerId: string | null;
+  }[] = [];
+
+  const addTarget = (
+    recipientType: 'customer' | 'staff' | 'enquiry',
+    row: { id: string; name: string; email: string; phone: string },
+    pushOwnerType: 'customer' | 'staff' | null = recipientType === 'enquiry' ? null : recipientType,
+    pushOwnerId: string | null = recipientType === 'enquiry' ? null : row.id,
+  ) => {
+    targets.push({
+      recipientType,
+      recipientId: row.id,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      whatsappOperational: hasWhatsAppRecipientConsent(recipientType, row.id, 'operational'),
+      pushOwnerType,
+      pushOwnerId,
+    });
+  };
+
+  if (entity === 'enquiry') {
+    const enquiry = db.prepare('SELECT id, customer_name AS name, email, phone FROM enquiries WHERE id = ? LIMIT 1')
+      .get(entityId) as { id: string; name: string; email: string; phone: string } | undefined;
+    if (enquiry) addTarget('enquiry', enquiry);
+    const staff = db.prepare("SELECT id, name, email, phone FROM users WHERE status = 'Active'")
+      .all() as { id: string; name: string; email: string; phone: string }[];
+    for (const person of staff) addTarget('staff', person);
+  } else if (entity === 'ticket') {
+    const row = db.prepare(
+      'SELECT c.id, c.name, c.email, c.phone FROM service_tickets t JOIN customer_profiles c ON c.id = t.customer_id ' +
+      'WHERE t.id = ? OR t.ticket_code = ? LIMIT 1'
+    ).get(entityId, entityId) as { id: string; name: string; email: string; phone: string } | undefined;
+    if (row) addTarget('customer', row);
+  } else {
+    let enquiryId: string | undefined;
+    if (entity === 'quote') {
+      enquiryId = (db.prepare('SELECT enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1')
+        .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
+    } else if (entity === 'invoice') {
+      enquiryId = (db.prepare('SELECT enquiry_id FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1')
+        .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
+    } else {
+      enquiryId = (db.prepare('SELECT enquiry_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1')
+        .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
+    }
+    if (enquiryId) {
+      const enquiry = db.prepare('SELECT id, customer_name AS name, email, phone FROM enquiries WHERE id = ? LIMIT 1')
+        .get(enquiryId) as { id: string; name: string; email: string; phone: string } | undefined;
+      if (enquiry) {
+        const customer = enquiry.email
+          ? db.prepare('SELECT id, name, email, phone FROM customer_profiles WHERE LOWER(email) = LOWER(?) AND email_verified_at IS NOT NULL LIMIT 1')
+            .get(enquiry.email) as { id: string; name: string; email: string; phone: string } | undefined
+          : undefined;
+        if (customer) addTarget('customer', customer);
+        else addTarget('enquiry', enquiry);
+      }
+    }
+  }
+  return targets;
+}
+
+export function logCommunicationDelivery(event: {
+  eventKey: string;
+  recipientType: 'customer' | 'staff' | 'enquiry';
+  recipientId: string;
+  channel: 'email' | 'push' | 'whatsapp';
+  status: 'sent' | 'not_configured' | 'failed' | 'skipped';
+  errorCode?: string;
+}): void {
+  db.prepare(
+    'INSERT INTO communications_delivery_events (id, event_key, recipient_type, recipient_id, channel, status, error_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(crypto.randomUUID(), event.eventKey, event.recipientType, event.recipientId, event.channel, event.status, event.errorCode ?? null, new Date().toISOString());
+}
+
+export function updateCustomerConsents(customerId: string, consent: { email: boolean; whatsapp: boolean }): void {
+  const now = new Date().toISOString();
+  const statement = db.prepare(
+    'INSERT INTO communications_consents (customer_id, channel, consented_at, revoked_at, updated_at) VALUES ($customerId, $channel, $consentedAt, $revokedAt, $updatedAt) ' +
+    'ON CONFLICT(customer_id, channel) DO UPDATE SET consented_at = excluded.consented_at, revoked_at = excluded.revoked_at, updated_at = excluded.updated_at'
+  );
+  for (const [channel, enabled] of [['email', consent.email], ['whatsapp', consent.whatsapp]] as const) {
+    const existing = db.prepare('SELECT consented_at, revoked_at FROM communications_consents WHERE customer_id = ? AND channel = ?')
+      .get(customerId, channel) as { consented_at: string | null; revoked_at: string | null } | undefined;
+    const alreadyActive = Boolean(existing?.consented_at && !existing.revoked_at);
+    statement.run({
+      $customerId: customerId,
+      $channel: channel,
+      $consentedAt: enabled ? (alreadyActive ? existing?.consented_at || now : now) : existing?.consented_at || null,
+      $revokedAt: enabled ? null : now,
+      $updatedAt: now,
+    });
+  }
+}
+
+export function listMarketingContacts(channel: 'email' | 'whatsapp') {
+  const rows = db.prepare(
+    'SELECT c.id, c.name, c.email, c.phone FROM customer_profiles c ' +
+    'JOIN communications_consents x ON x.customer_id = c.id ' +
+    'WHERE x.channel = ? AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL AND c.email_verified_at IS NOT NULL ORDER BY c.name'
+  ).all(channel) as Record<string, unknown>[];
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    email: String(row.email),
+    phone: String(row.phone),
+  })).filter((row) => channel === 'email' ? Boolean(row.email) : Boolean(row.phone));
+}
+
+export function getMarketingContact(customerId: string, channel: 'email' | 'whatsapp') {
+  return listMarketingContacts(channel).find((contact) => contact.id === customerId) ?? null;
+}
+
+export function upsertPushSubscription(ownerType: 'staff' | 'customer', ownerId: string, subscription: {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}): void {
+  const now = new Date().toISOString();
+  const endpointHash = crypto.createHash('sha256').update(subscription.endpoint).digest('hex');
+  db.prepare(
+    'INSERT INTO push_subscriptions (id, owner_type, owner_id, endpoint_hash, endpoint, p256dh, auth_key, created_at, updated_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint_hash) DO UPDATE SET owner_type = excluded.owner_type, owner_id = excluded.owner_id, endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth_key = excluded.auth_key, updated_at = excluded.updated_at'
+  ).run(crypto.randomUUID(), ownerType, ownerId, endpointHash, subscription.endpoint, subscription.p256dh, subscription.auth, now, now);
+}
+
+export function deletePushSubscription(endpoint: string, owner?: { type: 'staff' | 'customer'; id: string }): void {
+  const endpointHash = crypto.createHash('sha256').update(endpoint).digest('hex');
+  if (owner) {
+    db.prepare('DELETE FROM push_subscriptions WHERE endpoint_hash = ? AND owner_type = ? AND owner_id = ?')
+      .run(endpointHash, owner.type, owner.id);
+  } else {
+    db.prepare('DELETE FROM push_subscriptions WHERE endpoint_hash = ?').run(endpointHash);
+  }
+}
+
+export function getPushSubscriptions(userIds: string[], customerIds: string[] = []) {
+  const clauses: string[] = [];
+  const values: string[] = [];
+  if (userIds.length) {
+    clauses.push(`(p.owner_type = 'staff' AND u.status = 'Active' AND p.owner_id IN (${userIds.map(() => '?').join(',')}))`);
+    values.push(...userIds);
+  }
+  if (customerIds.length) {
+    clauses.push(`(p.owner_type = 'customer' AND c.email_verified_at IS NOT NULL AND p.owner_id IN (${customerIds.map(() => '?').join(',')}))`);
+    values.push(...customerIds);
+  }
+  if (!clauses.length) return [];
+  return db.prepare(
+    `SELECT p.owner_type, p.owner_id, p.endpoint, p.p256dh, p.auth_key FROM push_subscriptions p ` +
+    `LEFT JOIN users u ON p.owner_type = 'staff' AND u.id = p.owner_id ` +
+    `LEFT JOIN customer_profiles c ON p.owner_type = 'customer' AND c.id = p.owner_id ` +
+    `WHERE ${clauses.join(' OR ')}`
+  ).all(...values) as { owner_type: 'staff' | 'customer'; owner_id: string; endpoint: string; p256dh: string; auth_key: string }[];
+}
+
+export function getActiveStaffIds(userIds: string[]): string[] {
+  if (!userIds.length) return [];
+  const placeholders = userIds.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT id FROM users WHERE status = 'Active' AND id IN (${placeholders})`)
+    .all(...userIds) as { id: string }[];
+  return rows.map((row) => row.id);
+}
+
+export function getVerifiedCustomerIds(customerIds: string[]): string[] {
+  if (!customerIds.length) return [];
+  const placeholders = customerIds.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT id FROM customer_profiles WHERE email_verified_at IS NOT NULL AND id IN (${placeholders})`)
+    .all(...customerIds) as { id: string }[];
+  return rows.map((row) => row.id);
+}
+
+export function getPushSubscribedCustomers() {
+  const rows = db.prepare(
+    "SELECT DISTINCT c.id, c.name FROM customer_profiles c JOIN push_subscriptions p ON p.owner_id = c.id " +
+    "WHERE p.owner_type = 'customer' AND c.email_verified_at IS NOT NULL ORDER BY c.name LIMIT 500"
+  ).all() as { id: string; name: string }[];
+  return rows.map((row) => ({ id: row.id, name: row.name }));
 }
 
 export function createCustomerLoginLink(payload: {
@@ -1106,9 +1621,20 @@ export function saveCustomerProfile(payload: {
   company: string;
   refCode: string;
 }): CustomerProfile {
+  const previous = db.prepare(
+    'SELECT phone FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL'
+  ).get(payload.customerId) as { phone: string } | undefined;
   db.prepare(
     'UPDATE customer_profiles SET name = ?, phone = ?, location = ?, company = ?, ref_code = ? WHERE id = ? AND email_verified_at IS NOT NULL'
   ).run(payload.name.trim(), payload.phone.trim(), payload.location.trim(), payload.company.trim(), payload.refCode.trim(), payload.customerId);
+  if (previous && previous.phone.trim() !== payload.phone.trim()) {
+    db.prepare(
+      "UPDATE communications_consents SET revoked_at = ?, updated_at = ? WHERE customer_id = ? AND channel = 'whatsapp' AND revoked_at IS NULL"
+    ).run(new Date().toISOString(), new Date().toISOString(), payload.customerId);
+    db.prepare(
+      "UPDATE whatsapp_recipient_consents SET revoked_at = ? WHERE recipient_type = 'customer' AND recipient_id = ? AND revoked_at IS NULL"
+    ).run(new Date().toISOString(), payload.customerId);
+  }
   const row = db.prepare('SELECT * FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL').get(payload.customerId) as Record<string, unknown> | undefined;
   if (!row) throw new Error('Verified customer profile not found.');
   return {
@@ -1120,6 +1646,9 @@ export function saveCustomerProfile(payload: {
     company: String(row.company),
     refCode: String(row.ref_code),
     createdAt: String(row.created_at),
+    emailMarketingConsent: hasCustomerConsent(payload.customerId, 'email'),
+    whatsappMarketingConsent: hasCustomerConsent(payload.customerId, 'whatsapp'),
+    whatsappUpdatesConsent: hasWhatsAppRecipientConsent('customer', payload.customerId, 'operational'),
   };
 }
 
@@ -1608,6 +2137,11 @@ export function verifyPayment(actor: StaffMember, paymentId: string, decision: '
   return { status: decision };
 }
 
+export function getPaymentInvoiceId(paymentId: string): { invoiceId: string } | null {
+  const row = db.prepare('SELECT invoice_id FROM payments WHERE id = ? LIMIT 1').get(paymentId) as { invoice_id: string } | undefined;
+  return row ? { invoiceId: row.invoice_id } : null;
+}
+
 export function releaseInstallation(
   actor: StaffMember,
   body: { invoiceId: string; releaseType: 'Full Payment' | 'MD Exception'; releaseNote: string; assignedEngineerId: string | null; targetDate: string; systemSummary: string }
@@ -1844,7 +2378,7 @@ export function saveStaffMember(
   }));
 
   if (body.id) {
-    const existing = db.prepare('SELECT role, username FROM users WHERE id = ?').get(body.id) as { role: string; username: string | null } | undefined;
+    const existing = db.prepare('SELECT role, username, phone FROM users WHERE id = ?').get(body.id) as { role: string; username: string | null; phone: string } | undefined;
     if (!existing) throw new Error('Staff account not found.');
     const nextUsername = username || existing.username;
     if (actor.role !== 'superadmin' && (existing.role !== body.role || existing.username !== nextUsername)) {
@@ -1855,6 +2389,10 @@ export function saveStaffMember(
     db.prepare('UPDATE users SET name=?, username=?, phone=?, role=?, title=?, skills=?, status=? WHERE id=?').run(
       body.name.trim(), nextUsername ?? null, body.phone.trim(), body.role, body.title.trim(), body.skills.trim(), body.status, body.id
     );
+    if (existing.phone.trim() !== body.phone.trim()) {
+      db.prepare("UPDATE whatsapp_recipient_consents SET revoked_at = ? WHERE recipient_type = 'staff' AND recipient_id = ? AND revoked_at IS NULL")
+        .run(new Date().toISOString(), body.id);
+    }
     if (body.password && body.password.trim().length >= 12) {
       db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(body.password.trim()), body.id);
     }
@@ -1875,6 +2413,47 @@ export function saveStaffMember(
 
 export function markNotificationsRead(userId: string): void {
   db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(userId);
+}
+
+export function getHomepageSections(): Partial<Record<string, { heading: string; body: string; enabled: boolean }>> {
+  const rows = db.prepare('SELECT section_id, heading, body, enabled FROM homepage_sections')
+    .all() as { section_id: string; heading: string; body: string; enabled: number }[];
+  const content: Partial<Record<string, { heading: string; body: string; enabled: boolean }>> = {};
+  for (const row of rows) {
+    content[row.section_id] = {
+      heading: row.heading,
+      body: row.body,
+      enabled: row.enabled === 1,
+    };
+  }
+  return content;
+}
+
+export function saveHomepageSections(
+  content: Record<string, { heading: string; body: string; enabled: boolean }>,
+  userId: string,
+): void {
+  const sectionIds = ['hero', 'workflow', 'about', 'services', 'projects', 'pricing'];
+  const saveSection = db.prepare(`INSERT INTO homepage_sections
+    (section_id, heading, body, enabled, updated_by, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(section_id) DO UPDATE SET
+      heading = excluded.heading,
+      body = excluded.body,
+      enabled = excluded.enabled,
+      updated_by = excluded.updated_by,
+      updated_at = CURRENT_TIMESTAMP`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const sectionId of sectionIds) {
+      const section = content[sectionId];
+      saveSection.run(sectionId, section.heading, section.body, section.enabled ? 1 : 0, userId);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function getPhotoFile(photoId: string, isAuthedStaff: boolean): { filePath: string; mimeType: string } | null {
