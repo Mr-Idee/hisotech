@@ -8,8 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import Busboy from 'busboy';
 import nodemailer from 'nodemailer';
 import webpush from 'web-push';
-import JSZip from 'jszip';
-import { build as viteBuild, createServer as createViteServer } from 'vite';
+import { createServer as createViteServer } from 'vite';
 import { hasPermission } from './src/lib/solar';
 import {
   acceptInvoiceByCustomer,
@@ -28,6 +27,7 @@ import {
   getCustomerBySessionToken,
   getPhotoFile,
   getPublicCatalog,
+  getPublicEstimatorSettings,
   getPublicDocument,
   getPublicTracking,
   getUploadedCatalogImage,
@@ -56,6 +56,7 @@ import {
   saveQuotation,
   saveRoleDefinition,
   saveStaffMember,
+  savePlatformSettings,
   submitCustomerTicket,
   verifyCustomerLoginLink,
   submitInstallationReport,
@@ -75,6 +76,7 @@ import {
   validateNewsletterAttachment,
   validateWhatsAppAttachment,
 } from './src/lib/communications';
+import type { NewsletterAttachment } from './src/lib/communications';
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -436,37 +438,6 @@ function parseCookies(header: string | undefined): Record<string, string> {
   return out;
 }
 
-const ZIP_SKIP_NAMES = new Set([
-  '.aistudio',
-  'aistudio',
-  '.DS_Store',
-  'node_modules',
-  '.git',
-  '.playwright-cli',
-  'dev-dist',
-]);
-
-function addDirToZip(zipFolder: JSZip, fsDir: string): void {
-  if (!fs.existsSync(fsDir)) return;
-  const isPrivateDataDir = path.basename(fsDir) === 'hiso_private';
-  for (const entry of fs.readdirSync(fsDir, { withFileTypes: true })) {
-    if (ZIP_SKIP_NAMES.has(entry.name) || entry.name === '.env' || entry.name.startsWith('.env.')
-      || entry.name.startsWith('.hiso_preview.sqlite')
-      || (isPrivateDataDir && ['storage', 'backups'].includes(entry.name))) {
-      continue;
-    }
-    const full = path.join(fsDir, entry.name);
-    if (entry.isDirectory()) {
-      const sub = zipFolder.folder(entry.name);
-      if (sub) addDirToZip(sub, full);
-    } else {
-      zipFolder.file(entry.name, fs.readFileSync(full));
-    }
-  }
-}
-
-let pendingDistBuild: Promise<void> | null = null;
-
 function validVapidKeyPair(publicKey: string, privateKey: string): boolean {
   try {
     const publicBytes = Buffer.from(publicKey, 'base64url');
@@ -484,66 +455,6 @@ function validVapidKeyPair(publicKey: string, privateKey: string): boolean {
   } catch {
     return false;
   }
-}
-
-async function ensureBuiltDist(): Promise<string> {
-  const distDir = path.resolve(process.cwd(), 'dist');
-  const distIndex = path.join(distDir, 'index.html');
-  if (!fs.existsSync(distIndex)) {
-    if (!pendingDistBuild) {
-      pendingDistBuild = viteBuild().then(() => undefined).finally(() => {
-        pendingDistBuild = null;
-      });
-    }
-    await pendingDistBuild;
-  }
-  return distDir;
-}
-
-async function createCpanelZip(): Promise<JSZip> {
-  const zip = new JSZip();
-  const phpDir = path.resolve(process.cwd(), 'php-cpanel');
-  addDirToZip(zip, phpDir);
-
-  const distDir = await ensureBuiltDist();
-  const pubHtml = zip.folder('public_html');
-  if (pubHtml && fs.existsSync(distDir)) {
-    addDirToZip(pubHtml, distDir);
-  }
-  return zip;
-}
-
-async function createSourceZip(): Promise<JSZip> {
-  const zip = new JSZip();
-  const rootDir = process.cwd();
-  await ensureBuiltDist();
-
-  const rootFiles = [
-    'package.json',
-    'package-lock.json',
-    'tsconfig.json',
-    'vite.config.ts',
-    'index.html',
-    'metadata.json',
-    'server.ts',
-    '.env.example',
-    '.gitignore',
-  ];
-  for (const file of rootFiles) {
-    const full = path.join(rootDir, file);
-    if (fs.existsSync(full) && fs.statSync(full).isFile()) {
-      zip.file(file, fs.readFileSync(full));
-    }
-  }
-
-  for (const dirName of ['src', 'public', 'php-cpanel', 'dist']) {
-    const fullDir = path.join(rootDir, dirName);
-    if (fs.existsSync(fullDir)) {
-      const folder = zip.folder(dirName);
-      if (folder) addDirToZip(folder, fullDir);
-    }
-  }
-  return zip;
 }
 
 const NOOP_VITE_CLIENT_JS = `
@@ -655,7 +566,7 @@ async function startServer() {
   });
 
   app.get('/api/public/bootstrap', (_req, res) => {
-    res.json({ catalog: getPublicCatalog() });
+    res.json({ catalog: getPublicCatalog(), estimatorSettings: getPublicEstimatorSettings() });
   });
 
   app.post('/api/public/enquiries', async (req, res) => {
@@ -973,6 +884,21 @@ async function startServer() {
       return;
     }
     res.json(hydrateWorkspace(user));
+  });
+
+  app.post('/api/workspace/settings', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user || !(user.role === 'superadmin' || user.role === 'admin'
+        || (hasPermission(user, 'manage_storefront') && hasPermission(user, 'manage_invoices')))) {
+      res.status(user ? 403 : 401).json({ error: user ? 'Platform settings permission required.' : 'Authentication required.' });
+      return;
+    }
+    try {
+      const settings = savePlatformSettings(user, req.body);
+      res.json({ settings });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
   });
 
   app.get('/api/communications/my-whatsapp-consent', (req, res) => {
@@ -1391,6 +1317,72 @@ async function startServer() {
     }
   });
 
+  app.post('/api/documents/send-email', async (req, res) => {
+    const { user } = getSessionUser(req);
+    const type = req.body?.type === 'invoice' ? 'invoice' : req.body?.type === 'quote' ? 'quote' : null;
+    const id = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    if (!type || !id || id.length > 80
+        || (type === 'invoice' && !hasPermission(user, 'manage_invoices'))
+        || (type === 'quote' && !hasPermission(user, 'draft_quotes') && !hasPermission(user, 'manage_invoices'))) {
+      res.status(403).json({ error: 'Your role does not permit sending this document.' });
+      return;
+    }
+    if (!allowCommunicationsAction(user.id, 'document-email', 10)) {
+      res.status(429).json({ error: 'Too many document emails. Please try again later.' });
+      return;
+    }
+    const document = getPublicDocument(type, id);
+    const recipient = document && typeof document.email === 'string' ? document.email.trim() : '';
+    const candidate = req.body?.attachment;
+    if (!document || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      res.status(422).json({ error: 'The customer email address is not available for this document.' });
+      return;
+    }
+    if (!candidate || typeof candidate !== 'object'
+        || typeof candidate.name !== 'string' || typeof candidate.mimeType !== 'string'
+        || typeof candidate.data !== 'string' || !Number.isInteger(candidate.size)) {
+      res.status(422).json({ error: 'A valid PDF attachment is required.' });
+      return;
+    }
+    const attachment: NewsletterAttachment = {
+      name: candidate.name,
+      mimeType: candidate.mimeType,
+      data: candidate.data,
+      size: candidate.size,
+    };
+    const attachmentError = validateNewsletterAttachment(attachment);
+    if (attachmentError || attachment.mimeType !== 'application/pdf' || !attachment.name.toLowerCase().endsWith('.pdf')) {
+      res.status(422).json({ error: attachmentError || 'The document must be a validated PDF file.' });
+      return;
+    }
+    if (!process.env.SMTP_URL || !process.env.MAIL_FROM) {
+      res.status(503).json({ error: 'Email delivery is not configured on the private server.' });
+      return;
+    }
+    const safeCode = String(document.documentCode).replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 80);
+    try {
+      const transport = nodemailer.createTransport(process.env.SMTP_URL);
+      await transport.sendMail({
+        from: process.env.MAIL_FROM,
+        to: recipient,
+        subject: `HI-SOTECH ${type === 'invoice' ? 'Invoice' : 'Quotation'} ${safeCode}`,
+        text: `Please find the HI-SOTECH ${type === 'invoice' ? 'invoice' : 'quotation'} ${safeCode} attached as a PDF.`,
+        attachments: [{
+          filename: `${safeCode}.pdf`,
+          content: Buffer.from(attachment.data, 'base64'),
+          contentType: 'application/pdf',
+        }],
+      });
+      res.json({ ok: true });
+    } catch {
+      res.status(502).json({ error: 'The document email could not be sent. Please try again later.' });
+    }
+  });
+
   app.post('/api/quotes/approve', async (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'approve_quotes')) {
@@ -1619,45 +1611,6 @@ async function startServer() {
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.sendFile(file.filePath);
-  });
-
-  // --- Downloadable PHP + MySQL cPanel Package & Full Source Code (.zip) ---
-  app.get('/api/package-manifest', async (_req, res) => {
-    const [cpanelZip, sourceZip] = await Promise.all([createCpanelZip(), createSourceZip()]);
-    const cpanelFiles = Object.values(cpanelZip.files)
-      .filter((f) => !f.dir)
-      .map((f) => f.name)
-      .sort();
-    const sourceFiles = Object.values(sourceZip.files)
-      .filter((f) => !f.dir)
-      .map((f) => f.name)
-      .sort();
-    res.json({
-      cpanelCount: cpanelFiles.length,
-      sourceCount: sourceFiles.length,
-      cpanelFiles,
-      sourceFiles,
-    });
-  });
-
-  app.get('/api/cpanel-package.zip', async (_req, res) => {
-    const zip = await createCpanelZip();
-    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="hisotech-php-mysql-cpanel.zip"');
-    res.setHeader('Content-Length', String(buffer.length));
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(buffer);
-  });
-
-  app.get('/api/source-package.zip', async (_req, res) => {
-    const zip = await createSourceZip();
-    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="hisotech-full-source-code.zip"');
-    res.setHeader('Content-Length', String(buffer.length));
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(buffer);
   });
 
   app.use('/api', (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

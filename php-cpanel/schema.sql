@@ -312,6 +312,14 @@ CREATE TABLE IF NOT EXISTS `homepage_sections` (
   PRIMARY KEY (`section_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `platform_settings` (
+  `id` VARCHAR(40) NOT NULL,
+  `settings_json` LONGTEXT NOT NULL,
+  `updated_by` VARCHAR(36) NULL,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `communications_consents` (
   `customer_id` VARCHAR(36) NOT NULL,
   `channel` ENUM('email', 'whatsapp') NOT NULL,

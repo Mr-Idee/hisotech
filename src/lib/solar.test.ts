@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CatalogItem, InstallationRecord } from './types';
+import type { CatalogItem, EstimatorSettings, InstallationRecord } from './types';
 import {
   calculateDocumentTotals,
   calculateInvoiceBalance,
@@ -153,6 +153,39 @@ test('quote sizing follows selected catalog grade and component capacities', () 
   assert.equal(panel?.qty, Math.max(2, Math.ceil((estimate.recommendedArrayWatts ?? 0) / 1000)));
   assert.equal(battery?.qty, Math.ceil(estimate.batteryTargetKwh / 10));
   assert.equal(lines.find((line) => line.sku === 'INV-5K-PREMIUM')?.unitPriceNgn, 1400000);
+});
+
+test('quote pricing uses configured Store categories and selected accessory and service SKUs', () => {
+  const configuredCatalog: CatalogItem[] = [
+    { ...SAMPLE_CATALOG[0], category: 'PV Modules' },
+    { ...SAMPLE_CATALOG[1], category: 'Hybrid Inverters' },
+    { ...SAMPLE_CATALOG[2], category: 'Lithium Storage' },
+    { ...SAMPLE_CATALOG[3], id: 'accessory', sku: 'BOS-KIT', name: 'Protection kit', itemType: 'equipment', category: 'Balance of System' },
+    { ...SAMPLE_CATALOG[3], id: 'installation', sku: 'INSTALL', name: 'Installation & commissioning', itemType: 'service', category: 'Engineering' },
+    { ...SAMPLE_CATALOG[3], id: 'delivery', sku: 'DELIVERY', name: 'Nationwide delivery', itemType: 'service', category: 'Logistics', priceNgn: 25000 },
+    { ...SAMPLE_CATALOG[3], id: 'unselected', sku: 'EXTRA', name: 'Unselected extra service', itemType: 'service', category: 'Other' },
+  ];
+  const settings: EstimatorSettings = {
+    inverterCategory: 'Hybrid Inverters',
+    batteryCategory: 'Lithium Storage',
+    panelCategory: 'PV Modules',
+    accessorySkus: ['BOS-KIT'],
+    installationSkus: ['INSTALL'],
+    logisticsSkus: ['DELIVERY'],
+  };
+  const estimate = calculateSolarEstimate([
+    { id: 'load', name: 'Load', qty: 1, watts: 1500, hours: 6 },
+  ]);
+  const lines = buildQuoteLinesFromEstimate(estimate, configuredCatalog, settings);
+
+  assert.deepEqual(lines.map((line) => line.sku), [
+    'PV-550M',
+    'INV-5K-HYB',
+    'BAT-512L',
+    'BOS-KIT',
+    'INSTALL',
+    'DELIVERY',
+  ]);
 });
 
 test('estimate pricing does not show a partial total when required catalog equipment is missing', () => {

@@ -44,8 +44,8 @@ export const DEFAULT_HOMEPAGE_CONTENT: HomepageContent = {
     enabled: true,
   },
   pricing: {
-    heading: 'Transparent packages aligned with live hardware prices.',
-    body: 'Package estimates reflect equipment and service pricing maintained by the HI-SOTECH team.',
+    heading: 'Browse solar equipment and appliances in the Store.',
+    body: 'Use current Store prices to prepare a solar estimate and calculate your daily power consumption.',
     enabled: true,
   },
 };

@@ -17,7 +17,7 @@ import {
   DEFAULT_APPLIANCES,
   formatNgn,
 } from '../lib/solar';
-import type { ApplianceItem, CatalogItem, PowerMode, SolarEstimateResult } from '../lib/types';
+import type { ApplianceItem, CatalogItem, EstimatorSettings, PowerMode, SolarEstimateResult } from '../lib/types';
 
 interface PendingOfflineEstimate {
   localId: string;
@@ -37,6 +37,7 @@ const OFFLINE_QUEUE_KEY = 'hiso_offline_estimates_queue';
 
 interface EstimatorViewProps {
   catalog: CatalogItem[];
+  settings: EstimatorSettings;
   importedAppliances?: ApplianceItem[];
   onClearImported?: () => void;
   onOpenStore: () => void;
@@ -63,6 +64,7 @@ function readOfflineQueue(): PendingOfflineEstimate[] {
 
 export function EstimatorView({
   catalog,
+  settings,
   importedAppliances = [],
   onClearImported,
   onOpenStore,
@@ -139,10 +141,16 @@ export function EstimatorView({
 
   // Directly import prices from the Store catalog.
   const costBreakdown = useMemo(
-    () => computeEstimateCostFromCatalog(estimate, catalog),
-    [estimate, catalog]
+    () => computeEstimateCostFromCatalog(estimate, catalog, 7.5, settings),
+    [estimate, catalog, settings]
   );
   const hasCatalogPricing = costBreakdown.lines.length > 0;
+  const selectedPanel = costBreakdown.lines
+    .map((line) => ({ line, item: catalog.find((item) => item.sku === line.sku) }))
+    .find(({ item }) => item?.category === settings.panelCategory);
+  const selectedBattery = costBreakdown.lines
+    .map((line) => ({ line, item: catalog.find((item) => item.sku === line.sku) }))
+    .find(({ item }) => item?.category === settings.batteryCategory);
 
   const storeAppliances = useMemo(
     () => catalog.filter((c) => c.itemType === 'appliance'),
@@ -585,13 +593,17 @@ export function EstimatorView({
               <div className="min-w-0 rounded-lg bg-white/10 p-3">
                 <div className="text-slate-300">Solar Array</div>
                 <div className="font-mono-num mt-1 text-base font-bold">
-                  {estimate.recommendedPanels550w} × 550W
+                  {selectedPanel
+                    ? `${selectedPanel.line.qty} × ${selectedPanel.item?.watts ?? 0}W`
+                    : `${estimate.recommendedPanels550w} × 550W`}
                 </div>
               </div>
               <div className="min-w-0 rounded-lg bg-white/10 p-3">
                 <div className="text-slate-300">LiFePO4 Storage</div>
                 <div className="font-mono-num mt-1 text-base font-bold">
-                  {estimate.recommendedBatteries5kwh} × 5.12kWh
+                  {selectedBattery
+                    ? `${selectedBattery.line.qty} × ${selectedBattery.item?.capacityKw ?? 0}kWh`
+                    : `${estimate.recommendedBatteries5kwh} × 5.12kWh`}
                 </div>
               </div>
             </div>

@@ -1,25 +1,193 @@
-import { ArrowLeft, Printer } from 'lucide-react';
+import { ArrowLeft, Download, Mail, Printer, Share2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { calculateDocumentTotals, formatNgn } from '../lib/solar';
-import type { LineItem } from '../lib/types';
+import { createDocumentPdf, downloadDocumentPdf } from '../lib/document-pdf';
+import type { BankDetails, LineItem } from '../lib/types';
 
 interface DocumentViewProps {
   type: 'quote' | 'invoice';
   id: string;
+  canEmail: boolean;
+  bankDetails: BankDetails;
   onBack: () => void;
 }
 
-export function DocumentView({ type, id, onBack }: DocumentViewProps) {
+function sampleDocument(type: 'quote' | 'invoice', bankDetails: BankDetails): Record<string, unknown> {
+  const issuedDate = new Date();
+  const formatDate = (date: Date) => date.toISOString().slice(0, 10);
+  const validUntil = new Date(issuedDate);
+  validUntil.setDate(validUntil.getDate() + 7);
+  const dueDate = new Date(issuedDate);
+  dueDate.setDate(dueDate.getDate() + 7);
+  const items: LineItem[] = [
+    { sku: 'SAMPLE-INV-3KVA', description: '3KVA 24V Hybrid Inverter', unit: 'unit', qty: 1, unitPriceNgn: 400_000 },
+    { sku: 'SAMPLE-BAT-5KWH', description: '5KWH 24V Lithium Ion Battery Bank', unit: 'unit', qty: 1, unitPriceNgn: 1_230_000 },
+    { sku: 'SAMPLE-PV-2.5KW', description: '2.5KW Monocrystalline Solar Array', unit: 'panel', qty: 6, unitPriceNgn: 120_000 },
+    { sku: 'SAMPLE-ACCESSORIES', description: 'Installation Accessories', unit: 'lot', qty: 1, unitPriceNgn: 430_000 },
+    { sku: 'SAMPLE-INSTALLATION', description: 'Logistics and Installation', unit: 'lot', qty: 1, unitPriceNgn: 350_000 },
+  ];
+
+  return {
+    type,
+    documentCode: type === 'invoice' ? 'SAMPLE-INV-001' : 'SAMPLE-QUO-001',
+    refCode: 'SAMPLE-REF-001',
+    customerName: 'Sample Customer',
+    location: 'Sample Site, Abuja',
+    phone: 'N/A',
+    email: '',
+    status: type === 'invoice' ? 'Sample' : 'Approved',
+    customerAccepted: false,
+    issuedDate: formatDate(issuedDate),
+    validUntil: formatDate(validUntil),
+    dueDate: formatDate(dueDate),
+    scope: 'Supply and installation of a 3kVA-5kWh-2.5kW solar hybrid inverter system.',
+    terms: 'This example follows the supplied quotation. Quotation validity: 7 days. Confirm current Store prices before issuing a live document.',
+    note: 'Installation warranty is limited to installation work for 2 years. Product warranty coverage is subject to the manufacturer.',
+    discountNgn: 0,
+    taxPercent: 0,
+    bankDetails,
+    items,
+  };
+}
+
+function documentPdfData(doc: Record<string, unknown>, type: 'quote' | 'invoice') {
+  const bank = doc.bankDetails && typeof doc.bankDetails === 'object'
+    ? doc.bankDetails as BankDetails
+    : undefined;
+  return {
+    type,
+    documentCode: String(doc.documentCode || 'document'),
+    customerName: String(doc.customerName || 'Customer'),
+    location: String(doc.location || ''),
+    phone: String(doc.phone || ''),
+    email: String(doc.email || ''),
+    refCode: String(doc.refCode || ''),
+    issuedDate: String(doc.issuedDate || ''),
+    dueDate: String(doc.dueDate || ''),
+    validUntil: String(doc.validUntil || ''),
+    status: String(doc.status || ''),
+    scope: String(doc.scope || ''),
+    terms: String(doc.terms || doc.note || ''),
+    discountNgn: Number(doc.discountNgn || 0),
+    taxPercent: Number(doc.taxPercent || 0),
+    items: Array.isArray(doc.items) ? doc.items as LineItem[] : [],
+    bankDetails: bank,
+  };
+}
+
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+export function DocumentView({ type, id, canEmail, bankDetails, onBack }: DocumentViewProps) {
   const [doc, setDoc] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const isSample = id === 'sample-quote' || id === 'sample-invoice';
 
   useEffect(() => {
+    let active = true;
+    setDoc(null);
+    setError('');
+    setActionMessage('');
+    if (isSample) {
+      setDoc(sampleDocument(type, bankDetails));
+      return () => {
+        active = false;
+      };
+    }
+
     api
       .getDocument(type, id)
-      .then(setDoc)
-      .catch((err) => setError((err as Error).message));
-  }, [type, id]);
+      .then((result) => {
+        if (active) setDoc(result);
+      })
+      .catch((err) => {
+        if (active) setError((err as Error).message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [type, id, bankDetails, isSample]);
+
+  async function createPdf() {
+    if (!doc) throw new Error('Document is not ready.');
+    return createDocumentPdf(documentPdfData(doc, type));
+  }
+
+  async function handleDownload() {
+    setBusy(true);
+    setActionMessage('');
+    try {
+      const blob = await createPdf();
+      downloadDocumentPdf(blob, String(doc?.documentCode || type));
+      setActionMessage('PDF downloaded.');
+    } catch (actionError) {
+      setActionMessage((actionError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleShare() {
+    setBusy(true);
+    setActionMessage('');
+    try {
+      const blob = await createPdf();
+      const filename = `${String(doc?.documentCode || type).replace(/[^A-Za-z0-9._-]/g, '_')}.pdf`;
+      const file = new File([blob], filename, { type: 'application/pdf' });
+      if (typeof navigator.share !== 'function' || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
+        setActionMessage('This browser cannot share PDF attachments. Download the PDF, then attach it in WhatsApp or your mail app.');
+        return;
+      }
+      await navigator.share({
+        title: String(doc?.documentCode || (type === 'invoice' ? 'Invoice' : 'Quotation')),
+        files: [file],
+      });
+      setActionMessage('PDF shared.');
+    } catch (actionError) {
+      if ((actionError as Error).name !== 'AbortError') {
+        setActionMessage((actionError as Error).message);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleEmail() {
+    if (isSample) return;
+    setBusy(true);
+    setActionMessage('');
+    try {
+      const blob = await createPdf();
+      if (blob.size > 2 * 1024 * 1024) {
+        throw new Error('This PDF exceeds the 2MB email attachment limit.');
+      }
+      const filename = `${String(doc?.documentCode || type).replace(/[^A-Za-z0-9._-]/g, '_')}.pdf`;
+      await api.sendDocumentEmail({
+        type,
+        id,
+        attachment: {
+          name: filename,
+          mimeType: 'application/pdf',
+          data: await blobToBase64(blob),
+          size: blob.size,
+        },
+      });
+      setActionMessage('PDF emailed to the customer address on file.');
+    } catch (actionError) {
+      setActionMessage((actionError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (error) {
     return (
@@ -40,10 +208,11 @@ export function DocumentView({ type, id, onBack }: DocumentViewProps) {
   const totals = calculateDocumentTotals(items, Number(doc.discountNgn || 0), Number(doc.taxPercent || 0));
   const isInvoice = doc.type === 'invoice';
   const bank = doc.bankDetails as { bankName?: string; accountName?: string; accountNumber?: string } | undefined;
+  const hasBankDetails = Boolean(bank && Object.values(bank).some(Boolean));
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
-      <div className="no-print mb-6 flex items-center justify-between gap-4">
+      <div className="no-print mb-6 flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
           onClick={onBack}
@@ -52,19 +221,33 @@ export function DocumentView({ type, id, onBack }: DocumentViewProps) {
           <ArrowLeft className="h-4 w-4" />
           Back
         </button>
-        <button
-          type="button"
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-5 py-2 text-sm font-semibold text-white hover:bg-[#D61F26]"
-        >
-          <Printer className="h-4 w-4" />
-          Print / Save PDF
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={busy} onClick={handleDownload} className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-3 py-2 text-sm font-semibold text-white hover:bg-[#D61F26] disabled:opacity-60">
+            <Download className="h-4 w-4" /> Download PDF
+          </button>
+          <button type="button" disabled={busy} onClick={handleShare} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:border-[#081E3E] disabled:opacity-60">
+            <Share2 className="h-4 w-4" /> Share PDF
+          </button>
+          {canEmail && !isSample && (
+            <button type="button" disabled={busy} onClick={handleEmail} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:border-[#081E3E] disabled:opacity-60">
+              <Mail className="h-4 w-4" /> Email customer
+            </button>
+          )}
+          <button type="button" disabled={busy} onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:border-[#081E3E] disabled:opacity-60">
+            <Printer className="h-4 w-4" /> Print
+          </button>
+        </div>
       </div>
+      {actionMessage && <p role="status" className="no-print mb-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-slate-200">{actionMessage}</p>}
 
       <article className="overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm">
         <div className="h-2 bg-[#D61F26]" />
         <div className="p-8 sm:p-10">
+          {isSample && (
+            <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-900">
+              Sample document for layout and pricing reference only. Do not use for payment or fulfilment.
+            </div>
+          )}
           <header className="flex flex-wrap items-start justify-between gap-6 border-b border-slate-200 pb-6">
             <div className="flex items-center gap-3">
               <img src="/assets/hisotech-logo-mark.png" alt="HI-SOTECH" className="h-12 w-12 object-contain" />
@@ -134,6 +317,12 @@ export function DocumentView({ type, id, onBack }: DocumentViewProps) {
             </div>
           )}
 
+          <section aria-label="Warranty and expected equipment life" className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-950">
+            <h2 className="font-bold uppercase tracking-wide">Warranty &amp; expected equipment life</h2>
+            <p className="mt-1">Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error. Product warranty coverage is subject to each manufacturer’s written terms.</p>
+            <p className="mt-1">Expected service life: inverters 5–10 years; battery banks 5–15 years; solar panels 10–25 years. These are estimates, not guaranteed lifetimes.</p>
+          </section>
+
           <div className="mt-6 overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="border-b-2 border-[#081E3E] text-xs uppercase text-slate-600">
@@ -170,7 +359,7 @@ export function DocumentView({ type, id, onBack }: DocumentViewProps) {
 
           <div className="mt-6 grid gap-6 border-t border-slate-200 pt-6 sm:grid-cols-2">
             <div>
-              {isInvoice && bank ? (
+              {isInvoice && hasBankDetails && bank ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs">
                   <div className="font-semibold uppercase tracking-wider text-[#D61F26]">
                     Receiving Bank Account
@@ -184,7 +373,7 @@ export function DocumentView({ type, id, onBack }: DocumentViewProps) {
               ) : (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
                   <div className="font-semibold text-[#081E3E]">Commercial Terms</div>
-                  <p className="mt-1">{String(doc.terms || 'Subject to site inspection and MD sign-off.')}</p>
+                  <p className="mt-1">{String(doc.terms || doc.note || 'Subject to site inspection and MD sign-off.')}</p>
                 </div>
               )}
             </div>

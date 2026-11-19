@@ -270,25 +270,35 @@ export function StorefrontView({
         <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((item) => {
             const inCart = cart.find((c) => c.sku === item.sku);
+            const isSmartHardware = item.itemType === 'equipment'
+              && /inverter|batter/i.test(`${item.category} ${item.name}`);
             return (
               <article
                 key={item.sku}
-                className="flex flex-col justify-between overflow-hidden rounded-xl border border-slate-200 bg-white transition-transform duration-200 hover:-translate-y-0.5 dark:border-slate-800 dark:bg-[#0B1D39]"
+                className="product-card group flex flex-col justify-between overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0B1D39]"
               >
                 <div>
-                  <div className="aspect-[4/3] overflow-hidden bg-slate-100 dark:bg-slate-800">
+                  <div className="relative aspect-[4/3] overflow-hidden bg-slate-100 dark:bg-slate-800">
                     {item.imagePath ? (
                       <img
                         src={item.imagePath}
                         alt={item.name}
                         className="h-full w-full object-cover"
                         referrerPolicy="no-referrer"
+                        loading="lazy"
+                        decoding="async"
                       />
                     ) : (
                       <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 p-6 text-slate-500 dark:from-slate-800 dark:to-slate-900">
                         <Package className="h-8 w-8" />
                         <span className="mt-2 text-xs font-medium">{item.name}</span>
                       </div>
+                    )}
+                    {isSmartHardware && (
+                      <span className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-200/60 bg-slate-950/75 px-2.5 py-1 text-[9px] font-bold tracking-wider text-emerald-100 backdrop-blur">
+                        <span className="status-led h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                        SPEC PROFILE
+                      </span>
                     )}
                   </div>
 
@@ -324,6 +334,15 @@ export function StorefrontView({
                         {item.stockQty === 999 ? 'Service / Engineering' : `${item.stockQty} ${item.unit} available`}
                       </span>
                     </div>
+                    {isSmartHardware && (
+                      <div className="product-spec-reveal mt-3 overflow-hidden rounded-lg border border-emerald-200/70 bg-emerald-50/70 px-3 text-xs text-emerald-950 dark:border-emerald-900/70 dark:bg-emerald-950/20 dark:text-emerald-100">
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 py-2">
+                          {item.grade && <span>{item.grade} grade</span>}
+                          {item.capacityKw !== null && <span>{item.capacityKw} {item.category.toLowerCase().includes('batter') ? 'kWh storage' : 'kW capacity'}</span>}
+                          {item.watts !== null && <span>{item.watts}W rated</span>}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -491,6 +510,8 @@ export function StorefrontView({
                             src={it.imagePath}
                             alt={it.name}
                             className="h-14 w-16 shrink-0 rounded-md object-cover"
+                            loading="lazy"
+                            decoding="async"
                           />
                         )}
                         <div className="min-w-0 flex-1">

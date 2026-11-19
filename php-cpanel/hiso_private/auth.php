@@ -213,7 +213,7 @@ function hiso_notify_roles(array $roleIds, string $title, string $body, string $
     }
 }
 
-function hiso_send_mail(string $toEmail, string $subject, string $message): void {
+function hiso_send_mail(string $toEmail, string $subject, string $message, array $attachments = []): void {
     global $CONFIG;
     if (!filter_var($toEmail, FILTER_VALIDATE_EMAIL)) {
         throw new RuntimeException('Invalid email recipient.');
@@ -258,5 +258,15 @@ function hiso_send_mail(string $toEmail, string $subject, string $message): void
     $mailer->addAddress($toEmail);
     $mailer->Subject = $subject;
     $mailer->Body = $message;
+    foreach ($attachments as $attachment) {
+        if (!is_array($attachment) || !is_string($attachment['bytes'] ?? null)
+            || !is_string($attachment['name'] ?? null) || !is_string($attachment['mime'] ?? null)
+            || $attachment['name'] === '' || strlen($attachment['name']) > 120
+            || preg_match('/[\/\\\\\r\n]/', $attachment['name'])
+            || !in_array($attachment['mime'], ['application/pdf', 'image/jpeg', 'image/png'], true)) {
+            throw new InvalidArgumentException('Mail attachment data is invalid.');
+        }
+        $mailer->addStringAttachment($attachment['bytes'], $attachment['name'], 'base64', $attachment['mime']);
+    }
     $mailer->send();
 }

@@ -27,6 +27,174 @@
   .tabular-nums {
     font-variant-numeric: tabular-nums;
   }
+
+  input[type="number"] {
+    accent-color: var(--hiso-red);
+  }
+
+  .dark input[type="number"] {
+    color-scheme: dark;
+  }
+
+  .dark input[type="password"] {
+    color: #f1f5f9;
+    caret-color: #f1f5f9;
+  }
+
+  ::selection {
+    background: rgb(8 30 62 / 18%);
+    color: inherit;
+  }
+
+  .dark ::selection {
+    background: #334155;
+    color: #f8fafc;
+  }
+}
+
+.energy-path {
+  fill: none;
+  stroke-width: 3;
+  stroke-dasharray: 8 12;
+  stroke-linecap: round;
+  animation: flowPulse 1.2s linear infinite;
+  filter: url(#energy-glow);
+}
+
+.solar-flow,
+.battery-charge-flow {
+  stroke: #f59e0b;
+}
+
+.grid-flow,
+.grid-home-flow {
+  stroke: #38bdf8;
+}
+
+.battery-home-flow {
+  stroke: #10b981;
+  opacity: 0.12;
+  animation: none;
+}
+
+.flow-node > rect:first-of-type {
+  fill: rgb(8 30 62 / 88%);
+  stroke: rgb(255 255 255 / 28%);
+  stroke-width: 1.5;
+}
+
+.inverter-node .inverter-display {
+  fill: rgb(6 19 39 / 85%);
+  stroke: rgb(148 163 184 / 65%);
+  stroke-width: 1;
+}
+
+.flow-node > path,
+.flow-node > rect:not(:first-of-type) {
+  stroke: rgb(226 232 240 / 85%);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.flow-node text,
+.utility-node text {
+  fill: #e2e8f0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.utility-node path,
+.utility-node circle {
+  fill: none;
+  stroke: #7dd3fc;
+  stroke-width: 2;
+  transition: stroke 250ms ease, filter 250ms ease;
+}
+
+.status-led {
+  animation: ledBreathe 2.5s ease-in-out infinite;
+}
+
+.inverter-node .status-led {
+  fill: #34d399;
+  stroke: none;
+}
+
+.house-window {
+  fill: #fbbf24;
+  stroke: none;
+  filter: drop-shadow(0 0 5px rgb(251 191 36 / 75%));
+}
+
+.is-outage .utility-node path,
+.is-outage .utility-node circle {
+  stroke: #f87171;
+}
+
+.is-outage .grid-flow,
+.is-outage .grid-home-flow {
+  opacity: 0.12;
+  animation: none;
+}
+
+.is-outage .grid-home-flow {
+  opacity: 0;
+}
+
+.is-outage .battery-home-flow {
+  opacity: 1;
+  animation: flowPulse 1.2s linear infinite;
+}
+
+.is-outage .battery-node > rect:first-of-type {
+  stroke: #34d399;
+  filter: drop-shadow(0 0 8px rgb(16 185 129 / 35%));
+}
+
+.product-card {
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 300ms ease;
+}
+
+.product-spec-reveal {
+  max-height: 5rem;
+  opacity: 1;
+  transition: max-height 300ms ease, opacity 250ms ease;
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .product-card:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 20px 35px -10px rgb(16 185 129 / 20%);
+  }
+
+  .product-card .product-spec-reveal {
+    max-height: 0;
+    opacity: 0;
+  }
+
+  .product-card:hover .product-spec-reveal,
+  .product-card:focus-within .product-spec-reveal {
+    max-height: 5rem;
+    opacity: 1;
+  }
+}
+
+@keyframes flowPulse {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+@keyframes ledBreathe {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
 }
 
 .hiso-reveal {
@@ -49,6 +217,21 @@
     opacity: 1;
     transform: none;
     transition: none;
+  }
+  .energy-path,
+  .status-led {
+    animation: none !important;
+  }
+  .product-card {
+    transition: none;
+  }
+  .product-card:hover {
+    transform: none;
+    box-shadow: none;
+  }
+  .product-card .product-spec-reveal {
+    max-height: none;
+    opacity: 1;
   }
 }
 

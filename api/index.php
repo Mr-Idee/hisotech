@@ -71,6 +71,182 @@ function hiso_hydrate_catalog(): array {
     ], $rows);
 }
 
+function hiso_platform_settings_table_exists(): bool {
+    $stmt = hiso_pdo()->prepare(
+        'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?'
+    );
+    $stmt->execute(['platform_settings']);
+    return (int)$stmt->fetchColumn() > 0;
+}
+
+function hiso_default_estimator_settings(array $catalog): array {
+    $categories = [];
+    foreach ($catalog as $item) {
+        if (($item['itemType'] ?? '') === 'equipment' && is_string($item['category'] ?? null)) {
+            $categories[] = $item['category'];
+        }
+    }
+    $categories = array_values(array_unique($categories));
+    $chooseCategory = static function (string $preferred, string $pattern) use ($categories): string {
+        if (in_array($preferred, $categories, true)) return $preferred;
+        foreach ($categories as $category) {
+            if (preg_match($pattern, $category)) return $category;
+        }
+        return $preferred;
+    };
+    $inverterCategory = $chooseCategory('Inverters', '/inverter/i');
+    $batteryCategory = $chooseCategory('Battery Storage', '/batter/i');
+    $panelCategory = $chooseCategory('Solar Panels', '/solar|panel|module|pv/i');
+    $core = [$inverterCategory, $batteryCategory, $panelCategory];
+    $accessories = [];
+    $installations = [];
+    $logistics = [];
+    foreach ($catalog as $item) {
+        if (($item['itemType'] ?? '') === 'equipment' && !in_array($item['category'] ?? '', $core, true)) {
+            $accessories[] = (string)$item['sku'];
+        }
+        if (($item['itemType'] ?? '') !== 'service') continue;
+        $description = (string)($item['category'] ?? '') . ' ' . (string)($item['name'] ?? '') . ' ' . (string)($item['sku'] ?? '');
+        if (!$installations && preg_match('/install|commission|survey/i', $description)) {
+            $installations[] = (string)$item['sku'];
+        }
+        if (preg_match('/logistic|delivery|transport/i', $description)) {
+            $logistics[] = (string)$item['sku'];
+        }
+    }
+    return [
+        'inverterCategory' => $inverterCategory,
+        'batteryCategory' => $batteryCategory,
+        'panelCategory' => $panelCategory,
+        'accessorySkus' => $accessories,
+        'installationSkus' => $installations,
+        'logisticsSkus' => $logistics,
+    ];
+}
+
+function hiso_load_platform_settings(?array $catalog = null): array {
+    $catalog ??= hiso_hydrate_catalog();
+    $defaults = [
+        'bankDetails' => ['bankName' => '', 'accountName' => '', 'accountNumber' => ''],
+        'estimator' => hiso_default_estimator_settings($catalog),
+    ];
+    if (!hiso_platform_settings_table_exists()) return $defaults;
+    $stmt = hiso_pdo()->prepare('SELECT settings_json FROM platform_settings WHERE id = ? LIMIT 1');
+    $stmt->execute(['global']);
+    $row = $stmt->fetch();
+    if (!$row) return $defaults;
+    $stored = json_decode((string)$row['settings_json'], true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($stored)) throw new RuntimeException('Stored platform settings are invalid.');
+    $bank = $stored['bankDetails'] ?? [];
+    if (!is_array($bank)) throw new RuntimeException('Stored invoice bank details are invalid.');
+    foreach (['bankName', 'accountName', 'accountNumber'] as $field) {
+        if (isset($bank[$field]) && !is_string($bank[$field])) {
+            throw new RuntimeException('Stored invoice bank details are invalid.');
+        }
+    }
+    $estimator = $stored['estimator'] ?? [];
+    if (!is_array($estimator)) throw new RuntimeException('Stored estimator settings are invalid.');
+    $normalized = $defaults['estimator'];
+    foreach (['inverterCategory', 'batteryCategory', 'panelCategory'] as $field) {
+        $category = $estimator[$field] ?? null;
+        if (is_string($category) && ($catalog === [] || count(array_filter(
+            $catalog,
+            static fn($item) => ($item['itemType'] ?? '') === 'equipment' && ($item['category'] ?? '') === $category
+        )) > 0)) {
+            $normalized[$field] = $category;
+        }
+    }
+    foreach (['accessorySkus' => 'equipment', 'installationSkus' => 'service', 'logisticsSkus' => 'service'] as $field => $itemType) {
+        if (!is_array($estimator[$field] ?? null)) continue;
+        $allowed = [];
+        foreach ($catalog as $item) {
+            if (($item['itemType'] ?? '') === $itemType) $allowed[(string)$item['sku']] = true;
+        }
+        $normalized[$field] = array_values(array_unique(array_filter(
+            $estimator[$field],
+            static fn($sku) => is_string($sku) && isset($allowed[$sku])
+        )));
+    }
+    return [
+        'bankDetails' => [
+            'bankName' => (string)($bank['bankName'] ?? ''),
+            'accountName' => (string)($bank['accountName'] ?? ''),
+            'accountNumber' => (string)($bank['accountNumber'] ?? ''),
+        ],
+        'estimator' => $normalized,
+    ];
+}
+
+function hiso_can_manage_platform_settings(array $user): bool {
+    $permissions = $user['permissions'] ?? [];
+    return ($user['role'] ?? '') === 'superadmin'
+        || ($user['role'] ?? '') === 'admin'
+        || (in_array('manage_storefront', $permissions, true) && in_array('manage_invoices', $permissions, true));
+}
+
+function hiso_save_platform_settings(array $actor, array $body): array {
+    if (!hiso_platform_settings_table_exists()) {
+        throw new RuntimeException('Platform settings migration is required. Import php-cpanel/migrations/005-platform-settings.sql in phpMyAdmin.');
+    }
+    $bank = $body['bankDetails'] ?? null;
+    $estimator = $body['estimator'] ?? null;
+    if (!is_array($bank) || !is_array($estimator)) throw new InvalidArgumentException('Settings data is invalid.');
+    $bankDetails = [];
+    foreach (['bankName' => 120, 'accountName' => 120, 'accountNumber' => 50] as $field => $maxLength) {
+        if (!is_string($bank[$field] ?? null)) throw new InvalidArgumentException('Bank details are invalid.');
+        $value = trim($bank[$field]);
+        if (strlen($value) > $maxLength || preg_match('/[\x00-\x1f\x7f]/', $value)) {
+            throw new InvalidArgumentException('Bank details exceed the allowed length or contain invalid characters.');
+        }
+        $bankDetails[$field] = $value;
+    }
+    $bankValues = array_values($bankDetails);
+    if (count(array_filter($bankValues, static fn($value) => $value !== '')) > 0
+        && count(array_filter($bankValues, static fn($value) => $value === '')) > 0) {
+        throw new InvalidArgumentException('Provide all bank details, or leave all three fields blank.');
+    }
+    $catalog = hiso_hydrate_catalog();
+    $defaults = hiso_default_estimator_settings($catalog);
+    $safeEstimator = [];
+    foreach (['inverterCategory', 'batteryCategory', 'panelCategory'] as $field) {
+        $category = $estimator[$field] ?? null;
+        if (!is_string($category) || ($catalog !== [] && !in_array($category, array_map(
+            static fn($item) => (string)$item['category'],
+            array_values(array_filter($catalog, static fn($item) => ($item['itemType'] ?? '') === 'equipment'))
+        ), true))) {
+            throw new InvalidArgumentException('Select valid Store categories for estimator equipment.');
+        }
+        $safeEstimator[$field] = $category;
+    }
+    foreach (['accessorySkus' => 'equipment', 'installationSkus' => 'service', 'logisticsSkus' => 'service'] as $field => $itemType) {
+        $selected = $estimator[$field] ?? null;
+        if (!is_array($selected) || count($selected) > 100) {
+            throw new InvalidArgumentException('Estimator Store item selections are invalid.');
+        }
+        $allowed = [];
+        foreach ($catalog as $item) {
+            if (($item['itemType'] ?? '') === $itemType) $allowed[(string)$item['sku']] = true;
+        }
+        foreach ($selected as $sku) {
+            if (!is_string($sku) || !isset($allowed[$sku])) {
+                throw new InvalidArgumentException('Estimator Store item selections are invalid. Refresh the Store and try again.');
+            }
+        }
+        $safeEstimator[$field] = array_values(array_unique($selected));
+    }
+    foreach (['inverterCategory', 'batteryCategory', 'panelCategory'] as $field) {
+        if ($catalog === [] && $safeEstimator[$field] === '') $safeEstimator[$field] = $defaults[$field];
+    }
+    $settings = ['bankDetails' => $bankDetails, 'estimator' => $safeEstimator];
+    $stmt = hiso_pdo()->prepare(
+        'INSERT INTO platform_settings (id, settings_json, updated_by) VALUES (?, ?, ?) ' .
+        'ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP'
+    );
+    $stmt->execute(['global', json_encode($settings, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $actor['id']]);
+    hiso_audit($actor, 'UPDATE_PLATFORM_SETTINGS', 'PlatformSettings', 'global', 'Updated invoice bank details and solar estimator rules.');
+    return $settings;
+}
+
 function hiso_hydrate_ticket(array $t): array {
     return [
         'id' => $t['id'],
@@ -440,7 +616,9 @@ try {
     }
 
     if ($method === 'GET' && $route === 'public/bootstrap') {
-        hiso_json_response(['catalog' => hiso_hydrate_catalog()]);
+        $catalog = hiso_hydrate_catalog();
+        $settings = hiso_load_platform_settings($catalog);
+        hiso_json_response(['catalog' => $catalog, 'estimatorSettings' => $settings['estimator']]);
     }
 
     if ($method === 'POST' && $route === 'public/enquiries') {
@@ -657,6 +835,53 @@ try {
                 'scope' => $row['scope'], 'terms' => $row['terms'], 'note' => $row['note'], 'issuedDate' => $row['issued_date'], 'validUntil' => $row['valid_until'],
                 'discountNgn' => (float)$row['discount_ngn'], 'taxPercent' => (float)$row['tax_percent'], 'approvedBy' => $row['approved_by'], 'items' => json_decode($row['items_json'] ?: '[]', true),
             ]);
+        }
+    }
+
+    if ($method === 'POST' && $route === 'documents/send-email') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        $body = hiso_json_body();
+        $type = ($body['type'] ?? null) === 'invoice' ? 'invoice' : (($body['type'] ?? null) === 'quote' ? 'quote' : '');
+        $id = trim((string)($body['id'] ?? ''));
+        if (($type === 'invoice' && !in_array('manage_invoices', $user['permissions'] ?? [], true))
+            || ($type === 'quote' && !in_array('draft_quotes', $user['permissions'] ?? [], true)
+                && !in_array('manage_invoices', $user['permissions'] ?? [], true))) {
+            hiso_json_response(['error' => 'Your role does not permit sending this document.'], 403);
+        }
+        if ($type === '' || $id === '' || strlen($id) > 80) {
+            hiso_json_response(['error' => 'Document type or reference is invalid.'], 422);
+        }
+        hiso_require_communications_rate_limit($user, 'document-email', 10);
+        $table = $type === 'invoice' ? 'invoices' : 'quotations';
+        $codeColumn = $type === 'invoice' ? 'invoice_code' : 'quote_code';
+        $stmt = hiso_pdo()->prepare(
+            "SELECT d.{$codeColumn} AS document_code, e.email FROM {$table} d JOIN enquiries e ON e.id = d.enquiry_id WHERE d.id = ? OR d.{$codeColumn} = ? LIMIT 1"
+        );
+        $stmt->execute([$id, $id]);
+        $document = $stmt->fetch();
+        if (!$document || !filter_var($document['email'] ?? '', FILTER_VALIDATE_EMAIL)) {
+            hiso_json_response(['error' => 'The customer email address is not available for this document.'], 422);
+        }
+        try {
+            $media = hiso_validate_whatsapp_media(is_array($body['attachment'] ?? null) ? $body['attachment'] : []);
+            if ($media['mime'] !== 'application/pdf' || strtolower(pathinfo($media['name'], PATHINFO_EXTENSION)) !== 'pdf') {
+                throw new InvalidArgumentException('A validated PDF attachment is required.');
+            }
+            $safeCode = preg_replace('/[^A-Za-z0-9._-]/', '-', (string)$document['document_code']);
+            $documentName = substr($safeCode ?: 'HI-SOTECH-document', 0, 80) . '.pdf';
+            $label = $type === 'invoice' ? 'Invoice' : 'Quotation';
+            hiso_send_mail(
+                (string)$document['email'],
+                'HI-SOTECH ' . $label . ' ' . (string)$document['document_code'],
+                'Please find the HI-SOTECH ' . strtolower($label) . ' attached as a PDF.',
+                [['bytes' => $media['bytes'], 'name' => $documentName, 'mime' => 'application/pdf']]
+            );
+            hiso_json_response(['ok' => true]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        } catch (Throwable $error) {
+            hiso_json_response(['error' => 'The document email could not be sent. Please try again later.'], 502);
         }
     }
 
@@ -1025,7 +1250,29 @@ try {
     if ($method === 'GET' && $route === 'workspace/bootstrap') {
         $user = hiso_current_user();
         if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
-        hiso_json_response(hiso_hydrate_workspace($user));
+        $workspace = hiso_hydrate_workspace($user);
+        $workspace['settings'] = hiso_load_platform_settings();
+        if (!hiso_can_manage_platform_settings($user)) {
+            $workspace['settings']['bankDetails'] = ['bankName' => '', 'accountName' => '', 'accountNumber' => ''];
+        }
+        hiso_json_response($workspace);
+    }
+
+    if ($method === 'POST' && $route === 'workspace/settings') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        if (!hiso_can_manage_platform_settings($user)) {
+            hiso_json_response(['error' => 'Platform settings permission required.'], 403);
+        }
+        if (!hiso_platform_settings_table_exists()) {
+            hiso_json_response(['error' => 'Platform settings migration is required. Import php-cpanel/migrations/005-platform-settings.sql in phpMyAdmin.'], 503);
+        }
+        try {
+            $settings = hiso_save_platform_settings($user, hiso_json_body());
+            hiso_json_response(['settings' => $settings]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
     }
 
     if ($method === 'GET' && $route === 'communications/my-whatsapp-consent') {
@@ -1443,8 +1690,9 @@ try {
 
         $invId = hiso_uuid();
         $invCode = hiso_next_code('invoices', 'invoice_code', 'INV');
+        $bankDetails = hiso_load_platform_settings()['bankDetails'];
         $pdo->prepare('INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, discount_ngn, tax_percent, total_ngn, bank_details_json, issued_date, due_date, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 14 DAY), ?)')
-            ->execute([$invId, $invCode, $quote['id'], $quote['enquiry_id'], $quote['customer_name'], $quote['discount_ngn'], $quote['tax_percent'], $total, json_encode(['bankName' => 'Example Bank', 'accountName' => 'DEMO ONLY - DO NOT PAY', 'accountNumber' => '0000000000']), $quote['items_json']]);
+            ->execute([$invId, $invCode, $quote['id'], $quote['enquiry_id'], $quote['customer_name'], $quote['discount_ngn'], $quote['tax_percent'], $total, json_encode($bankDetails, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $quote['items_json']]);
         $pdo->prepare('UPDATE quotations SET status = "Invoiced" WHERE id = ?')->execute([$quote['id']]);
         $pdo->prepare('UPDATE enquiries SET status = "Invoiced" WHERE id = ?')->execute([$quote['enquiry_id']]);
         hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);

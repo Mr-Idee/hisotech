@@ -12,13 +12,16 @@ import {
   ROLE_DEFAULT_PERMISSIONS,
   validateInstallationRelease,
 } from '../lib/solar';
+import { defaultEstimatorSettings, normalizeEstimatorSettings } from '../lib/estimator-settings';
 import type {
   AuditLogRecord,
+  BankDetails,
   CatalogItem,
   CatalogItemType,
   CustomerEquipment,
   CustomerProfile,
   EnquiryRecord,
+  EstimatorSettings,
   InstallationRecord,
   InvoiceRecord,
   LineItem,
@@ -27,6 +30,7 @@ import type {
   OrderPaymentMethod,
   PaymentRecord,
   PermissionKey,
+  PlatformSettings,
   QuotationRecord,
   RoleDefinition,
   ServiceTicket,
@@ -322,6 +326,12 @@ CREATE TABLE IF NOT EXISTS homepage_sections (
   enabled INTEGER NOT NULL DEFAULT 1,
   updated_by TEXT,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS platform_settings (
+  id TEXT PRIMARY KEY,
+  settings_json TEXT NOT NULL,
+  updated_by TEXT,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS communications_consents (
@@ -629,6 +639,107 @@ export function getPublicCatalog(): CatalogItem[] {
     description: String(r.description || ''),
     imagePath: String(r.image_path),
   }));
+}
+
+export function canManagePlatformSettings(user: StaffMember | null): boolean {
+  return Boolean(user && (
+    user.role === 'superadmin'
+    || user.role === 'admin'
+    || (hasPermission(user, 'manage_storefront') && hasPermission(user, 'manage_invoices'))
+  ));
+}
+
+export function getPlatformSettings(): PlatformSettings {
+  const catalog = getPublicCatalog();
+  const row = db.prepare("SELECT settings_json FROM platform_settings WHERE id = 'global'").get() as
+    | { settings_json: string }
+    | undefined;
+  if (!row) {
+    return {
+      bankDetails: { bankName: '', accountName: '', accountNumber: '' },
+      estimator: defaultEstimatorSettings(catalog),
+    };
+  }
+  const stored = JSON.parse(row.settings_json) as Record<string, unknown>;
+  const bank = stored.bankDetails && typeof stored.bankDetails === 'object'
+    ? stored.bankDetails as Record<string, unknown>
+    : {};
+  const bankDetails: BankDetails = {
+    bankName: typeof bank.bankName === 'string' ? bank.bankName : '',
+    accountName: typeof bank.accountName === 'string' ? bank.accountName : '',
+    accountNumber: typeof bank.accountNumber === 'string' ? bank.accountNumber : '',
+  };
+  return {
+    bankDetails,
+    estimator: normalizeEstimatorSettings(stored.estimator, catalog),
+  };
+}
+
+export function getPublicEstimatorSettings(): EstimatorSettings {
+  return getPlatformSettings().estimator;
+}
+
+export function savePlatformSettings(actor: StaffMember, value: unknown): PlatformSettings {
+  if (!value || typeof value !== 'object') throw new Error('Settings data is invalid.');
+  const source = value as Record<string, unknown>;
+  const bank = source.bankDetails && typeof source.bankDetails === 'object'
+    ? source.bankDetails as Record<string, unknown>
+    : null;
+  if (!bank || typeof bank.bankName !== 'string' || typeof bank.accountName !== 'string'
+      || typeof bank.accountNumber !== 'string') {
+    throw new Error('Bank details are invalid.');
+  }
+  const bankDetails: BankDetails = {
+    bankName: bank.bankName.trim(),
+    accountName: bank.accountName.trim(),
+    accountNumber: bank.accountNumber.trim(),
+  };
+  if (bankDetails.bankName.length > 120 || bankDetails.accountName.length > 120
+      || bankDetails.accountNumber.length > 50
+      || /[\u0000-\u001f\u007f]/.test(`${bankDetails.bankName}${bankDetails.accountName}${bankDetails.accountNumber}`)) {
+    throw new Error('Bank details exceed the allowed length or contain invalid characters.');
+  }
+  const bankFields = [bankDetails.bankName, bankDetails.accountName, bankDetails.accountNumber];
+  if (bankFields.some(Boolean) && bankFields.some((field) => !field)) {
+    throw new Error('Provide all bank details, or leave all three fields blank.');
+  }
+
+  const catalog = getPublicCatalog();
+  const estimatorSource = source.estimator && typeof source.estimator === 'object'
+    ? source.estimator as Record<string, unknown>
+    : null;
+  if (!estimatorSource) throw new Error('Estimator settings are invalid.');
+  const categoryKeys = ['inverterCategory', 'batteryCategory', 'panelCategory'] as const;
+  for (const key of categoryKeys) {
+    if (typeof estimatorSource[key] !== 'string') throw new Error('Select valid Store categories for estimator equipment.');
+    const category = estimatorSource[key] as string;
+    if (catalog.length > 0 && !catalog.some((item) => item.itemType === 'equipment' && item.category === category)) {
+      throw new Error('An estimator equipment category is not present in the Store.');
+    }
+  }
+  const selections: [keyof Pick<EstimatorSettings, 'accessorySkus' | 'installationSkus' | 'logisticsSkus'>, 'equipment' | 'service'][] = [
+    ['accessorySkus', 'equipment'],
+    ['installationSkus', 'service'],
+    ['logisticsSkus', 'service'],
+  ];
+  for (const [key, itemType] of selections) {
+    const selected = estimatorSource[key];
+    if (!Array.isArray(selected) || selected.length > 100
+        || selected.some((sku) => typeof sku !== 'string'
+          || !catalog.some((item) => item.itemType === itemType && item.sku === sku))) {
+      throw new Error('Estimator Store item selections are invalid. Refresh the Store and try again.');
+    }
+  }
+  const settings: PlatformSettings = {
+    bankDetails,
+    estimator: normalizeEstimatorSettings(estimatorSource, catalog),
+  };
+  db.prepare(
+    "INSERT INTO platform_settings (id, settings_json, updated_by, updated_at) VALUES ('global', ?, ?, ?) " +
+    'ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_by = excluded.updated_by, updated_at = excluded.updated_at'
+  ).run(JSON.stringify(settings), actor.id, new Date().toISOString());
+  writeAudit(actor, 'UPDATE_PLATFORM_SETTINGS', 'PlatformSettings', 'global', 'Updated invoice bank details and solar estimator rules.');
+  return settings;
 }
 
 export function authenticateUser(identifier: string, password: string): { token: string; user: StaffMember } | null {
@@ -1916,9 +2027,13 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
       : (db.prepare('SELECT * FROM store_orders ORDER BY created_at DESC').all() as Record<string, unknown>[]).map(
           hydrateStoreOrderRow
         );
+  const platformSettings = getPlatformSettings();
 
   return {
     user,
+    settings: canManagePlatformSettings(user)
+      ? platformSettings
+      : { ...platformSettings, bankDetails: { bankName: '', accountName: '', accountNumber: '' } },
     roles,
     staff,
     catalog,
@@ -2107,7 +2222,7 @@ export function issueInvoice(actor: StaffMember, quotationId: string) {
   ).run(
     id, invoiceCode, String(quote.id), String(quote.enquiry_id), String(quote.customer_name),
     Number(quote.discount_ngn), Number(quote.tax_percent), totals.total,
-    JSON.stringify({ bankName: 'Example Bank', accountName: 'DEMO ONLY - DO NOT PAY', accountNumber: '0000000000' }),
+    JSON.stringify(getPlatformSettings().bankDetails),
     isoDateOffset(0), isoDateOffset(14), String(quote.items_json), now
   );
   db.prepare("UPDATE quotations SET status = 'Invoiced' WHERE id = ?").run(String(quote.id));

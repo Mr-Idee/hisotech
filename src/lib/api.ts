@@ -3,10 +3,12 @@ import type {
   CatalogItemType,
   CustomerEquipment,
   CustomerProfile,
+  EstimatorSettings,
   LineItem,
   OrderDeliveryMethod,
   OrderPaymentMethod,
   PermissionKey,
+  PlatformSettings,
   ServiceTicket,
   SolarEstimateResult,
   StaffMember,
@@ -54,8 +56,11 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getPublicBootstrap: async () => {
-    const data = await request<{ catalog: WorkspaceBootstrap['catalog'] }>('/api/public/bootstrap');
-    if (!Array.isArray(data.catalog)) {
+    const data = await request<{
+      catalog: WorkspaceBootstrap['catalog'];
+      estimatorSettings: EstimatorSettings;
+    }>('/api/public/bootstrap');
+    if (!Array.isArray(data.catalog) || !data.estimatorSettings || typeof data.estimatorSettings !== 'object') {
       throw new Error('Server returned an invalid public catalog.');
     }
     return data;
@@ -321,6 +326,22 @@ export const api = {
   me: () => request<{ user: StaffMember }>('/api/auth/me'),
 
   getWorkspace: () => request<WorkspaceBootstrap>('/api/workspace/bootstrap'),
+
+  savePlatformSettings: (settings: PlatformSettings) =>
+    request<{ settings: PlatformSettings }>('/api/workspace/settings', {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    }),
+
+  sendDocumentEmail: (payload: {
+    type: 'quote' | 'invoice';
+    id: string;
+    attachment: NewsletterAttachment;
+  }) =>
+    request<{ ok: boolean }>('/api/documents/send-email', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   createStaffEnquiry: (payload: {
     customerName: string;

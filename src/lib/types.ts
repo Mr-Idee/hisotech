@@ -153,6 +153,20 @@ export interface BankDetails {
   accountNumber: string;
 }
 
+export interface EstimatorSettings {
+  inverterCategory: string;
+  batteryCategory: string;
+  panelCategory: string;
+  accessorySkus: string[];
+  installationSkus: string[];
+  logisticsSkus: string[];
+}
+
+export interface PlatformSettings {
+  bankDetails: BankDetails;
+  estimator: EstimatorSettings;
+}
+
 export interface InvoiceRecord {
   id: string;
   invoiceCode: string;
@@ -340,6 +354,7 @@ export interface StoreOrderRecord {
 
 export interface WorkspaceBootstrap {
   user: StaffMember;
+  settings: PlatformSettings;
   roles: RoleDefinition[];
   staff: StaffMember[];
   catalog: CatalogItem[];

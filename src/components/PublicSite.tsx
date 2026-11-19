@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   Sun,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { formatNgn } from '../lib/solar';
 import type { CatalogItem } from '../lib/types';
@@ -67,7 +67,7 @@ const WORKFLOW_STEPS = [
       'Managing Director job release dispatches certified COREN & SPVI engineers across Nigeria, with photo-verified stage tracking and dedicated Customer Portal help desk support.',
     deliverables: [
       'Live HISO reference tracking across 5 field stages',
-      '1-year comprehensive workmanship warranty',
+      '2-year installation-only workmanship warranty',
       'Customer Equipment Registry & Help Desk tickets',
     ],
     ctaLabel: 'Track a Project',
@@ -227,14 +227,51 @@ const FAQS = [
   },
   {
     q: 'What is the validity of quotations and warranty coverage?',
-    a: 'Every formal HI-SOTECH quotation is valid for 7 days and installations carry a 1-year comprehensive workmanship warranty, backed by expected lifespans of 5–15 years (batteries), 1–20 years (inverters), and 10–35 years (panels).',
+    a: 'Formal quotations are valid for 7 days. The supplied quotation specifies a 2-year installation-only warranty; theft, natural disasters, and end-user error are excluded. Expected service life is 5–10 years for inverters, 5–15 years for battery banks, and 10–25 years for solar panels. These are estimates, not product warranty terms, and may vary by model and use.',
   },
 ];
+
+function ImpactCounter({ target, suffix = '' }: { target: number; suffix?: string }) {
+  const elementRef = useRef<HTMLSpanElement>(null);
+  const [value, setValue] = useState(0);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setValue(target);
+      return;
+    }
+
+    let frame = 0;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      observer.disconnect();
+      const start = performance.now();
+      const duration = 1100;
+      const animate = (now: number) => {
+        const progress = Math.min(1, (now - start) / duration);
+        const eased = 1 - (1 - progress) ** 3;
+        setValue(Math.round(target * eased));
+        if (progress < 1) frame = requestAnimationFrame(animate);
+      };
+      frame = requestAnimationFrame(animate);
+    }, { threshold: 0.5 });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [target]);
+
+  return <span ref={elementRef}>{value.toLocaleString('en-NG')}{suffix}</span>;
+}
 
 export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleTheme, onNavigate }: PublicSiteProps) {
   const [workflowIdx, setWorkflowIdx] = useState(0);
   const [projectSector, setProjectSector] = useState<'All' | 'Residential' | 'Commercial' | 'Institutional'>('All');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const [outageMode, setOutageMode] = useState(false);
 
   const [contactName, setContactName] = useState('');
   const [contactPhone, setContactPhone] = useState('');
@@ -332,35 +369,102 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                 Customer Service Portal
               </button>
             </div>
-            <div className="mt-10 grid grid-cols-3 gap-3 border-t border-white/15 pt-6 sm:gap-6">
-              <div>
-                <div className="font-mono-num text-xl font-bold text-white sm:text-2xl">50MWp+</div>
-                <div className="mt-1 text-xs text-slate-300">Installed nationwide</div>
-              </div>
-              <div>
-                <div className="font-mono-num text-xl font-bold text-white sm:text-2xl">8+ Years</div>
-                <div className="mt-1 text-xs text-slate-300">Engineering track record</div>
-              </div>
-              <div>
-                <div className="font-mono-num text-xl font-bold text-white sm:text-2xl">24/7</div>
-                <div className="mt-1 text-xs text-slate-300">Backup reliability</div>
-              </div>
-            </div>
+            <p className="mt-8 border-t border-white/15 pt-5 text-xs font-medium text-slate-300">
+              Designed around your daily load. Delivered with a 5-stage installation and a 2-year installation-only warranty.
+            </p>
           </div>
 
           <div className="lg:col-span-6">
-            <div className="relative h-full min-h-[300px] overflow-hidden rounded-xl border border-white/15 bg-[#0F2D59] sm:min-h-[360px]">
+            <div className={`energy-flow-panel relative h-full min-h-[380px] overflow-hidden rounded-xl border border-white/15 bg-[#0F2D59] sm:min-h-[430px] ${outageMode ? 'is-outage' : ''}`}>
               <img
                 src={heroImage}
-                alt="Architectural Nigerian commercial and residential complex powered by HI-SOTECH solar arrays at golden hour"
-                className="h-full w-full object-cover"
+                alt=""
+                aria-hidden="true"
+                className="absolute inset-0 h-full w-full object-cover opacity-20"
                 referrerPolicy="no-referrer"
+                loading="eager"
+                fetchPriority="high"
+                decoding="async"
               />
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#081E3E]/95 via-[#081E3E]/70 to-transparent p-5 sm:p-6">
-                <p className="text-xs font-medium text-red-300">Global Technology Partners</p>
-                <p className="mt-1 text-sm font-medium text-white">
-                  {PARTNERS.join(' · ')}
-                </p>
+              <div className="relative z-10 flex h-full flex-col justify-between bg-gradient-to-br from-[#081E3E]/80 via-[#0F2D59]/65 to-[#081E3E]/90 p-4 sm:p-6">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold tracking-[0.18em] text-amber-200">SYSTEM FLOW SIMULATION</p>
+                    <p className="mt-1 text-xs text-slate-200">Illustrative energy path, not live equipment telemetry</p>
+                  </div>
+                  <span className={`rounded-full border px-3 py-1 text-[10px] font-bold ${outageMode ? 'border-red-300/50 bg-red-500/15 text-red-100' : 'border-sky-300/40 bg-sky-400/10 text-sky-100'}`}>
+                    {outageMode ? 'GRID OUTAGE' : 'GRID CONNECTED'}
+                  </span>
+                </div>
+
+                <svg viewBox="0 0 640 360" role="img" aria-labelledby="energy-flow-title energy-flow-desc" className="energy-flow-diagram my-2 w-full">
+                  <title id="energy-flow-title">Solar, inverter, battery, grid, and home energy flow</title>
+                  <desc id="energy-flow-desc">Animated paths show solar charging, battery storage, and the home supply. Use the outage switch to simulate utility power loss.</desc>
+                  <defs>
+                    <filter id="energy-glow" x="-80%" y="-80%" width="260%" height="260%">
+                      <feGaussianBlur stdDeviation="3" result="blur" />
+                      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                    </filter>
+                    <linearGradient id="panel-gradient" x1="0" x2="1">
+                      <stop offset="0" stopColor="#0ea5e9" />
+                      <stop offset="1" stopColor="#38bdf8" />
+                    </linearGradient>
+                  </defs>
+                  <path className="energy-path solar-flow" d="M142 146 H224" />
+                  <path className="energy-path battery-charge-flow" d="M310 190 V238" />
+                  <path className="energy-path grid-flow" d="M394 64 V99 H328 V118" />
+                  <path className="energy-path grid-home-flow" d="M334 148 H440 Q458 148 458 166 V184" />
+                  <path className="energy-path battery-home-flow" d="M334 276 H430 Q458 276 458 248 V226" />
+
+                  <g className="flow-node solar-node">
+                    <rect x="28" y="106" width="114" height="90" rx="14" />
+                    <rect x="47" y="119" width="76" height="43" rx="4" fill="url(#panel-gradient)" />
+                    <path d="M72 120v41m26-41v41M48 141h74M85 162v10m-19 2h38" />
+                    <text x="85" y="188" textAnchor="middle">SOLAR ARRAY</text>
+                  </g>
+                  <g className="flow-node inverter-node">
+                    <rect x="224" y="105" width="110" height="89" rx="14" />
+                    <rect className="inverter-display" x="244" y="121" width="70" height="31" rx="5" />
+                    <path d="M255 139h18l7-9 8 15 7-6h10M279 162h0" />
+                    <circle className="status-led" cx="315" cy="174" r="4" />
+                    <text x="279" y="210" textAnchor="middle">HYBRID INVERTER</text>
+                  </g>
+                  <g className="flow-node battery-node">
+                    <rect x="224" y="236" width="110" height="80" rx="14" />
+                    <rect x="243" y="254" width="72" height="41" rx="5" />
+                    <rect x="315" y="266" width="6" height="17" rx="2" />
+                    <path d="M258 263v23m14-23v23m14-23v23m14-23v23" />
+                    <text x="279" y="337" textAnchor="middle">BATTERY BANK</text>
+                  </g>
+                  <g className="utility-node">
+                    <path d="M382 77 400 28l18 49M389 56h22m-29 12h36m-18-36v66m-22-8h44" />
+                    <circle cx="400" cy="35" r="3" />
+                    <text x="400" y="111" textAnchor="middle">UTILITY GRID</text>
+                  </g>
+                  <g className="flow-node home-node">
+                    <path className="home-shell" d="m418 198 40-35 40 35v42h-80z" />
+                    <path d="M449 240v-27h18v27" />
+                    <rect className="house-window" x="428" y="203" width="12" height="12" rx="2" />
+                    <rect className="house-window" x="476" y="203" width="12" height="12" rx="2" />
+                    <text x="458" y="269" textAnchor="middle">HOME LOAD</text>
+                  </g>
+                </svg>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/15 pt-4">
+                  <div aria-live="polite" className="text-xs text-slate-200">
+                    {outageMode ? 'Battery supplies the home while solar continues charging.' : 'Utility supplies the home while solar can charge the battery.'}
+                  </div>
+                  <button
+                    type="button"
+                    aria-pressed={outageMode}
+                    onClick={() => setOutageMode((active) => !active)}
+                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${outageMode ? 'border-amber-200/50 bg-amber-300/10 text-amber-50 hover:bg-amber-300/20' : 'border-white/30 bg-white/10 text-white hover:bg-white/20'}`}
+                  >
+                    <span className={`h-2 w-2 rounded-full ${outageMode ? 'bg-red-400' : 'bg-emerald-400'}`} />
+                    {outageMode ? 'Restore Grid Supply' : 'Simulate Power Outage'}
+                  </button>
+                </div>
+                <p className="mt-3 text-[10px] text-slate-400">Actual transfer time and operating behavior depend on the selected inverter model and installation.</p>
               </div>
             </div>
           </div>
@@ -462,6 +566,8 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                   alt="Engr. Oseni Olalekan and the HI-SOTECH Solar Engineering team"
                   className="aspect-[4/3] w-full object-cover"
                   referrerPolicy="no-referrer"
+                  loading="lazy"
+                  decoding="async"
                 />
                 <div className="border-t border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
                   <p className="text-xs font-semibold text-[#D61F26]">Founder & Managing Director</p>
@@ -501,8 +607,8 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                     Core Values &amp; Warranty
                   </div>
                   <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-                    Innovation, Integrity, Quality, and Customer Focus—backed by a 1-year installation warranty and up
-                    to 10-year select equipment guarantees.
+                    Innovation, Integrity, Quality, and Customer Focus—backed by a 2-year installation-only warranty and
+                    manufacturer-specific equipment coverage.
                   </p>
                 </div>
               </div>
@@ -578,6 +684,8 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                       alt={project.title}
                       className="h-full w-full object-cover transition-transform duration-300 hover:scale-[1.03]"
                       referrerPolicy="no-referrer"
+                      loading="lazy"
+                      decoding="async"
                     />
                   </div>
                   <div className="p-6">
@@ -597,6 +705,29 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
             </div>
           </Reveal>
         </div>
+      </section>
+
+      <section aria-label="HI-SOTECH engineering impact" className="border-y border-slate-200 bg-white py-10 dark:border-slate-800 dark:bg-[#091830]">
+        <Reveal>
+          <div className="mx-auto grid max-w-7xl grid-cols-2 gap-6 px-4 sm:px-6 lg:grid-cols-4 lg:px-8">
+            <div className="text-center">
+              <div className="font-mono-num text-2xl font-extrabold text-[#081E3E] dark:text-white"><ImpactCounter target={50} suffix="MWp+" /></div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Installed nationwide</p>
+            </div>
+            <div className="text-center">
+              <div className="font-mono-num text-2xl font-extrabold text-[#081E3E] dark:text-white"><ImpactCounter target={8} suffix="+ years" /></div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Engineering track record</p>
+            </div>
+            <div className="text-center">
+              <div className="font-mono-num text-2xl font-extrabold text-[#081E3E] dark:text-white"><ImpactCounter target={24} suffix="/7" /></div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Backup power focus</p>
+            </div>
+            <div className="text-center">
+              <div className="font-mono-num text-2xl font-extrabold text-[#081E3E] dark:text-white">2 years</div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Installation workmanship warranty</p>
+            </div>
+          </div>
+        </Reveal>
       </section>
 
       {/* Pricing Tiers & Store Snapshot */}
@@ -906,6 +1037,8 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
               alt="HI-SOTECH"
               className="h-7 w-7 rounded bg-white p-0.5 object-contain"
               referrerPolicy="no-referrer"
+              loading="lazy"
+              decoding="async"
             />
             <div>
               <p className="text-sm font-semibold text-white">HI-SOTECH Solar Inverter Co. Ltd</p>

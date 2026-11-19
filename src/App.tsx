@@ -14,7 +14,8 @@ import {
   normalizeHomepageContent,
   type HomepageContent,
 } from './lib/homepage';
-import type { ApplianceItem, CatalogItem } from './lib/types';
+import type { ApplianceItem, BankDetails, CatalogItem, EstimatorSettings, PlatformSettings } from './lib/types';
+import { defaultEstimatorSettings, normalizeEstimatorSettings } from './lib/estimator-settings';
 
 const CACHED_CATALOG_KEY = 'hiso_cached_catalog';
 const THEME_MODE_KEY = 'hiso_theme_mode';
@@ -57,8 +58,10 @@ function readCachedCatalog(): CatalogItem[] {
 export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => readRouteFromHash());
   const [trackRef, setTrackRef] = useState<string | undefined>(undefined);
-  const [docView, setDocView] = useState<{ type: 'quote' | 'invoice'; id: string } | null>(null);
+  const [docView, setDocView] = useState<{ type: 'quote' | 'invoice'; id: string; canEmail: boolean } | null>(null);
   const [catalog, setCatalog] = useState<CatalogItem[]>(() => readCachedCatalog());
+  const [estimatorSettings, setEstimatorSettings] = useState<EstimatorSettings>(() => defaultEstimatorSettings([]));
+  const [bankDetails, setBankDetails] = useState<BankDetails>({ bankName: '', accountName: '', accountNumber: '' });
   const [homepage, setHomepage] = useState<HomepageContent>(DEFAULT_HOMEPAGE_CONTENT);
   const [importedAppliances, setImportedAppliances] = useState<ApplianceItem[]>([]);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
@@ -81,6 +84,7 @@ export default function App() {
       .getPublicBootstrap()
       .then((res) => {
         saveAndSetCatalog(res.catalog);
+        setEstimatorSettings(normalizeEstimatorSettings(res.estimatorSettings, res.catalog));
       })
       .catch(() => {
         // Offline mode: fallback cleanly to cached catalog from localStorage
@@ -169,6 +173,8 @@ export default function App() {
         <DocumentView
           type={docView.type}
           id={docView.id}
+          canEmail={docView.canEmail}
+          bankDetails={bankDetails}
           onBack={() => setDocView(null)}
         />
       ) : route === 'home' ? (
@@ -193,6 +199,7 @@ export default function App() {
       ) : route === 'estimator' ? (
         <EstimatorView
           catalog={catalog}
+          settings={estimatorSettings}
           importedAppliances={importedAppliances}
           onClearImported={() => setImportedAppliances([])}
           onOpenStore={() => handleNavigate('store')}
@@ -206,13 +213,17 @@ export default function App() {
       ) : route === 'track' ? (
         <TrackerView
           initialRef={trackRef}
-          onOpenDocument={(type, id) => setDocView({ type, id })}
+          onOpenDocument={(type, id) => setDocView({ type, id, canEmail: false })}
         />
       ) : (
         <WorkspaceView
-          onOpenDocument={(type, id) => setDocView({ type, id })}
+          onOpenDocument={(type, id) => setDocView({ type, id, canEmail: true })}
           onCatalogChange={saveAndSetCatalog}
           onHomepageChange={setHomepage}
+          onSettingsChange={(settings: PlatformSettings) => {
+            setEstimatorSettings(settings.estimator);
+            setBankDetails(settings.bankDetails);
+          }}
         />
       )}
 

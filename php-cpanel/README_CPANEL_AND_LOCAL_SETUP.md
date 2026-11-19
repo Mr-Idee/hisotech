@@ -32,7 +32,7 @@ For future releases, run `npm run build`; it compiles from `index.source.html` a
 
 For databases imported from an earlier version, first create and verify a restorable phpMyAdmin backup. Then import `migrations/001-username-and-demo-cleanup.sql` once. It adds the nullable unique username and catalog grade columns and deletes only records matching the original seeded demonstration IDs and identifiers. Do not import this migration into a database already created from the current `schema.sql`; the columns are already present. The migration does not remove other customer or operational records.
 
-The current homepage editor uses `homepage_sections`; that table is included in `schema.sql` for fresh installs and `migrations/002-homepage-sections.sql` for older databases. Import `migrations/003-communications-integrations.sql` and then `migrations/004-whatsapp-consent-lifecycle.sql` once on an existing database after taking a verified backup. Do not rerun migration `001` or `002` if already applied.
+The current homepage editor uses `homepage_sections`; that table is included in `schema.sql` for fresh installs and `migrations/002-homepage-sections.sql` for older databases. Import `migrations/003-communications-integrations.sql` and then `migrations/004-whatsapp-consent-lifecycle.sql` once on an existing database after taking a verified backup. Import `migrations/005-platform-settings.sql` once to enable invoice bank details and configurable estimator settings. Migration `005` is already included in `schema.sql` for fresh installs. Do not rerun migrations that have already been applied.
 
 ## Communications integrations
 

@@ -6,6 +6,7 @@ import type {
   OrderDeliveryMethod,
   PaymentRecord,
   PermissionKey,
+  EstimatorSettings,
   PowerMode,
   SolarEstimateOptions,
   SolarEstimateResult,
@@ -166,7 +167,8 @@ export function calculateSolarEstimate(
 
 export function buildQuoteLinesFromEstimate(
   estimate: SolarEstimateResult | null,
-  catalog: CatalogItem[]
+  catalog: CatalogItem[],
+  settings?: EstimatorSettings
 ): LineItem[] {
   const hardwareAndServices = catalog.filter((c) => c.itemType !== 'appliance');
   if (!estimate || estimate.connectedLoadWatts === 0) {
@@ -180,6 +182,9 @@ export function buildQuoteLinesFromEstimate(
   }
 
   const grade = estimate.equipmentGrade?.trim().toLowerCase() || 'standard';
+  const inverterCategory = settings?.inverterCategory ?? 'Inverters';
+  const batteryCategory = settings?.batteryCategory ?? 'Battery Storage';
+  const panelCategory = settings?.panelCategory ?? 'Solar Panels';
   const filterGrade = (items: CatalogItem[]) => {
     const matchingGrade = items.filter((item) => item.grade?.trim().toLowerCase() === grade);
     const ungraded = items.filter((item) => !item.grade?.trim());
@@ -189,7 +194,7 @@ export function buildQuoteLinesFromEstimate(
 
   const inverters = filterGrade(
     hardwareAndServices
-      .filter((c) => c.category === 'Inverters' && c.capacityKw !== null)
+      .filter((c) => c.category === inverterCategory && c.capacityKw !== null)
       .sort((a, b) => (a.capacityKw ?? 0) - (b.capacityKw ?? 0))
   );
   const chosenInverter =
@@ -198,7 +203,7 @@ export function buildQuoteLinesFromEstimate(
 
   const lines: LineItem[] = [];
   const panelCandidates = filterGrade(
-    hardwareAndServices.filter((item) => item.category === 'Solar Panels' && (item.watts ?? 0) > 0)
+    hardwareAndServices.filter((item) => item.category === panelCategory && (item.watts ?? 0) > 0)
   );
   const pv = panelCandidates.sort(
     (a, b) => a.priceNgn / (a.watts ?? 1) - b.priceNgn / (b.watts ?? 1)
@@ -228,7 +233,7 @@ export function buildQuoteLinesFromEstimate(
     });
   }
   const batteryCandidates = filterGrade(
-    hardwareAndServices.filter((item) => item.category === 'Battery Storage' && (item.capacityKw ?? 0) > 0)
+    hardwareAndServices.filter((item) => item.category === batteryCategory && (item.capacityKw ?? 0) > 0)
   );
   const bat = batteryCandidates.sort(
     (a, b) => a.priceNgn / (a.capacityKw ?? 1) - b.priceNgn / (b.capacityKw ?? 1)
@@ -246,21 +251,17 @@ export function buildQuoteLinesFromEstimate(
     });
   }
 
-  const coreCategories = new Set(['Solar Panels', 'Inverters', 'Battery Storage']);
-  const accessoryCategories = [
-    ...new Set(
-      hardwareAndServices
-        .filter((item) => item.itemType === 'equipment' && !coreCategories.has(item.category))
-        .map((item) => item.category)
-    ),
-  ];
-  const accessories = accessoryCategories.flatMap((category) =>
-    filterGrade(
-      hardwareAndServices.filter(
-        (item) => item.itemType === 'equipment' && item.category === category
-      )
-    )
-  );
+  const coreCategories = new Set([panelCategory, inverterCategory, batteryCategory]);
+  const accessories = settings
+    ? hardwareAndServices.filter((item) => item.itemType === 'equipment'
+      && settings.accessorySkus.includes(item.sku) && !coreCategories.has(item.category))
+    : [...new Set(
+        hardwareAndServices
+          .filter((item) => item.itemType === 'equipment' && !coreCategories.has(item.category))
+          .map((item) => item.category)
+      )].flatMap((category) =>
+        filterGrade(hardwareAndServices.filter((item) => item.itemType === 'equipment' && item.category === category))
+      );
   for (const accessory of accessories) {
     const isMounting = /mount/i.test(`${accessory.category} ${accessory.name}`);
     const qty = isMounting ? Math.max(1, Math.ceil(panelQty / 8)) : 1;
@@ -274,10 +275,12 @@ export function buildQuoteLinesFromEstimate(
   }
 
   const services = hardwareAndServices.filter((item) => item.itemType === 'service');
-  const installation = filterGrade(services.filter((item) =>
-    /install|commission|survey/i.test(`${item.category} ${item.name} ${item.sku}`)
-  ))[0];
-  if (installation) {
+  const installations = settings
+    ? services.filter((item) => settings.installationSkus.includes(item.sku))
+    : filterGrade(services.filter((item) =>
+        /install|commission|survey/i.test(`${item.category} ${item.name} ${item.sku}`)
+      )).slice(0, 1);
+  for (const installation of installations) {
     lines.push({
       sku: installation.sku,
       description: installation.name,
@@ -286,9 +289,11 @@ export function buildQuoteLinesFromEstimate(
       unitPriceNgn: installation.priceNgn,
     });
   }
-  const logistics = filterGrade(
-    services.filter((item) => /logistic|delivery|transport/i.test(`${item.category} ${item.name} ${item.sku}`))
-  );
+  const logistics = settings
+    ? services.filter((item) => settings.logisticsSkus.includes(item.sku))
+    : filterGrade(
+        services.filter((item) => /logistic|delivery|transport/i.test(`${item.category} ${item.name} ${item.sku}`))
+      );
   for (const item of logistics) {
     lines.push({
       sku: item.sku,
@@ -305,16 +310,19 @@ export function buildQuoteLinesFromEstimate(
 export function computeEstimateCostFromCatalog(
   estimate: SolarEstimateResult | null,
   catalog: CatalogItem[],
-  taxPercent = 7.5
+  taxPercent = 7.5,
+  settings?: EstimatorSettings
 ): { lines: LineItem[]; subtotal: number; tax: number; total: number } {
   if (!estimate || estimate.connectedLoadWatts === 0) {
     return { lines: [], subtotal: 0, tax: 0, total: 0 };
   }
-  const lines = buildQuoteLinesFromEstimate(estimate, catalog);
+  const lines = buildQuoteLinesFromEstimate(estimate, catalog, settings);
   const requiredCategories = [
-    'Inverters',
-    (estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) > 0 ? 'Solar Panels' : null,
-    estimate.batteryTargetKwh > 0 ? 'Battery Storage' : null,
+    settings?.inverterCategory ?? 'Inverters',
+    (estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) > 0
+      ? settings?.panelCategory ?? 'Solar Panels'
+      : null,
+    estimate.batteryTargetKwh > 0 ? settings?.batteryCategory ?? 'Battery Storage' : null,
   ].filter((category): category is string => Boolean(category));
   const pricedSkus = new Set(lines.map((line) => line.sku));
   if (requiredCategories.some(

@@ -2,12 +2,9 @@ import {
   Bell,
   CheckCircle2,
   ClipboardList,
-  Database,
-  Download,
   Eye,
   EyeOff,
   ExternalLink,
-  FileSpreadsheet,
   FileText,
   Globe2,
   HardHat,
@@ -22,12 +19,13 @@ import {
   Receipt,
   RefreshCw,
   ShieldCheck,
+  Settings2,
   ShoppingBag,
   Trash2,
   Users,
   Wallet,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
 import {
   ALL_PERMISSIONS,
@@ -51,6 +49,7 @@ import type {
   TicketStatus,
   UserRole,
   WorkspaceBootstrap,
+  PlatformSettings,
 } from '../lib/types';
 import type { HomepageContent } from '../lib/homepage';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -58,6 +57,7 @@ import { WorkspaceFinance } from './WorkspaceFinance';
 import { WorkspaceInstallations } from './WorkspaceInstallations';
 import { WebsiteEditorView } from './WebsiteEditorView';
 import { WorkspaceCommunications } from './WorkspaceCommunications';
+import { WorkspaceSettings } from './WorkspaceSettings';
 
 type WorkspaceTab =
   | 'overview'
@@ -73,20 +73,22 @@ type WorkspaceTab =
   | 'notifications'
   | 'communications'
   | 'audit'
-  | 'cpanel'
+  | 'settings'
   | 'website';
 
 interface WorkspaceViewProps {
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
   onCatalogChange?: (catalog: CatalogItem[]) => void;
   onHomepageChange?: (content: HomepageContent) => void;
+  onSettingsChange?: (settings: PlatformSettings) => void;
 }
 
-export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChange }: WorkspaceViewProps) {
+export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChange, onSettingsChange }: WorkspaceViewProps) {
   const [data, setData] = useState<WorkspaceBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<WorkspaceTab>('overview');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const mainContentRef = useRef<HTMLElement>(null);
   const [toastMsg, setToastMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -144,7 +146,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   const [quoteCustomer, setQuoteCustomer] = useState('');
   const [quoteScope, setQuoteScope] = useState('');
   const [quoteTerms, setQuoteTerms] = useState('50% deposit on acceptance, 50% prior to commissioning.');
-  const [quoteNote, setQuoteNote] = useState('Valid 7 days. 1-year installation warranty applies.');
+  const [quoteNote, setQuoteNote] = useState('Valid 7 days. Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error.');
   const [quoteDiscount, setQuoteDiscount] = useState('0');
   const [quoteTax, setQuoteTax] = useState('7.5');
   const [quoteValid, setQuoteValid] = useState(
@@ -182,7 +184,6 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   // Store order inline status edits.
   const [orderDraftStatus, setOrderDraftStatus] = useState<Record<string, StoreOrderStatus>>({});
   const [orderSavingId, setOrderSavingId] = useState<string | null>(null);
-  const [pkgManifest, setPkgManifest] = useState<{ cpanelCount: number; sourceCount: number } | null>(null);
 
   function showToast(msg: string) {
     setToastMsg(msg);
@@ -206,9 +207,10 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
         ws.user.role === 'technician' &&
         !hasPermission(ws.user, 'manage_enquiries') &&
         !hasPermission(ws.user, 'manage_storefront');
-      if (isFieldOnly && !['installations', 'tickets', 'notifications', 'cpanel'].includes(tab)) {
+      if (isFieldOnly && !['installations', 'tickets', 'notifications'].includes(tab)) {
         setTab('installations');
       }
+      onSettingsChange?.(ws.settings);
     } catch {
       setData(null);
     } finally {
@@ -227,20 +229,6 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
       .catch(() => setSetupAvailable(false))
       .finally(() => setSetupChecked(true));
   }, []);
-
-  useEffect(() => {
-    if (tab !== 'cpanel' || pkgManifest) return;
-    fetch('/api/package-manifest', { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((m) => {
-        if (m && typeof m.cpanelCount === 'number') {
-          setPkgManifest({ cpanelCount: m.cpanelCount, sourceCount: m.sourceCount });
-        }
-      })
-      .catch(() => {
-        // Ignore optional manifest preview error
-      });
-  }, [tab, pkgManifest]);
 
   async function handleLogin(email: string, password: string) {
     setErrorMsg('');
@@ -311,7 +299,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
       setQuoteEnqId(enq.id);
       setQuoteCustomer(enq.customerName);
       setQuoteScope(`Turnkey hybrid solar engineering supply and installation for ${enq.location}.`);
-      setQuoteItems(buildQuoteLinesFromEstimate(enq.estimate, data.catalog));
+      setQuoteItems(buildQuoteLinesFromEstimate(enq.estimate, data.catalog, data.settings.estimator));
     }
     setQuoteModal(true);
   }
@@ -386,7 +374,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   autoComplete="current-password"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 selection:bg-slate-300 selection:text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100 dark:selection:bg-slate-600 dark:selection:text-white"
                 />
                 <button
                   type="button"
@@ -564,6 +552,8 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   }
 
   const user = data.user;
+  const canManagePlatformSettings = user.role === 'superadmin' || user.role === 'admin'
+    || (hasPermission(user, 'manage_storefront') && hasPermission(user, 'manage_invoices'));
   const unreadCount = data.notifications.filter((n) => !n.isRead).length;
   const openTicketsCount = data.tickets.filter((t) => t.status !== 'Resolved').length;
   const pendingOrders = data.orders.filter((o) => o.status === 'Pending' || o.status === 'Confirmed').length;
@@ -625,7 +615,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
     { id: 'notifications', label: `Notifications (${unreadCount})`, icon: Bell, allowed: true },
     { id: 'communications', label: 'Communications', icon: MessageSquareText, allowed: hasPermission(user, 'manage_communications') },
     { id: 'audit', label: 'Audit Trail', icon: ShieldCheck, allowed: hasPermission(user, 'view_audit') },
-    { id: 'cpanel', label: 'cPanel PHP + MySQL', icon: Database, allowed: true },
+    { id: 'settings', label: 'Platform Settings', icon: Settings2, allowed: canManagePlatformSettings },
     { id: 'website', label: 'Website Builder', icon: Globe2, allowed: user.role === 'superadmin' },
   ];
 
@@ -636,9 +626,9 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   );
 
   return (
-    <div className="mx-auto grid min-h-[calc(100vh-65px)] max-w-7xl lg:grid-cols-12">
+    <div className="mx-auto grid h-[calc(100dvh-65px)] min-h-[calc(100vh-65px)] max-w-7xl grid-cols-12 grid-rows-[minmax(0,35vh)_minmax(0,1fr)] overflow-hidden lg:grid-rows-1">
       {/* Sidebar */}
-      <aside className={`border-b border-slate-200 bg-[#081E3E] p-3 text-slate-200 lg:border-r lg:border-b-0 dark:border-slate-800 ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
+      <aside className={`col-span-12 min-h-0 overflow-y-auto border-b border-slate-200 bg-[#081E3E] p-3 text-slate-200 lg:border-r lg:border-b-0 dark:border-slate-800 ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
         <div className="rounded-lg bg-white/10 p-3.5">
           <div className="flex items-center justify-between gap-2">
             {!sidebarCollapsed && (
@@ -675,7 +665,10 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setTab(item.id)}
+                  onClick={() => {
+                    setTab(item.id);
+                    mainContentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
                   aria-label={item.label}
                   title={sidebarCollapsed ? item.label : undefined}
                   className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${sidebarCollapsed ? 'justify-center' : ''} ${
@@ -706,7 +699,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
       </aside>
 
       {/* Main Content */}
-      <main className={`min-w-0 p-4 sm:p-6 lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
+      <main ref={mainContentRef} className={`col-span-12 min-h-0 min-w-0 overflow-y-auto overscroll-contain p-4 sm:p-6 lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
         {toastMsg && (
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-sm font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
@@ -726,24 +719,6 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
               <div>
                 <p className="text-xs font-semibold tracking-wider text-[#D61F26]">COMMAND CENTRE</p>
                 <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Operations Overview</h1>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <a
-                  href="/api/cpanel-package.zip"
-                  download="hisotech-php-mysql-cpanel.zip"
-                  className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
-                >
-                  <Download className="h-4 w-4" />
-                  Download PHP + MySQL cPanel Package
-                </a>
-                <a
-                  href="/api/source-package.zip"
-                  download="hisotech-full-source-code.zip"
-                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-[#081E3E] hover:border-[#D61F26] dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
-                >
-                  <Download className="h-4 w-4" />
-                  Download Full Source Code (.zip)
-                </a>
               </div>
             </div>
 
@@ -1020,7 +995,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                   >
                     <div>
                       <div className="aspect-[16/10] bg-slate-100 dark:bg-slate-800">
-                        <img src={c.imagePath} alt={c.name} className="h-full w-full object-cover" />
+                        <img src={c.imagePath} alt={c.name} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                       </div>
                       <div className="p-4">
                         <div className="font-mono-num text-xs text-slate-500">
@@ -1585,101 +1560,16 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
           <WorkspaceCommunications staff={data.staff} />
         )}
 
-        {/* CPANEL PHP + MYSQL EXPORT */}
-        {tab === 'cpanel' && (
-          <div className="space-y-6">
-            <div className="rounded-xl bg-[#081E3E] p-6 text-white sm:p-8">
-              <p className="text-xs font-semibold tracking-wider text-red-300">
-                PHP 8.2+ &amp; PHPMYADMIN DEPLOYMENT PACKAGE
-              </p>
-              <h1 className="mt-1 text-2xl font-bold">Download &amp; Deploy to Localhost or cPanel</h1>
-              <p className="mt-2 max-w-2xl text-sm text-slate-300">
-                Download the complete deployment bundle containing the PHP 8.2+ PDO MySQL REST API, MySQL{' '}
-                <code className="font-mono-num">schema.sql</code> for phpMyAdmin import,{' '}
-                <code className="font-mono-num">.htaccess</code>, and compiled PWA frontend assets.
-              </p>
-              <div className="mt-5 flex flex-wrap gap-3">
-                <a
-                  href="/api/cpanel-package.zip"
-                  download="hisotech-php-mysql-cpanel.zip"
-                  className="inline-flex items-center gap-2 rounded-lg bg-[#D61F26] px-5 py-3 text-sm font-semibold text-white hover:bg-[#B0171D]"
-                >
-                  <Download className="h-4 w-4" />
-                  Download hisotech-php-mysql-cpanel.zip
-                  {pkgManifest ? ` (${pkgManifest.cpanelCount} files)` : ''}
-                </a>
-                <a
-                  href="/api/source-package.zip"
-                  download="hisotech-full-source-code.zip"
-                  className="inline-flex items-center gap-2 rounded-lg border border-white/25 bg-white/10 px-5 py-3 text-sm font-semibold text-white hover:bg-white/20"
-                >
-                  <Download className="h-4 w-4" />
-                  Download Full Source Code (.zip)
-                  {pkgManifest ? ` (${pkgManifest.sourceCount} files)` : ''}
-                </a>
-              </div>
-              {pkgManifest && (
-                <p className="font-mono-num mt-3 text-xs text-slate-300">
-                  Verified archive ready: {pkgManifest.cpanelCount} deployable cPanel/PWA files (including index.html,
-                  assets, images, .htaccess, schema.sql, hiso_private PHP &amp; API) and {pkgManifest.sourceCount} complete
-                  source + build files.
-                </p>
-              )}
-            </div>
-
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
-                <h2 className="flex items-center gap-2 text-base font-bold text-[#081E3E] dark:text-white">
-                  <FileSpreadsheet className="h-4 w-4 text-[#D61F26]" />
-                  1. Local Computer Testing (XAMPP / Laragon)
-                </h2>
-                <ol className="mt-3 list-decimal space-y-2 pl-4 text-sm text-slate-600 dark:text-slate-300">
-                  <li>
-                    Extract the ZIP and open <span className="font-mono-num">http://localhost/phpmyadmin</span>.
-                  </li>
-                  <li>
-                    Create database <strong className="font-mono-num">hisotech_operations</strong> and import{' '}
-                    <strong className="font-mono-num">schema.sql</strong>.
-                  </li>
-                  <li>
-                    Copy <strong className="font-mono-num">hiso_private/.env.example.php</strong> to{' '}
-                    <strong className="font-mono-num">.env.php</strong>.
-                  </li>
-                  <li>
-                    Run <code className="font-mono-num">php -S localhost:8080</code> inside{' '}
-                    <strong className="font-mono-num">public_html/</strong> (or place inside{' '}
-                    <code className="font-mono-num">htdocs</code>).
-                  </li>
-                </ol>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
-                <h2 className="flex items-center gap-2 text-base font-bold text-[#081E3E] dark:text-white">
-                  <Database className="h-4 w-4 text-[#D61F26]" />
-                  2. Pushing to cPanel &amp; phpMyAdmin
-                </h2>
-                <ol className="mt-3 list-decimal space-y-2 pl-4 text-sm text-slate-600 dark:text-slate-300">
-                  <li>
-                    Create DB &amp; user in <strong>cPanel → MySQL Database Wizard</strong> and import{' '}
-                    <strong className="font-mono-num">schema.sql</strong> in phpMyAdmin.
-                  </li>
-                  <li>
-                    Upload <strong className="font-mono-num">hiso_private/</strong> to{' '}
-                    <code className="font-mono-num">/home/&lt;user&gt;/hiso_private/</code> (above{' '}
-                    <code className="font-mono-num">public_html</code>).
-                  </li>
-                  <li>
-                    Upload <strong className="font-mono-num">public_html/</strong> contents to your domain or subdomain
-                    folder.
-                  </li>
-                  <li>
-                    Update <code className="font-mono-num">.env.php</code> with cPanel DB credentials and enable HTTPS
-                    rules in <code className="font-mono-num">.htaccess</code>.
-                  </li>
-                </ol>
-              </div>
-            </div>
-          </div>
+        {tab === 'settings' && canManagePlatformSettings && (
+          <WorkspaceSettings
+            catalog={data.catalog}
+            settings={data.settings}
+            onSaved={(settings) => {
+              setData((current) => current ? { ...current, settings } : current);
+              onSettingsChange?.(settings);
+            }}
+            onOpenDocument={onOpenDocument}
+          />
         )}
       </main>
 
