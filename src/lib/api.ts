@@ -33,16 +33,33 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     ...options,
     headers,
   });
-  const data = await res.json().catch(() => ({}));
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Server returned an invalid response.');
+  }
   if (!res.ok) {
-    throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
+    const message =
+      typeof data === 'object' &&
+      data !== null &&
+      'error' in data &&
+      typeof data.error === 'string'
+        ? data.error
+        : `Request failed (${res.status})`;
+    throw new Error(message);
   }
   return data as T;
 }
 
 export const api = {
-  getPublicBootstrap: () =>
-    request<{ catalog: WorkspaceBootstrap['catalog'] }>('/api/public/bootstrap'),
+  getPublicBootstrap: async () => {
+    const data = await request<{ catalog: WorkspaceBootstrap['catalog'] }>('/api/public/bootstrap');
+    if (!Array.isArray(data.catalog)) {
+      throw new Error('Server returned an invalid public catalog.');
+    }
+    return data;
+  },
 
   getHomepageContent: () =>
     request<{ homepage: Partial<HomepageContent> }>('/api/website/content'),

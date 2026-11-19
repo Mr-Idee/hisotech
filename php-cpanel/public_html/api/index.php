@@ -11,10 +11,24 @@ if (!is_dir($privateDir)) {
     $privateDir = dirname(__DIR__) . '/hiso_private';
 }
 
-require_once $privateDir . '/config.php';
-require_once $privateDir . '/auth.php';
-require_once $privateDir . '/communications.php';
-require_once $privateDir . '/upload.php';
+$configPath = $privateDir . '/config.php';
+if (!is_file($configPath)) {
+    http_response_code(503);
+    header('Content-Type: application/json; charset=utf-8');
+    echo '{"error":"Private API configuration is missing."}';
+    exit;
+}
+require_once $configPath;
+
+foreach (['auth.php', 'communications.php', 'upload.php'] as $runtimeFile) {
+    if (!is_file($privateDir . '/' . $runtimeFile)) {
+        http_response_code(503);
+        header('Content-Type: application/json; charset=utf-8');
+        echo '{"error":"Private API runtime is incomplete. Deploy the server runtime files and retry."}';
+        exit;
+    }
+    require_once $privateDir . '/' . $runtimeFile;
+}
 
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $route = trim((string)($_GET['route'] ?? ''), '/');
