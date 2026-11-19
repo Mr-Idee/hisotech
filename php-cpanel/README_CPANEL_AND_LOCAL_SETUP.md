@@ -37,7 +37,7 @@ For Web Push, generate a VAPID key pair in a trusted local environment with `npx
 
 ## Initial administrator
 
-The schema does not create staff accounts. After deploying over HTTPS and setting `SETUP_SECRET`, make a one-time `POST /api/setup/first-admin` request with JSON fields `setupSecret`, `name`, `username`, `email`, `phone`, and a new password of at least 14 characters. The endpoint creates the first superadmin only when the users table is empty, then signs in that administrator. Sign in with the username or email. Use a secure password manager and do not put the setup secret or password in browser code, source control, or support logs.
+The schema does not create staff accounts. After deploying over HTTPS and setting `SETUP_SECRET` in the private configuration, open `https://<your-domain>/#workspace?setup=superuser` or select **Create the first Super Admin account** on the staff sign-in screen. The setup page is enabled only while the users table is empty and the private secret is configured. Enter that secret directly into the form; it is never included in the frontend bundle or status response. The form creates the first superadmin and signs in that administrator. Sign in later with the username or email. Use a secure password manager and do not put the setup secret or password in browser code, source control, or support logs.
 
 After setup, clear or rotate `SETUP_SECRET` in the private configuration. The setup endpoint also rejects later attempts once an account exists. Create additional staff accounts from the protected workspace, and assign only the permissions they need.
 

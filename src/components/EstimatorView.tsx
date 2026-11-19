@@ -39,7 +39,7 @@ interface EstimatorViewProps {
   catalog: CatalogItem[];
   importedAppliances?: ApplianceItem[];
   onClearImported?: () => void;
-  onOpenStorefront: () => void;
+  onOpenStore: () => void;
   onTrackRef: (refCode: string) => void;
 }
 
@@ -65,7 +65,7 @@ export function EstimatorView({
   catalog,
   importedAppliances = [],
   onClearImported,
-  onOpenStorefront,
+  onOpenStore,
   onTrackRef,
 }: EstimatorViewProps) {
   const isOnline = useOnlineStatus();
@@ -94,7 +94,7 @@ export function EstimatorView({
   const [offlineSavedBanner, setOfflineSavedBanner] = useState('');
   const [offlineQueue, setOfflineQueue] = useState<PendingOfflineEstimate[]>(() => readOfflineQueue());
 
-  // Append appliances sent from Storefront
+  // Append appliances sent from the Store.
   useEffect(() => {
     if (importedAppliances.length > 0) {
       setAppliances((prev) => {
@@ -137,7 +137,7 @@ export function EstimatorView({
     }
   }, [equipmentGrade, equipmentGrades]);
 
-  // Directly import prices from Storefront Catalog
+  // Directly import prices from the Store catalog.
   const costBreakdown = useMemo(
     () => computeEstimateCostFromCatalog(estimate, catalog),
     [estimate, catalog]
@@ -602,7 +602,7 @@ export function EstimatorView({
                 <span className="font-semibold text-red-300">IMPORTED STORE COST</span>
                 <button
                   type="button"
-                  onClick={onOpenStorefront}
+                  onClick={onOpenStore}
                   className="inline-flex shrink-0 items-center gap-1 text-slate-300 underline hover:text-white"
                 >
                   <ShoppingBag className="h-3 w-3" /> Edit in Store

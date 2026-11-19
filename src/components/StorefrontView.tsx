@@ -58,7 +58,7 @@ export function StorefrontView({
   const [typeFilter, setTypeFilter] = useState<'all' | CatalogItemType>('all');
   const [search, setSearch] = useState('');
 
-  // Persistent Storefront Cart
+  // Persistent Store cart.
   const [cart, setCart] = useState<CartEntry[]>(() => readStoredCart());
   const [cartOpen, setCartOpen] = useState(false);
 

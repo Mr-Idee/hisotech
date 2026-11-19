@@ -4,6 +4,8 @@ import {
   ClipboardList,
   Database,
   Download,
+  Eye,
+  EyeOff,
   ExternalLink,
   FileSpreadsheet,
   FileText,
@@ -91,7 +93,22 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   // Login form state
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginBusy, setLoginBusy] = useState(false);
+  const [setupAvailable, setSetupAvailable] = useState(false);
+  const [setupChecked, setSetupChecked] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(
+    () => new URLSearchParams(window.location.hash.split('?')[1] || '').get('setup') === 'superuser'
+  );
+  const [setupSecret, setSetupSecret] = useState('');
+  const [setupName, setSetupName] = useState('');
+  const [setupUsername, setSetupUsername] = useState('');
+  const [setupEmail, setSetupEmail] = useState('');
+  const [setupPhone, setSetupPhone] = useState('');
+  const [setupPassword, setSetupPassword] = useState('');
+  const [setupPasswordConfirm, setSetupPasswordConfirm] = useState('');
+  const [showSetupPassword, setShowSetupPassword] = useState(false);
+  const [setupBusy, setSetupBusy] = useState(false);
 
   // Manual enquiry modal
   const [enqModal, setEnqModal] = useState(false);
@@ -102,7 +119,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   const [enqChannel, setEnqChannel] = useState('WhatsApp · Manual Intake');
   const [enqNeed, setEnqNeed] = useState('');
 
-  // Storefront / Catalogue modal & view
+  // Store catalogue modal and view.
   const [catalogView, setCatalogView] = useState<'cards' | 'list'>('cards');
   const [catModal, setCatModal] = useState(false);
   const [catSku, setCatSku] = useState('');
@@ -153,6 +170,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   const [staffSkills, setStaffSkills] = useState('');
   const [staffStatus, setStaffStatus] = useState<StaffStatus>('Active');
   const [staffPassword, setStaffPassword] = useState('');
+  const [showStaffPassword, setShowStaffPassword] = useState(false);
 
   // Custom Role modal (Super Admin)
   const [roleModal, setRoleModal] = useState(false);
@@ -161,7 +179,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   const [roleDesc, setRoleDesc] = useState('');
   const [rolePerms, setRolePerms] = useState<PermissionKey[]>(['manage_enquiries', 'manage_tickets']);
 
-  // Storefront order inline status edits
+  // Store order inline status edits.
   const [orderDraftStatus, setOrderDraftStatus] = useState<Record<string, StoreOrderStatus>>({});
   const [orderSavingId, setOrderSavingId] = useState<string | null>(null);
   const [pkgManifest, setPkgManifest] = useState<{ cpanelCount: number; sourceCount: number } | null>(null);
@@ -204,6 +222,13 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   }, []);
 
   useEffect(() => {
+    api.getFirstAdminSetupStatus()
+      .then(({ available }) => setSetupAvailable(available))
+      .catch(() => setSetupAvailable(false))
+      .finally(() => setSetupChecked(true));
+  }, []);
+
+  useEffect(() => {
     if (tab !== 'cpanel' || pkgManifest) return;
     fetch('/api/package-manifest', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
@@ -228,6 +253,42 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
       setErrorMsg((err as Error).message);
     } finally {
       setLoginBusy(false);
+    }
+  }
+
+  async function handleFirstAdminSetup(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setErrorMsg('');
+    if (setupPassword !== setupPasswordConfirm) {
+      setErrorMsg('The passwords do not match.');
+      return;
+    }
+    if (setupPassword.length < 14) {
+      setErrorMsg('Choose a password with at least 14 characters.');
+      return;
+    }
+    setSetupBusy(true);
+    try {
+      await api.createFirstAdmin({
+        setupSecret,
+        name: setupName,
+        username: setupUsername,
+        email: setupEmail,
+        phone: setupPhone,
+        password: setupPassword,
+      });
+      setSetupAvailable(false);
+      setSetupOpen(false);
+      setSetupSecret('');
+      setSetupPassword('');
+      setSetupPasswordConfirm('');
+      window.history.replaceState(null, '', '#workspace');
+      setTab('overview');
+      await loadWorkspace();
+    } catch (error) {
+      setErrorMsg((error as Error).message);
+    } finally {
+      setSetupBusy(false);
     }
   }
 
@@ -318,13 +379,25 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password</span>
-              <input
-                type="password"
-                required
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
-              />
+              <span className="relative mt-1 block">
+                <input
+                  type={showLoginPassword ? 'text' : 'password'}
+                  required
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  autoComplete="current-password"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                />
+                <button
+                  type="button"
+                  aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showLoginPassword}
+                  onClick={() => setShowLoginPassword((visible) => !visible)}
+                  className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-slate-500 hover:text-[#D61F26]"
+                >
+                  {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </span>
             </label>
             <button
               type="submit"
@@ -334,6 +407,156 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
               {loginBusy ? 'Signing In...' : 'Sign In to Staff Workspace'}
             </button>
           </form>
+
+          <div className="mt-4 border-t border-slate-200 pt-4 text-center text-sm dark:border-slate-700">
+            <a
+              href="#workspace?setup=superuser"
+              onClick={(event) => {
+                event.preventDefault();
+                setErrorMsg('');
+                setSetupOpen(true);
+                window.history.pushState(null, '', '#workspace?setup=superuser');
+              }}
+              className="font-semibold text-[#D61F26] underline underline-offset-2"
+            >
+              Create the first Super Admin account
+            </a>
+          </div>
+
+          {setupOpen && (
+            <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-5 dark:border-slate-700 dark:bg-[#061327]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-bold text-[#081E3E] dark:text-white">Initial Super Admin setup</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                    This one-time form is available only while the staff database is empty. The setup secret must be configured privately on the server.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close first Super Admin setup"
+                  onClick={() => {
+                    setSetupOpen(false);
+                    window.history.replaceState(null, '', '#workspace');
+                  }}
+                  className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800"
+                >
+                  Close
+                </button>
+              </div>
+              {setupChecked && !setupAvailable ? (
+                <p role="status" className="mt-4 rounded-lg bg-amber-50 p-3 text-xs leading-relaxed text-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                  Initial setup is not available. Ask the server administrator to set a strong private <code>SETUP_SECRET</code> and confirm that the staff database has no accounts yet.
+                </p>
+              ) : (
+                <form onSubmit={handleFirstAdminSetup} className="mt-4 space-y-3">
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Private setup secret
+                    <input
+                      type="password"
+                      required
+                      autoComplete="off"
+                      value={setupSecret}
+                      onChange={(event) => setSetupSecret(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Full name
+                    <input
+                      type="text"
+                      required
+                      maxLength={120}
+                      value={setupName}
+                      onChange={(event) => setSetupName(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Username
+                    <input
+                      type="text"
+                      required
+                      minLength={3}
+                      maxLength={50}
+                      pattern="[a-zA-Z0-9._-]{3,50}"
+                      autoComplete="username"
+                      value={setupUsername}
+                      onChange={(event) => setSetupUsername(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Email address
+                    <input
+                      type="email"
+                      required
+                      maxLength={190}
+                      autoComplete="email"
+                      value={setupEmail}
+                      onChange={(event) => setSetupEmail(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    WhatsApp number
+                    <input
+                      type="tel"
+                      maxLength={40}
+                      autoComplete="tel"
+                      value={setupPhone}
+                      onChange={(event) => setSetupPhone(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Password (at least 14 characters)
+                    <span className="relative mt-1 block">
+                      <input
+                        type={showSetupPassword ? 'text' : 'password'}
+                        required
+                        minLength={14}
+                        maxLength={128}
+                        autoComplete="new-password"
+                        value={setupPassword}
+                        onChange={(event) => setSetupPassword(event.target.value)}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 pr-11 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        aria-label={showSetupPassword ? 'Hide password' : 'Show password'}
+                        aria-pressed={showSetupPassword}
+                        onClick={() => setShowSetupPassword((visible) => !visible)}
+                        className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-slate-500 hover:text-[#D61F26]"
+                      >
+                        {showSetupPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </span>
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                    Confirm password
+                    <input
+                      type={showSetupPassword ? 'text' : 'password'}
+                      required
+                      minLength={14}
+                      maxLength={128}
+                      autoComplete="new-password"
+                      value={setupPasswordConfirm}
+                      onChange={(event) => setSetupPasswordConfirm(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-white"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={setupBusy || !setupChecked || !setupAvailable}
+                    className="w-full rounded-lg bg-[#D61F26] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#B0171D] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {setupBusy ? 'Creating Super Admin…' : 'Create Super Admin account'}
+                  </button>
+                </form>
+              )}
+            </div>
+          )}
 
         </div>
       </div>
@@ -888,7 +1111,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
           </div>
         )}
 
-        {/* STOREFRONT ORDERS */}
+        {/* STORE ORDERS */}
         {tab === 'orders' && (
           <div className="space-y-4">
             <div>
@@ -2177,16 +2400,28 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
               />
               {!editStaffId && (
-                <input
-                  type="password"
-                  placeholder="Initial password (at least 12 characters)"
-                  minLength={12}
-                  maxLength={128}
-                  required
-                  value={staffPassword}
-                  onChange={(e) => setStaffPassword(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
-                />
+                <span className="relative block">
+                  <input
+                    type={showStaffPassword ? 'text' : 'password'}
+                    placeholder="Initial password (at least 12 characters)"
+                    minLength={12}
+                    maxLength={128}
+                    required
+                    value={staffPassword}
+                    onChange={(e) => setStaffPassword(e.target.value)}
+                    autoComplete="new-password"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 pr-11 dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                  <button
+                    type="button"
+                    aria-label={showStaffPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showStaffPassword}
+                    onClick={() => setShowStaffPassword((visible) => !visible)}
+                    className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-slate-500 hover:text-[#D61F26]"
+                  >
+                    {showStaffPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </span>
               )}
             </div>
             <div className="mt-5 flex justify-end gap-2">

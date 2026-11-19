@@ -281,6 +281,22 @@ export const api = {
       body: JSON.stringify({ identifier, password }),
     }),
 
+  getFirstAdminSetupStatus: () =>
+    request<{ available: boolean }>('/api/setup/status'),
+
+  createFirstAdmin: (payload: {
+    setupSecret: string;
+    name: string;
+    username: string;
+    email: string;
+    phone: string;
+    password: string;
+  }) =>
+    request<{ user: StaffMember }>('/api/setup/first-admin', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
   session: () => request<{ authenticated: boolean; user: StaffMember | null }>('/api/auth/session'),

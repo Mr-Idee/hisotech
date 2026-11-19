@@ -899,9 +899,25 @@ try {
     }
 
     // --- Auth Endpoints ---
+    if ($method === 'GET' && $route === 'setup/status') {
+        global $CONFIG;
+        $pdo = hiso_pdo();
+        $userCount = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+        $setupStmt = $pdo->query('SELECT completed_at FROM app_setup WHERE id = 1');
+        $setupState = $setupStmt->fetch(PDO::FETCH_ASSOC);
+        $available = trim((string)($CONFIG['SETUP_SECRET'] ?? '')) !== ''
+            && $userCount === 0
+            && (!$setupState || $setupState['completed_at'] === null);
+        hiso_json_response(['available' => $available]);
+    }
+
     if ($method === 'POST' && $route === 'setup/first-admin') {
         global $CONFIG;
         $body = hiso_json_body();
+        $remote = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        if (!hiso_customer_auth_rate_limit('first-admin-setup:' . $remote, 10, 3600)) {
+            hiso_json_response(['error' => 'Too many setup attempts. Try again later.'], 429);
+        }
         $setupSecret = (string)($CONFIG['SETUP_SECRET'] ?? '');
         if ($setupSecret === '' || !hash_equals($setupSecret, (string)($body['setupSecret'] ?? ''))) {
             hiso_json_response(['error' => 'Initial account setup is unavailable.'], 403);

@@ -195,7 +195,7 @@ export default function App() {
           catalog={catalog}
           importedAppliances={importedAppliances}
           onClearImported={() => setImportedAppliances([])}
-          onOpenStorefront={() => handleNavigate('store')}
+          onOpenStore={() => handleNavigate('store')}
           onTrackRef={(refCode) => {
             setTrackRef(refCode);
             handleNavigate('track');
