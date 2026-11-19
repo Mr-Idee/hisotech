@@ -11,6 +11,12 @@ The `php-cpanel/` package contains the production PHP/MySQL API and its web root
 
 ## cPanel deployment
 
+### Updating through cPanel Git
+
+This repository includes `.cpanel.yml` for cPanel's Git deployment hook. In cPanel **Git™ Version Control**, connect the repository and set the deployment directory to the domain's public document root. Enable **Deploy Head Commit** or the cPanel repository Update action. A successful deployment copies `dist/` to the document root, replaces `api/index.php`, and installs `.htaccess`.
+
+Before deployment, configure the private sibling directory `/home/<cpanel_user>/hiso_private/` and its `.env.php`. Never configure that private directory in Git or add credentials to this repository. After pushing source changes, run the production build locally or in CI so `dist/` is current, commit `dist/`, and update the repository in cPanel.
+
 1. In **cPanel → MySQL Database Wizard**, create a database and a dedicated user with only the required database privileges. Import `schema.sql` into the empty database using phpMyAdmin.
 2. From `php-cpanel/`, run `composer install --no-dev --classmap-authoritative`; Composer places `vendor/` inside `hiso_private/`. Create `/home/<cpanel_user>/hiso_private/` as a sibling of the document root. Copy all runtime files from `php-cpanel/hiso_private/` into it (including the generated `vendor/` directory, or extract an updated private runtime ZIP), then copy `config.example.php` to `.env.php`. In File Manager, enable viewing hidden files so `.env.php` is visible. Set the database name/user/password, exact HTTPS `APP_URL`, private SMTP password, WhatsApp Cloud API phone-number ID and access token, VAPID subject/public/private key, a unique `SETUP_SECRET`, and `SESSION_SECURE => true`. Keep this directory and `.env.php` outside the Git checkout and web root; never commit or share credentials.
 3. Recommended: create a separate deployment directory such as `/home/<cpanel_user>/site/`, upload the generated cPanel document-root ZIP there, and extract it. In **cPanel → Domains**, set the domain's Document Root to this directory. Keep `hiso_private/` as its sibling.

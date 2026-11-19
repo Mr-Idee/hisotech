@@ -1,0 +1,6 @@
+---
+deployment:
+  tasks:
+    - /bin/cp -R dist/. $DEPLOYMENT_PATH/
+    - /bin/cp -R php-cpanel/public_html/api $DEPLOYMENT_PATH/
+    - /bin/cp php-cpanel/public_html/.htaccess $DEPLOYMENT_PATH/.htaccess
