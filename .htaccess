@@ -14,7 +14,7 @@ RewriteRule (^|/)\.(?!well-known(?:/|$)) - [F,L]
 RewriteRule ^php-cpanel(?:/|$) - [F,L]
 RewriteRule ^(?:node_modules|coverage|build|dev-dist|\.aistudio)(?:/|$) - [F,L]
 RewriteRule ^src/(?!assets/) - [F,L]
-RewriteRule ^(?:README\.md|server\.ts|package(?:-lock)?\.json|bun\.lock|tsconfig\.json|vite\.config\.ts|metadata\.json|prompt\.txt)$ - [F,L]
+RewriteRule ^(?:README\.md|server\.ts|package(?:-lock)?\.json|bun\.lock|tsconfig\.json|vite\.config\.ts|metadata\.json|index\.source\.html|prompt\.txt)$ - [F,L]
 
 # Serve existing static assets directly
 RewriteCond %{REQUEST_FILENAME} -f [OR]

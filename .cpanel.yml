@@ -1,4 +1,7 @@
 ---
 deployment:
   tasks:
-    - /bin/true
+    - /bin/chmod 755 /home/hisotech/app.hisotechsolarinverters.com/hisotech
+    - /bin/chmod 755 /home/hisotech/app.hisotechsolarinverters.com/hisotech/assets /home/hisotech/app.hisotechsolarinverters.com/hisotech/src /home/hisotech/app.hisotechsolarinverters.com/hisotech/src/assets /home/hisotech/app.hisotechsolarinverters.com/hisotech/api
+    - /bin/chmod -R a+rX /home/hisotech/app.hisotechsolarinverters.com/hisotech/assets /home/hisotech/app.hisotechsolarinverters.com/hisotech/src/assets /home/hisotech/app.hisotechsolarinverters.com/hisotech/api
+    - /bin/chmod 644 /home/hisotech/app.hisotechsolarinverters.com/hisotech/index.html /home/hisotech/app.hisotechsolarinverters.com/hisotech/index.php /home/hisotech/app.hisotechsolarinverters.com/hisotech/.htaccess /home/hisotech/app.hisotechsolarinverters.com/hisotech/manifest.webmanifest /home/hisotech/app.hisotechsolarinverters.com/hisotech/registerSW.js /home/hisotech/app.hisotechsolarinverters.com/hisotech/sw.js /home/hisotech/app.hisotechsolarinverters.com/hisotech/push-sw.js /home/hisotech/app.hisotechsolarinverters.com/hisotech/workbox-*.js /home/hisotech/app.hisotechsolarinverters.com/hisotech/apple-touch-icon.png /home/hisotech/app.hisotechsolarinverters.com/hisotech/pwa-192x192.png /home/hisotech/app.hisotechsolarinverters.com/hisotech/pwa-512x512.png /home/hisotech/app.hisotechsolarinverters.com/hisotech/pwa-maskable-512x512.png
