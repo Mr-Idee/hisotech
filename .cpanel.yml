@@ -1,7 +1,4 @@
 ---
 deployment:
   tasks:
-    - /bin/cp -R dist/. /home/hisotech/app.hisotechsolarinverters.com/hisotech/
-    - /bin/mkdir -p /home/hisotech/app.hisotechsolarinverters.com/hisotech/api
-    - /bin/cp -R php-cpanel/public_html/api/. /home/hisotech/app.hisotechsolarinverters.com/hisotech/api/
-    - /bin/cp php-cpanel/public_html/.htaccess /home/hisotech/app.hisotechsolarinverters.com/hisotech/.htaccess
+    - /bin/true
