@@ -213,12 +213,12 @@ export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
   y += 10;
 
   const amountWords = pdf.splitTextToSize(`Amount in words: ${amountInNairaWords(totals.total)}`, width) as string[];
-  ensureSpace(amountWords.length * 3.8 + 4);
+  ensureSpace(amountWords.length * 4.8 + 6);
   pdf.setTextColor(75, 85, 99);
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(8);
+  pdf.setFontSize(10);
   pdf.text(amountWords, left, y);
-  y += amountWords.length * 3.8 + 4;
+  y += amountWords.length * 4.8 + 6;
 
   if (isInvoice && data.bankDetails && Object.values(data.bankDetails).some(Boolean)) {
     ensureSpace(24);

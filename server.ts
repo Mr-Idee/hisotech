@@ -628,28 +628,84 @@ async function startServer() {
   });
 
   app.get('/api/public/track', (req, res) => {
-    const ref = String(req.query.ref || '');
-    const result = getPublicTracking(ref);
+    res.set('Cache-Control', 'no-store');
+    const { user } = getSessionUser(req);
+    const customer = user
+      ? null
+      : getCustomerBySessionToken(parseCookies(req.headers.cookie)[CUSTOMER_COOKIE_NAME]);
+    if (!user && !customer) {
+      res.status(401).json({ error: 'Verified customer sign-in required.' });
+      return;
+    }
+    const trackPermissions = [
+      'manage_enquiries',
+      'manage_tickets',
+      'manage_storefront',
+      'manage_invoices',
+      'release_installations',
+      'update_installations',
+    ] as const;
+    if (user && !trackPermissions.some((permission) => hasPermission(user, permission))) {
+      res.status(403).json({ error: 'Your role does not permit customer tracking access.' });
+      return;
+    }
+    const ref = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
+    if (!ref || ref.length > 32) {
+      res.status(422).json({ error: 'Tracking reference is invalid.' });
+      return;
+    }
+    const result = getPublicTracking(ref, customer?.profile.email);
     if (!result) {
-      res.status(404).json({ error: `No enquiry or order found for reference "${ref}".` });
+      res.status(404).json({ error: 'No matching request was found for this account.' });
       return;
     }
     res.json(result);
   });
 
   app.post('/api/public/accept-invoice', async (req, res) => {
-    const invoiceId = String(req.body?.invoiceId || '');
-    acceptInvoiceByCustomer(invoiceId);
+    res.set('Cache-Control', 'no-store');
+    const customer = getCustomerBySessionToken(parseCookies(req.headers.cookie)[CUSTOMER_COOKIE_NAME]);
+    if (!customer) {
+      res.status(401).json({ error: 'Verified customer sign-in required.' });
+      return;
+    }
+    const invoiceId = typeof req.body?.invoiceId === 'string' ? req.body.invoiceId.trim() : '';
+    if (!invoiceId || invoiceId.length > 80 || !acceptInvoiceByCustomer(invoiceId, customer.profile.email)) {
+      res.status(404).json({ error: 'Invoice not found for this account.' });
+      return;
+    }
     await sendLifecycleWhatsApp('invoice_status', 'invoice', invoiceId, 'Your invoice was acknowledged.');
     res.json({ accepted: true });
   });
 
   app.get('/api/public/documents', (req, res) => {
+    res.set('Cache-Control', 'no-store');
     const type = req.query.type === 'invoice' ? 'invoice' : 'quote';
-    const id = String(req.query.id || '');
-    const doc = getPublicDocument(type, id);
+    const id = typeof req.query.id === 'string' ? req.query.id.trim() : '';
+    if (!id || id.length > 80) {
+      res.status(422).json({ error: 'Document reference is invalid.' });
+      return;
+    }
+    const { user } = getSessionUser(req);
+    const customer = user
+      ? null
+      : getCustomerBySessionToken(parseCookies(req.headers.cookie)[CUSTOMER_COOKIE_NAME]);
+    if (!user && !customer) {
+      res.status(401).json({ error: 'Verified customer sign-in required.' });
+      return;
+    }
+    if (user) {
+      const permissions = type === 'invoice'
+        ? ['manage_invoices', 'release_installations'] as const
+        : ['draft_quotes', 'approve_quotes', 'manage_invoices'] as const;
+      if (!permissions.some((permission) => hasPermission(user, permission))) {
+        res.status(403).json({ error: 'Your role does not permit access to this document.' });
+        return;
+      }
+    }
+    const doc = getPublicDocument(type, id, customer?.profile.email);
     if (!doc) {
-      res.status(404).json({ error: 'Document not found.' });
+      res.status(404).json({ error: 'Document not found for this account.' });
       return;
     }
     res.json(doc);
@@ -1473,8 +1529,23 @@ async function startServer() {
       res.status(401).json({ error: 'Authentication required.' });
       return;
     }
-    acknowledgeInstallation(user, req.body.installationId);
-    res.json({ ok: true });
+    const installationId = typeof req.body?.installationId === 'string'
+      ? req.body.installationId.trim()
+      : '';
+    if (!installationId || installationId.length > 80) {
+      res.status(422).json({ error: 'Installation reference is invalid.' });
+      return;
+    }
+    try {
+      acknowledgeInstallation(user, installationId);
+      res.json({ ok: true });
+    } catch (error) {
+      const message = (error as Error).message;
+      const status = message === 'Installation not found.' ? 404
+        : message.startsWith('Only the assigned engineer') ? 403
+          : 409;
+      res.status(status).json({ error: message });
+    }
   });
 
   app.post('/api/installations/report', async (req, res) => {

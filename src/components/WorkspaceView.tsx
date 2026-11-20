@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
+import { listenForStaffLogout, notifyStaffLogoutAcrossTabs } from '../lib/auth-sync';
 import {
   ALL_PERMISSIONS,
   buildQuoteLinesFromEstimate,
@@ -117,6 +118,7 @@ export function WorkspaceView({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mainContentRef = useRef<HTMLElement>(null);
+  const authEpochRef = useRef(0);
   const [toastMsg, setToastMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -139,6 +141,9 @@ export function WorkspaceView({
   const [setupPasswordConfirm, setSetupPasswordConfirm] = useState('');
   const [showSetupPassword, setShowSetupPassword] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
+  const [newQuotePickerOpen, setNewQuotePickerOpen] = useState(false);
+  const [invoicePickerOpen, setInvoicePickerOpen] = useState(false);
+  const [invoiceCreatingId, setInvoiceCreatingId] = useState<string | null>(null);
 
   // Manual enquiry modal
   const [enqModal, setEnqModal] = useState(false);
@@ -233,14 +238,17 @@ export function WorkspaceView({
   }
 
   async function loadWorkspace() {
+    const authEpoch = authEpochRef.current;
     setLoading(true);
     try {
       const sess = await api.session();
+      if (authEpoch !== authEpochRef.current) return;
       if (!sess.authenticated) {
         setData(null);
         return;
       }
       const ws = await api.getWorkspace();
+      if (authEpoch !== authEpochRef.current) return;
       setData(ws);
       onCatalogChange?.(ws.catalog);
 
@@ -254,9 +262,9 @@ export function WorkspaceView({
       }
       onSettingsChange?.(ws.settings);
     } catch {
-      setData(null);
+      if (authEpoch === authEpochRef.current) setData(null);
     } finally {
-      setLoading(false);
+      if (authEpoch === authEpochRef.current) setLoading(false);
     }
   }
 
@@ -264,6 +272,14 @@ export function WorkspaceView({
     loadWorkspace();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => listenForStaffLogout(() => {
+    authEpochRef.current += 1;
+    setData(null);
+    setLoading(false);
+    setMobileNavOpen(false);
+    setErrorMsg('Your staff session was signed out in another tab.');
+  }), []);
 
   useEffect(() => {
     const onPopState = () => {
@@ -308,6 +324,25 @@ export function WorkspaceView({
     } finally {
       setLoginBusy(false);
     }
+  }
+
+  async function handleLogout() {
+    setErrorMsg('');
+    try {
+      await api.logout();
+    } catch (error) {
+      setErrorMsg(`Could not sign out: ${(error as Error).message}`);
+      return;
+    }
+
+    authEpochRef.current += 1;
+    setMobileNavOpen(false);
+    setData(null);
+    setErrorMsg(
+      notifyStaffLogoutAcrossTabs()
+        ? ''
+        : 'You are signed out here, but other tabs could not be notified. Refresh them before continuing.'
+    );
   }
 
   async function handleFirstAdminSetup(event: React.FormEvent<HTMLFormElement>) {
@@ -381,8 +416,34 @@ export function WorkspaceView({
       setQuoteCustomer(enq.customerName);
       setQuoteScope(`Turnkey hybrid solar engineering supply and installation for ${enq.location}.`);
       setQuoteItems(buildQuoteLinesFromEstimate(enq.estimate, data.catalog, data.settings.estimator));
+    } else {
+      setEditQuoteId(undefined);
+      setQuoteEnqId('');
+      setQuoteCustomer('');
+      setQuoteScope('');
+      setQuoteTerms('50% deposit on acceptance, 50% prior to commissioning.');
+      setQuoteNote('Valid 7 days. Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error.');
+      setQuoteDiscount('0');
+      setQuoteTax('7.5');
+      setQuoteValid(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
+      setQuoteItems([]);
     }
     setQuoteModal(true);
+  }
+
+  async function issueInvoiceFromQuote(quote: QuotationRecord) {
+    setErrorMsg('');
+    setInvoiceCreatingId(quote.id);
+    try {
+      const invoice = await api.issueInvoice(quote.id);
+      setInvoicePickerOpen(false);
+      await loadWorkspace();
+      showToast(`Issued invoice ${invoice.invoiceCode}.`);
+    } catch (error) {
+      setErrorMsg((error as Error).message);
+    } finally {
+      setInvoiceCreatingId(null);
+    }
   }
 
   function openRoleEditor(roleDef?: RoleDefinition) {
@@ -477,6 +538,7 @@ export function WorkspaceView({
             </button>
           </form>
 
+          {setupChecked && setupAvailable && (
           <div className="mt-4 border-t border-slate-200 pt-4 text-center text-sm dark:border-slate-700">
             <a
               href="#workspace?setup=superuser"
@@ -491,6 +553,7 @@ export function WorkspaceView({
               Create the first Super Admin account
             </a>
           </div>
+          )}
 
           {setupOpen && (
             <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-5 dark:border-slate-700 dark:bg-[#061327]">
@@ -643,6 +706,10 @@ export function WorkspaceView({
   const technicians = data.staff.filter(
     (s) => (s.role === 'technician' || hasPermission(s, 'update_installations')) && s.status === 'Active'
   );
+  const enquiriesAvailableForQuote = data.enquiries.filter(
+    (enquiry) => !data.quotes.some((quote) => quote.enquiryId === enquiry.id && quote.status !== 'Rejected')
+  );
+  const approvedQuotesAvailableForInvoice = data.quotes.filter((quote) => quote.status === 'Approved');
 
   const navLinks: { id: WorkspaceTab; label: string; icon: typeof LayoutDashboard; allowed: boolean }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard, allowed: true },
@@ -774,11 +841,7 @@ export function WorkspaceView({
       <div className="mt-6 border-t border-white/15 pt-4">
         <button
           type="button"
-          onClick={async () => {
-            await api.logout();
-            setMobileNavOpen(false);
-            setData(null);
-          }}
+          onClick={() => void handleLogout()}
           aria-label="Sign Out"
           className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white ${!mobile && sidebarCollapsed ? 'justify-center' : ''}`}
         >
@@ -1370,7 +1433,18 @@ export function WorkspaceView({
         {/* QUOTATIONS */}
         {tab === 'quotes' && (
           <div className="space-y-4">
-            <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Quotations &amp; Director Approvals</h1>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Quotations &amp; Director Approvals</h1>
+              {hasPermission(user, 'draft_quotes') && (
+                <button
+                  type="button"
+                  onClick={() => setNewQuotePickerOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-sm font-semibold text-white hover:bg-[#B0171D]"
+                >
+                  <Plus className="h-4 w-4" /> New Quotation
+                </button>
+              )}
+            </div>
             {data.quotes.map((q) => {
               const tot = calculateDocumentTotals(q.items, q.discountNgn, q.taxPercent);
               return (
@@ -1442,11 +1516,7 @@ export function WorkspaceView({
                       {hasPermission(user, 'manage_invoices') && q.status === 'Approved' && (
                         <button
                           type="button"
-                          onClick={async () => {
-                            const inv = await api.issueInvoice(q.id);
-                            await loadWorkspace();
-                            showToast(`Issued invoice ${inv.invoiceCode}.`);
-                          }}
+                          onClick={() => void issueInvoiceFromQuote(q)}
                           className="rounded-lg bg-[#D61F26] px-3 py-1.5 text-xs font-semibold text-white"
                         >
                           Issue Invoice
@@ -1461,16 +1531,29 @@ export function WorkspaceView({
         )}
 
         {(tab === 'invoices' || tab === 'finance') && (
-          <WorkspaceFinance
-            mode={tab}
-            user={user}
-            invoices={data.invoices}
-            payments={data.payments}
-            staff={data.staff}
-            onRefresh={loadWorkspace}
-            onOpenDocument={onOpenDocument}
-            onNotify={showToast}
-          />
+          <div className="space-y-4">
+            {tab === 'invoices' && hasPermission(user, 'manage_invoices') && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setInvoicePickerOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-sm font-semibold text-white hover:bg-[#B0171D]"
+                >
+                  <Plus className="h-4 w-4" /> New Invoice
+                </button>
+              </div>
+            )}
+            <WorkspaceFinance
+              mode={tab}
+              user={user}
+              invoices={data.invoices}
+              payments={data.payments}
+              staff={data.staff}
+              onRefresh={loadWorkspace}
+              onOpenDocument={onOpenDocument}
+              onNotify={showToast}
+            />
+          </div>
         )}
 
         {tab === 'installations' && (
@@ -2461,6 +2544,84 @@ export function WorkspaceView({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {newQuotePickerOpen && (
+        <div role="dialog" aria-modal="true" aria-label="Choose an enquiry for a new quotation" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">New Quotation</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Choose an enquiry to populate the customer and system estimate.</p>
+              </div>
+              <button type="button" onClick={() => setNewQuotePickerOpen(false)} aria-label="Close enquiry selector" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">
+              {enquiriesAvailableForQuote.length === 0 ? (
+                <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600 dark:bg-[#061327] dark:text-slate-300">
+                  No enquiries are available for a new quotation. Create an enquiry first or revise an existing quotation.
+                </p>
+              ) : enquiriesAvailableForQuote.map((enquiry) => (
+                <button
+                  key={enquiry.id}
+                  type="button"
+                  onClick={() => {
+                    setNewQuotePickerOpen(false);
+                    openQuoteBuilder(enquiry);
+                  }}
+                  className="w-full rounded-lg border border-slate-200 p-3 text-left hover:border-[#D61F26] dark:border-slate-700"
+                >
+                  <span className="font-mono-num text-xs font-bold text-[#D61F26]">{enquiry.refCode}</span>
+                  <span className="ml-2 text-xs text-slate-500">{enquiry.status}</span>
+                  <span className="mt-1 block font-semibold text-[#081E3E] dark:text-white">{enquiry.customerName}</span>
+                  <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{enquiry.location}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {invoicePickerOpen && (
+        <div role="dialog" aria-modal="true" aria-label="Choose an approved quotation for a new invoice" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">New Invoice</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Invoices are issued from approved quotations.</p>
+              </div>
+              <button type="button" onClick={() => setInvoicePickerOpen(false)} aria-label="Close invoice selector" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">
+              {approvedQuotesAvailableForInvoice.length === 0 ? (
+                <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600 dark:bg-[#061327] dark:text-slate-300">
+                  No approved quotations are available. Approve a quotation before creating its invoice.
+                </p>
+              ) : approvedQuotesAvailableForInvoice.map((quote) => (
+                <div key={quote.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                  <div>
+                    <span className="font-mono-num text-xs font-bold text-[#D61F26]">{quote.quoteCode}</span>
+                    <span className="ml-2 text-xs text-slate-500">R{quote.revisionNo}</span>
+                    <span className="mt-1 block font-semibold text-[#081E3E] dark:text-white">{quote.customerName}</span>
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">{quote.scope}</span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={invoiceCreatingId === quote.id}
+                    onClick={() => void issueInvoiceFromQuote(quote)}
+                    className="rounded-lg bg-[#D61F26] px-3 py-2 text-xs font-semibold text-white hover:bg-[#B0171D] disabled:opacity-60"
+                  >
+                    {invoiceCreatingId === quote.id ? 'Issuing…' : 'Create Invoice'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>

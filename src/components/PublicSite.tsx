@@ -396,14 +396,10 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                   </span>
                 </div>
 
-                <svg viewBox="0 0 640 360" role="img" aria-labelledby="energy-flow-title energy-flow-desc" className="energy-flow-diagram my-2 w-full">
+                <svg viewBox="0 0 540 360" role="img" aria-labelledby="energy-flow-title energy-flow-desc" className="energy-flow-diagram my-2 w-full">
                   <title id="energy-flow-title">Solar, inverter, battery, grid, and home energy flow</title>
                   <desc id="energy-flow-desc">Animated paths show solar charging, battery storage, and the home supply. Use the outage switch to simulate utility power loss.</desc>
                   <defs>
-                    <filter id="energy-glow" x="-80%" y="-80%" width="260%" height="260%">
-                      <feGaussianBlur stdDeviation="3" result="blur" />
-                      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-                    </filter>
                     <linearGradient id="panel-gradient" x1="0" x2="1">
                       <stop offset="0" stopColor="#0ea5e9" />
                       <stop offset="1" stopColor="#38bdf8" />

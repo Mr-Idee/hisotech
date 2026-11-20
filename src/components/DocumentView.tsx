@@ -1,6 +1,7 @@
 import { ArrowLeft, Download, Mail, Printer, Share2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { listenForCustomerLogout } from '../lib/auth-sync';
 import { calculateDocumentTotals, formatNgn } from '../lib/solar';
 import { createDocumentPdf, downloadDocumentPdf } from '../lib/document-pdf';
 import { amountInNairaWords } from '../lib/currency-words';
@@ -146,6 +147,14 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
       active = false;
     };
   }, [type, id, bankDetails, isSample]);
+
+  useEffect(() => {
+    if (canEmail || isSample) return;
+    return listenForCustomerLogout(() => {
+      setDoc(null);
+      setError('Your customer session ended in another tab. Sign in again to view this document.');
+    });
+  }, [canEmail, isSample]);
 
   async function createPdf() {
     if (!doc) throw new Error('Document is not ready.');
@@ -423,7 +432,7 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
               </div>
             </dl>
           </div>
-          <p className="mt-4 text-xs leading-relaxed text-slate-600">
+          <p className="mt-4 text-sm font-medium leading-relaxed text-slate-700 sm:text-base">
             <strong className="text-[#081E3E]">Amount in words: </strong>
             {amountInNairaWords(totals.total)}
           </p>

@@ -761,7 +761,24 @@ try {
     }
 
     if ($method === 'GET' && $route === 'public/track') {
+        header('Cache-Control: no-store, private');
+        $user = hiso_current_user();
+        $customer = $user ? null : hiso_current_customer();
+        if (!$user && !$customer) {
+            hiso_json_response(['error' => 'Verified customer sign-in required.'], 401);
+        }
+        $trackPermissions = [
+            'manage_enquiries', 'manage_tickets', 'manage_storefront',
+            'manage_invoices', 'release_installations', 'update_installations',
+        ];
+        if ($user && $user['role'] !== 'superadmin'
+            && !array_intersect($trackPermissions, $user['permissions'] ?? [])) {
+            hiso_json_response(['error' => 'Your role does not permit customer tracking access.'], 403);
+        }
         $ref = strtoupper(trim((string)($_GET['ref'] ?? '')));
+        if ($ref === '' || strlen($ref) > 32) {
+            hiso_json_response(['error' => 'Tracking reference is invalid.'], 422);
+        }
         $pdo = hiso_pdo();
         $oStmt = $pdo->prepare('SELECT * FROM store_orders WHERE UPPER(order_code) = ? LIMIT 1');
         $oStmt->execute([$ref]);
@@ -781,7 +798,16 @@ try {
                 $orderRow = $o2->fetch();
             }
         }
-        if (!$enq) hiso_json_response(['error' => 'No request found for reference ' . $ref], 404);
+        if (!$enq) hiso_json_response(['error' => 'No matching request was found for this account.'], 404);
+        if ($customer) {
+            $customerEmail = strtolower(trim((string)$customer['email']));
+            $enquiryEmail = strtolower(trim((string)($enq['email'] ?? '')));
+            $orderEmail = strtolower(trim((string)($orderRow['email'] ?? '')));
+            if ($enquiryEmail === '' || !hash_equals($customerEmail, $enquiryEmail)
+                || ($orderEmail !== '' && !hash_equals($customerEmail, $orderEmail))) {
+                hiso_json_response(['error' => 'No matching request was found for this account.'], 404);
+            }
+        }
 
         $qStmt = $pdo->prepare('SELECT id, quote_code, status, revision_no, issued_date, valid_until FROM quotations WHERE enquiry_id = ? AND status IN ("Approved","Invoiced") ORDER BY created_at DESC LIMIT 1');
         $qStmt->execute([$enq['id']]);
@@ -835,21 +861,55 @@ try {
     }
 
     if ($method === 'POST' && $route === 'public/accept-invoice') {
+        header('Cache-Control: no-store, private');
+        $customer = hiso_require_customer();
         $body = hiso_json_body();
         $invoiceId = (string)($body['invoiceId'] ?? '');
-        hiso_pdo()->prepare('UPDATE invoices SET customer_accepted = 1, accepted_at = NOW() WHERE id = ?')->execute([$invoiceId]);
-        hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invoiceId, 'Your invoice was acknowledged.');
+        if ($invoiceId === '' || strlen($invoiceId) > 80) {
+            hiso_json_response(['error' => 'Invoice reference is invalid.'], 422);
+        }
+        $invoiceStmt = hiso_pdo()->prepare(
+            'SELECT i.id, i.customer_accepted FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?) AND LOWER(e.email) = LOWER(?) LIMIT 1'
+        );
+        $invoiceStmt->execute([$invoiceId, $invoiceId, (string)$customer['email']]);
+        $invoice = $invoiceStmt->fetch();
+        if (!$invoice) hiso_json_response(['error' => 'Invoice not found for this account.'], 404);
+        if (!(bool)$invoice['customer_accepted']) {
+            hiso_pdo()->prepare('UPDATE invoices SET customer_accepted = 1, accepted_at = NOW() WHERE id = ?')->execute([$invoice['id']]);
+            hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', (string)$invoice['id'], 'Your invoice was acknowledged.');
+        }
         hiso_json_response(['accepted' => true]);
     }
 
     if ($method === 'GET' && $route === 'public/documents') {
+        header('Cache-Control: no-store, private');
         $type = ($_GET['type'] ?? 'quote') === 'invoice' ? 'invoice' : 'quote';
-        $id = (string)($_GET['id'] ?? '');
+        $id = trim((string)($_GET['id'] ?? ''));
+        if ($id === '' || strlen($id) > 80) {
+            hiso_json_response(['error' => 'Document reference is invalid.'], 422);
+        }
+        $user = hiso_current_user();
+        $customer = $user ? null : hiso_current_customer();
+        if (!$user && !$customer) {
+            hiso_json_response(['error' => 'Verified customer sign-in required.'], 401);
+        }
+        if ($user && $user['role'] !== 'superadmin') {
+            $documentPermissions = $type === 'invoice'
+                ? ['manage_invoices', 'release_installations']
+                : ['draft_quotes', 'approve_quotes', 'manage_invoices'];
+            if (!array_intersect($documentPermissions, $user['permissions'] ?? [])) {
+                hiso_json_response(['error' => 'Your role does not permit access to this document.'], 403);
+            }
+        }
         if ($type === 'invoice') {
-            $stmt = hiso_pdo()->prepare('SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? OR i.invoice_code = ? LIMIT 1');
-            $stmt->execute([$id, $id]);
+            $sql = 'SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?)';
+            if ($customer) $sql .= ' AND LOWER(e.email) = LOWER(?)';
+            $stmt = hiso_pdo()->prepare($sql . ' LIMIT 1');
+            $params = [$id, $id];
+            if ($customer) $params[] = (string)$customer['email'];
+            $stmt->execute($params);
             $row = $stmt->fetch();
-            if (!$row) hiso_json_response(['error' => 'Invoice not found.'], 404);
+            if (!$row) hiso_json_response(['error' => 'Document not found for this account.'], 404);
             hiso_json_response([
                 'type' => 'invoice', 'documentCode' => $row['invoice_code'], 'customerName' => $row['customer_name'],
                 'location' => $row['location'], 'phone' => $row['phone'], 'email' => $row['email'], 'refCode' => $row['ref_code'],
@@ -859,10 +919,14 @@ try {
                 'customerAccepted' => (bool)$row['customer_accepted'], 'items' => json_decode($row['items_json'] ?: '[]', true),
             ]);
         } else {
-            $stmt = hiso_pdo()->prepare('SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? OR q.quote_code = ? LIMIT 1');
-            $stmt->execute([$id, $id]);
+            $sql = 'SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE (q.id = ? OR q.quote_code = ?)';
+            if ($customer) $sql .= " AND LOWER(e.email) = LOWER(?) AND q.status IN ('Approved', 'Invoiced')";
+            $stmt = hiso_pdo()->prepare($sql . ' LIMIT 1');
+            $params = [$id, $id];
+            if ($customer) $params[] = (string)$customer['email'];
+            $stmt->execute($params);
             $row = $stmt->fetch();
-            if (!$row) hiso_json_response(['error' => 'Quotation not found.'], 404);
+            if (!$row) hiso_json_response(['error' => 'Document not found for this account.'], 404);
             hiso_json_response([
                 'type' => 'quote', 'documentCode' => $row['quote_code'], 'revisionNo' => (int)$row['revision_no'], 'status' => $row['status'],
                 'customerName' => $row['customer_name'], 'location' => $row['location'], 'phone' => $row['phone'], 'email' => $row['email'], 'refCode' => $row['ref_code'],
@@ -1803,8 +1867,30 @@ try {
         $user = hiso_current_user();
         if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
         $body = hiso_json_body();
-        hiso_pdo()->prepare('UPDATE installations SET engineer_acknowledged = 1 WHERE id = ?')->execute([$body['installationId']]);
-        hiso_audit($user, 'ACK_INSTALLATION', 'Installation', (string)$body['installationId'], $user['name'] . ' acknowledged assignment.');
+        $installationId = trim((string)($body['installationId'] ?? ''));
+        if ($installationId === '' || strlen($installationId) > 80) {
+            hiso_json_response(['error' => 'Installation reference is invalid.'], 422);
+        }
+        $pdo = hiso_pdo();
+        $jobStmt = $pdo->prepare('SELECT assigned_engineer_id, engineer_acknowledged FROM installations WHERE id = ? LIMIT 1');
+        $jobStmt->execute([$installationId]);
+        $job = $jobStmt->fetch();
+        if (!$job) hiso_json_response(['error' => 'Installation not found.'], 404);
+        $permissions = $user['permissions'] ?? [];
+        $canSupervise = $user['role'] === 'superadmin'
+            || in_array('manage_enquiries', $permissions, true)
+            || in_array('release_installations', $permissions, true);
+        if ((string)($job['assigned_engineer_id'] ?? '') !== (string)$user['id'] && !$canSupervise) {
+            hiso_json_response(['error' => 'Only the assigned engineer or an authorized supervisor can acknowledge this installation.'], 403);
+        }
+        if (!(bool)$job['engineer_acknowledged']) {
+            $update = $pdo->prepare('UPDATE installations SET engineer_acknowledged = 1 WHERE id = ? AND (assigned_engineer_id = ? OR ? = 1)');
+            $update->execute([$installationId, (string)$user['id'], $canSupervise ? 1 : 0]);
+            if ($update->rowCount() !== 1) {
+                hiso_json_response(['error' => 'Installation assignment changed before it could be acknowledged.'], 409);
+            }
+            hiso_audit($user, 'ACK_INSTALLATION', 'Installation', $installationId, $user['name'] . ' acknowledged assignment.');
+        }
         hiso_json_response(['ok' => true]);
     }
 

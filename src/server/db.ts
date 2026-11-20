@@ -13,6 +13,8 @@ import {
   validateInstallationRelease,
 } from '../lib/solar';
 import { defaultEstimatorSettings, normalizeEstimatorSettings } from '../lib/estimator-settings';
+import { customerEmailMatches } from '../lib/customer-access';
+import { canAcknowledgeInstallation } from '../lib/access-control';
 import type {
   AuditLogRecord,
   BankDetails,
@@ -967,7 +969,7 @@ export function updateStoreOrderStatus(
   writeAudit(actor, 'UPDATE_ORDER', 'StoreOrder', String(existing.order_code), `Marked Store order ${existing.order_code} as ${body.status}.`);
 }
 
-export function getPublicTracking(refCode: string) {
+export function getPublicTracking(refCode: string, customerEmail?: string) {
   const cleanRef = refCode.trim().toUpperCase();
   let orderRow = db.prepare('SELECT * FROM store_orders WHERE UPPER(order_code) = ? LIMIT 1').get(cleanRef) as Record<string, unknown> | undefined;
   let enq = orderRow
@@ -977,6 +979,10 @@ export function getPublicTracking(refCode: string) {
   if (!enq) return null;
   if (!orderRow) {
     orderRow = db.prepare('SELECT * FROM store_orders WHERE enquiry_id = ? ORDER BY created_at DESC LIMIT 1').get(String(enq.id)) as Record<string, unknown> | undefined;
+  }
+  if (customerEmail !== undefined) {
+    if (!customerEmailMatches(customerEmail, String(enq.email || ''))) return null;
+    if (orderRow?.email && !customerEmailMatches(customerEmail, String(orderRow.email))) return null;
   }
 
   const quote = db
@@ -1060,11 +1066,13 @@ export function getPublicTracking(refCode: string) {
   };
 }
 
-export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string) {
+export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string, customerEmail?: string) {
   if (type === 'invoice') {
-    const row = db
-      .prepare('SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? OR i.invoice_code = ? LIMIT 1')
-      .get(idOrCode, idOrCode) as Record<string, unknown> | undefined;
+    const row = customerEmail === undefined
+      ? db.prepare('SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? OR i.invoice_code = ? LIMIT 1')
+        .get(idOrCode, idOrCode) as Record<string, unknown> | undefined
+      : db.prepare('SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?) AND LOWER(e.email) = LOWER(?) LIMIT 1')
+        .get(idOrCode, idOrCode, customerEmail) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       type: 'invoice' as const,
@@ -1084,9 +1092,11 @@ export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string) {
       items: JSON.parse(String(row.items_json)),
     };
   }
-  const row = db
-    .prepare('SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? OR q.quote_code = ? LIMIT 1')
-    .get(idOrCode, idOrCode) as Record<string, unknown> | undefined;
+  const row = customerEmail === undefined
+    ? db.prepare('SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? OR q.quote_code = ? LIMIT 1')
+      .get(idOrCode, idOrCode) as Record<string, unknown> | undefined
+    : db.prepare("SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE (q.id = ? OR q.quote_code = ?) AND LOWER(e.email) = LOWER(?) AND q.status IN ('Approved', 'Invoiced') LIMIT 1")
+      .get(idOrCode, idOrCode, customerEmail) as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
     type: 'quote' as const,
@@ -1110,8 +1120,11 @@ export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string) {
   };
 }
 
-export function acceptInvoiceByCustomer(invoiceId: string): void {
-  db.prepare('UPDATE invoices SET customer_accepted = 1, accepted_at = ? WHERE id = ?').run(new Date().toISOString(), invoiceId);
+export function acceptInvoiceByCustomer(invoiceId: string, customerEmail: string): boolean {
+  const result = db.prepare(
+    'UPDATE invoices SET customer_accepted = 1, accepted_at = ? WHERE (id = ? OR invoice_code = ?) AND EXISTS (SELECT 1 FROM enquiries e WHERE e.id = invoices.enquiry_id AND LOWER(e.email) = LOWER(?))'
+  ).run(new Date().toISOString(), invoiceId, invoiceId, customerEmail);
+  return result.changes === 1;
 }
 
 // --- Customer Portal Operations ---
@@ -2309,7 +2322,21 @@ export function assignInstallation(actor: StaffMember, installationId: string, e
 }
 
 export function acknowledgeInstallation(actor: StaffMember, installationId: string) {
-  db.prepare('UPDATE installations SET engineer_acknowledged = 1 WHERE id = ?').run(installationId);
+  const installation = db.prepare(
+    'SELECT assigned_engineer_id, engineer_acknowledged FROM installations WHERE id = ? LIMIT 1'
+  ).get(installationId) as { assigned_engineer_id: string | null; engineer_acknowledged: number } | undefined;
+  if (!installation) throw new Error('Installation not found.');
+
+  const canSupervise = hasPermission(actor, 'manage_enquiries') || hasPermission(actor, 'release_installations');
+  if (!canAcknowledgeInstallation(actor.id, installation.assigned_engineer_id, canSupervise)) {
+    throw new Error('Only the assigned engineer or an authorized supervisor can acknowledge this installation.');
+  }
+  if (installation.engineer_acknowledged) return;
+
+  const updated = db.prepare(
+    'UPDATE installations SET engineer_acknowledged = 1 WHERE id = ? AND (assigned_engineer_id = ? OR ? = 1)'
+  ).run(installationId, actor.id, canSupervise ? 1 : 0);
+  if (updated.changes !== 1) throw new Error('Installation assignment changed before it could be acknowledged.');
   writeAudit(actor, 'ACK_INSTALLATION', 'Installation', installationId, `${actor.name} acknowledged job assignment.`);
 }
 

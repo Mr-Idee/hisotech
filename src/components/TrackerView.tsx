@@ -1,14 +1,16 @@
 import { CheckCircle2, ExternalLink, Search, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { listenForCustomerLogout } from '../lib/auth-sync';
 import { formatNgn, INSTALLATION_STAGES } from '../lib/solar';
 
 interface TrackerViewProps {
   initialRef?: string;
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
+  onOpenCustomerPortal: () => void;
 }
 
-export function TrackerView({ initialRef, onOpenDocument }: TrackerViewProps) {
+export function TrackerView({ initialRef, onOpenDocument, onOpenCustomerPortal }: TrackerViewProps) {
   const [refInput, setRefInput] = useState(initialRef || '');
   const [data, setData] = useState<Awaited<ReturnType<typeof api.trackRequest>> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,6 +40,12 @@ export function TrackerView({ initialRef, onOpenDocument }: TrackerViewProps) {
     if (startRef) void lookup(startRef);
   }, [initialRef]);
 
+  useEffect(() => listenForCustomerLogout(() => {
+    setData(null);
+    setLoading(false);
+    setError('You were signed out in another tab. Sign in through the Customer Service Portal to view tracking details.');
+  }), []);
+
   async function handleAcceptInvoice(invoiceId: string) {
     setAcceptBusy(true);
     try {
@@ -56,7 +64,7 @@ export function TrackerView({ initialRef, onOpenDocument }: TrackerViewProps) {
         <p className="text-xs font-semibold tracking-wider text-red-300">CUSTOMER TRACKING PORTAL</p>
         <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Track your solar enquiry, documents & installation stages.</h1>
         <p className="mt-2 text-sm text-slate-300">
-          Only customer-approved quotations, confirmed payment summaries, and public field updates are visible here.
+          Sign in through the Customer Service Portal using the verified email for your request before viewing tracking details.
         </p>
 
         <form
@@ -91,7 +99,16 @@ export function TrackerView({ initialRef, onOpenDocument }: TrackerViewProps) {
 
       {error && (
         <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
-          {error}
+          <p>{error}</p>
+          {error.includes('Verified customer sign-in required') && (
+            <button
+              type="button"
+              onClick={onOpenCustomerPortal}
+              className="mt-3 rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
+            >
+              Open Customer Service Portal
+            </button>
+          )}
         </div>
       )}
 

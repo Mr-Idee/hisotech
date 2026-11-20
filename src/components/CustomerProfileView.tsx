@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Cpu, LogOut, Plus, UserCheck, Wrench } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { listenForCustomerLogout, notifyCustomerLogoutAcrossTabs } from '../lib/auth-sync';
 import type {
   CustomerEquipment,
   CustomerProfile,
@@ -69,6 +70,20 @@ export function CustomerProfileView() {
     setProfCompany(data.profile.company);
     setProfRef(data.profile.refCode);
   }
+
+  function clearCustomerSession(message: string) {
+    setProfile(null);
+    setEquipment([]);
+    setTickets([]);
+    setSessionBusy(false);
+    setError(message);
+    setNotice('');
+    setLinkSent(false);
+  }
+
+  useEffect(() => listenForCustomerLogout(() => {
+    clearCustomerSession('You were signed out in another tab. Please sign in again to continue.');
+  }), []);
 
   useEffect(() => {
     let active = true;
@@ -339,12 +354,8 @@ export function CustomerProfileView() {
           onClick={async () => {
             try {
               await api.customerLogout();
-              setProfile(null);
-              setEquipment([]);
-              setTickets([]);
-              setError('');
-              setNotice('');
-              setLinkSent(false);
+              const notified = notifyCustomerLogoutAcrossTabs();
+              clearCustomerSession(notified ? '' : 'You are signed out here, but other tabs could not be notified. Refresh them before continuing.');
             } catch (err) {
               setError((err as Error).message);
             }

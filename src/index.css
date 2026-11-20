@@ -54,11 +54,18 @@
 
 .energy-path {
   fill: none;
-  stroke-width: 3;
-  stroke-dasharray: 8 12;
+  stroke-width: 4;
+  stroke-dasharray: 9 9;
   stroke-linecap: round;
   animation: flowPulse 1.2s linear infinite;
-  filter: url(#energy-glow);
+  filter: none;
+}
+
+.energy-flow-diagram {
+  display: block;
+  min-height: 220px;
+  overflow: visible;
+  flex: 1 1 auto;
 }
 
 .solar-flow,
@@ -75,6 +82,24 @@
   stroke: #10b981;
   opacity: 0.12;
   animation: none;
+}
+
+@media (max-width: 1023px) {
+  .energy-flow-panel {
+    min-height: 430px;
+  }
+
+  .energy-flow-diagram {
+    min-height: 240px;
+  }
+
+  .solar-flow,
+  .battery-charge-flow {
+    stroke: #fbbf24;
+    stroke-width: 5;
+    stroke-dasharray: 7 7;
+    opacity: 1;
+  }
 }
 
 .flow-node > rect:first-of-type {

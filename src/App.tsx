@@ -198,6 +198,7 @@ export default function App() {
         <TrackerView
           initialRef={trackRef}
           onOpenDocument={(type, id) => setDocView({ type, id, canEmail: false })}
+          onOpenCustomerPortal={() => handleNavigate('customer')}
         />
       ) : (
         <WorkspaceView
