@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CatalogItem, EstimatorSettings, InstallationRecord } from './types';
+import type { CatalogItem, EstimatorSettings, InstallationRecord, SolarEstimateResult } from './types';
 import {
   calculateDocumentTotals,
   calculateInvoiceBalance,
@@ -100,7 +100,7 @@ test('computeEstimateCostFromCatalog & syncLineItemsWithCatalog reflect updated 
     { id: '1', name: 'Office Load', qty: 2, watts: 1000, hours: 6 },
   ]);
   const before = computeEstimateCostFromCatalog(est, SAMPLE_CATALOG, 7.5);
-  assert.ok(before.total > 0);
+  assert.ok(before.total !== undefined && before.total > 0);
 
   const updatedCatalog = SAMPLE_CATALOG.map((item) =>
     item.sku === 'BAT-512L' ? { ...item, priceNgn: item.priceNgn + 250000 } : item
@@ -160,13 +160,14 @@ test('quote pricing uses configured Store categories and selected accessory and 
     { ...SAMPLE_CATALOG[0], category: 'PV Modules' },
     { ...SAMPLE_CATALOG[1], category: 'Hybrid Inverters' },
     { ...SAMPLE_CATALOG[2], category: 'Lithium Storage' },
-    { ...SAMPLE_CATALOG[3], id: 'accessory', sku: 'BOS-KIT', name: 'Protection kit', itemType: 'equipment', category: 'Balance of System' },
+    { ...SAMPLE_CATALOG[3], id: 'accessory', sku: 'BOS-KIT', name: 'Panel mounting rack', itemType: 'equipment', category: 'Balance of System' },
     { ...SAMPLE_CATALOG[3], id: 'installation', sku: 'INSTALL', name: 'Installation & commissioning', itemType: 'service', category: 'Engineering' },
     { ...SAMPLE_CATALOG[3], id: 'delivery', sku: 'DELIVERY', name: 'Nationwide delivery', itemType: 'service', category: 'Logistics', priceNgn: 25000 },
     { ...SAMPLE_CATALOG[3], id: 'unselected', sku: 'EXTRA', name: 'Unselected extra service', itemType: 'service', category: 'Other' },
   ];
   const settings: EstimatorSettings = {
     inverterCategory: 'Hybrid Inverters',
+    parallelInverterSkus: [],
     batteryCategory: 'Lithium Storage',
     panelCategory: 'PV Modules',
     accessorySkus: ['BOS-KIT'],
@@ -186,6 +187,7 @@ test('quote pricing uses configured Store categories and selected accessory and 
     'INSTALL',
     'DELIVERY',
   ]);
+  assert.equal(lines.find((line) => line.sku === 'BOS-KIT')?.qty, 1);
 });
 
 test('estimate pricing does not show a partial total when required catalog equipment is missing', () => {
@@ -193,7 +195,52 @@ test('estimate pricing does not show a partial total when required catalog equip
     { id: 'load', name: 'Load', qty: 1, watts: 1000, hours: 5 },
   ]);
   assert.equal(computeEstimateCostFromCatalog(estimate, []).lines.length, 0);
-  assert.equal(computeEstimateCostFromCatalog(estimate, SAMPLE_CATALOG.slice(0, 1)).total, 0);
+  const missing = computeEstimateCostFromCatalog(estimate, SAMPLE_CATALOG.slice(0, 1));
+  assert.equal(missing.total, undefined);
+  assert.ok(missing.undetermined.some((item) => item.key === 'inverter'));
+});
+
+test('only admin-approved inverter models can be combined to meet higher loads', () => {
+  const estimate: SolarEstimateResult = {
+    connectedLoadWatts: 9000,
+    dailyEnergyKwh: 20,
+    inverterMinKw: 9,
+    batteryTargetKwh: 0,
+    recommendedPanels550w: 0,
+    recommendedBatteries5kwh: 0,
+    recommendedArrayWatts: 0,
+    equipmentGrade: 'Standard',
+  };
+  const settings: EstimatorSettings = {
+    inverterCategory: 'Inverters',
+    parallelInverterSkus: [],
+    batteryCategory: 'Battery Storage',
+    panelCategory: 'Solar Panels',
+    accessorySkus: [],
+    installationSkus: [],
+    logisticsSkus: [],
+  };
+  const singleOnly = computeEstimateCostFromCatalog(estimate, SAMPLE_CATALOG, 7.5, settings);
+  assert.equal(singleOnly.total, undefined);
+  assert.deepEqual(singleOnly.undetermined.map((item) => item.key), ['inverter']);
+
+  const parallelApproved = computeEstimateCostFromCatalog(
+    estimate,
+    SAMPLE_CATALOG,
+    7.5,
+    { ...settings, parallelInverterSkus: ['INV-5K-HYB'] }
+  );
+  assert.equal(parallelApproved.lines.find((line) => line.sku === 'INV-5K-HYB')?.qty, 2);
+  assert.equal(parallelApproved.undetermined.length, 0);
+  assert.ok(parallelApproved.total && parallelApproved.total > 0);
+
+  const insufficientStock = computeEstimateCostFromCatalog(
+    estimate,
+    SAMPLE_CATALOG.map((item) => item.sku === 'INV-5K-HYB' ? { ...item, stockQty: 1 } : item),
+    7.5,
+    { ...settings, parallelInverterSkus: ['INV-5K-HYB'] }
+  );
+  assert.deepEqual(insufficientStock.undetermined.map((item) => item.key), ['inverter']);
 });
 
 test('hasPermission enforces superadmin wildcard and custom role permissions', () => {

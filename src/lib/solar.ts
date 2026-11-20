@@ -165,6 +165,56 @@ export function calculateSolarEstimate(
   };
 }
 
+export interface UndeterminedEstimateComponent {
+  key: 'inverter' | 'panel' | 'battery';
+  label: string;
+  requirement: string;
+}
+
+export interface EstimateCostBreakdown {
+  lines: LineItem[];
+  subtotal: number;
+  tax: number;
+  total: number | undefined;
+  undetermined: UndeterminedEstimateComponent[];
+}
+
+function chooseRepeatedCapacityLine(
+  items: CatalogItem[],
+  requiredCapacity: number,
+  capacityFor: (item: CatalogItem) => number,
+  minQty = 1
+): LineItem | undefined {
+  const options = items
+    .filter((item) => item.priceNgn > 0 && capacityFor(item) > 0)
+    .map((item) => {
+      const capacity = capacityFor(item);
+      const qty = Math.max(minQty, Math.ceil(requiredCapacity / capacity));
+      return {
+        item,
+        qty,
+        totalPrice: qty * item.priceNgn,
+        oversupply: qty * capacity - requiredCapacity,
+      };
+    })
+    .filter((option) => option.qty <= Math.max(0, Math.floor(option.item.stockQty)))
+    .sort((a, b) =>
+      a.totalPrice - b.totalPrice
+      || a.oversupply - b.oversupply
+      || a.qty - b.qty
+      || a.item.sku.localeCompare(b.item.sku)
+    );
+  const selected = options[0];
+  if (!selected) return undefined;
+  return {
+    sku: selected.item.sku,
+    description: selected.item.name,
+    unit: selected.item.unit,
+    qty: selected.qty,
+    unitPriceNgn: selected.item.priceNgn,
+  };
+}
+
 export function buildQuoteLinesFromEstimate(
   estimate: SolarEstimateResult | null,
   catalog: CatalogItem[],
@@ -185,6 +235,7 @@ export function buildQuoteLinesFromEstimate(
   const inverterCategory = settings?.inverterCategory ?? 'Inverters';
   const batteryCategory = settings?.batteryCategory ?? 'Battery Storage';
   const panelCategory = settings?.panelCategory ?? 'Solar Panels';
+  const parallelInverterSkus = new Set(settings?.parallelInverterSkus ?? []);
   const filterGrade = (items: CatalogItem[]) => {
     const matchingGrade = items.filter((item) => item.grade?.trim().toLowerCase() === grade);
     const ungraded = items.filter((item) => !item.grade?.trim());
@@ -192,64 +243,57 @@ export function buildQuoteLinesFromEstimate(
     return ungraded.length > 0 ? ungraded : items;
   };
 
-  const inverters = filterGrade(
-    hardwareAndServices
-      .filter((c) => c.category === inverterCategory && c.capacityKw !== null)
-      .sort((a, b) => (a.capacityKw ?? 0) - (b.capacityKw ?? 0))
-  );
-  const chosenInverter =
-    inverters.find((inv) => (inv.capacityKw ?? 0) >= estimate.inverterMinKw) ??
-    inverters[inverters.length - 1];
-
   const lines: LineItem[] = [];
-  const panelCandidates = filterGrade(
-    hardwareAndServices.filter((item) => item.category === panelCategory && (item.watts ?? 0) > 0)
-  );
-  const pv = panelCandidates.sort(
-    (a, b) => a.priceNgn / (a.watts ?? 1) - b.priceNgn / (b.watts ?? 1)
-  )[0];
-  const panelQty = pv
-    ? Math.max(
-        estimate.recommendedArrayWatts ? 2 : 0,
-        Math.ceil((estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) / (pv.watts ?? 550))
-      )
-    : 0;
-  if (pv && panelQty > 0) {
-    lines.push({
-      sku: pv.sku,
-      description: pv.name,
-      unit: pv.unit,
-      qty: panelQty,
-      unitPriceNgn: pv.priceNgn,
-    });
-  }
-  if (chosenInverter) {
-    lines.push({
-      sku: chosenInverter.sku,
-      description: chosenInverter.name,
-      unit: chosenInverter.unit,
-      qty: 1,
-      unitPriceNgn: chosenInverter.priceNgn,
-    });
-  }
+  const inverterCandidates = filterGrade(hardwareAndServices.filter(
+    (item) => item.itemType === 'equipment'
+      && item.category === inverterCategory
+      && (item.capacityKw ?? 0) > 0
+      && item.priceNgn > 0
+      && item.stockQty >= 1
+  ));
+  const suitableSingleInverter = inverterCandidates
+    .filter((item) => (item.capacityKw ?? 0) >= estimate.inverterMinKw)
+    .sort((a, b) =>
+      (a.capacityKw ?? 0) - (b.capacityKw ?? 0)
+      || a.priceNgn - b.priceNgn
+      || a.sku.localeCompare(b.sku)
+    )[0];
+  const chosenInverter = suitableSingleInverter
+    ? {
+        sku: suitableSingleInverter.sku,
+        description: suitableSingleInverter.name,
+        unit: suitableSingleInverter.unit,
+        qty: 1,
+        unitPriceNgn: suitableSingleInverter.priceNgn,
+      }
+    : chooseRepeatedCapacityLine(
+        inverterCandidates.filter((item) => parallelInverterSkus.has(item.sku)),
+        estimate.inverterMinKw,
+        (item) => item.capacityKw ?? 0
+      );
+  const requiredArrayWatts = estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550;
+  const panelCandidates = filterGrade(hardwareAndServices.filter(
+    (item) => item.itemType === 'equipment'
+      && item.category === panelCategory
+      && (item.watts ?? 0) > 0
+  ));
+  const selectedPanel = requiredArrayWatts > 0
+    ? chooseRepeatedCapacityLine(panelCandidates, requiredArrayWatts, (item) => item.watts ?? 0, 2)
+    : undefined;
+  if (selectedPanel) lines.push(selectedPanel);
+  if (chosenInverter) lines.push(chosenInverter);
+
   const batteryCandidates = filterGrade(
-    hardwareAndServices.filter((item) => item.category === batteryCategory && (item.capacityKw ?? 0) > 0)
+    hardwareAndServices.filter((item) =>
+      item.itemType === 'equipment'
+      && item.category === batteryCategory
+      && (item.capacityKw ?? 0) > 0
+    )
   );
-  const bat = batteryCandidates.sort(
-    (a, b) => a.priceNgn / (a.capacityKw ?? 1) - b.priceNgn / (b.capacityKw ?? 1)
-  )[0];
-  const batteryQty = bat
-    ? Math.max(0, Math.ceil(estimate.batteryTargetKwh / (bat.capacityKw ?? 5.12)))
-    : 0;
-  if (bat && batteryQty > 0) {
-    lines.push({
-      sku: bat.sku,
-      description: bat.name,
-      unit: bat.unit,
-      qty: batteryQty,
-      unitPriceNgn: bat.priceNgn,
-    });
-  }
+  const selectedBattery = estimate.batteryTargetKwh > 0
+    ? chooseRepeatedCapacityLine(batteryCandidates, estimate.batteryTargetKwh, (item) => item.capacityKw ?? 0)
+    : undefined;
+  if (selectedBattery) lines.push(selectedBattery);
 
   const coreCategories = new Set([panelCategory, inverterCategory, batteryCategory]);
   const accessories = settings
@@ -263,13 +307,11 @@ export function buildQuoteLinesFromEstimate(
         filterGrade(hardwareAndServices.filter((item) => item.itemType === 'equipment' && item.category === category))
       );
   for (const accessory of accessories) {
-    const isMounting = /mount/i.test(`${accessory.category} ${accessory.name}`);
-    const qty = isMounting ? Math.max(1, Math.ceil(panelQty / 8)) : 1;
     lines.push({
       sku: accessory.sku,
       description: accessory.name,
       unit: accessory.unit,
-      qty,
+      qty: 1,
       unitPriceNgn: accessory.priceNgn,
     });
   }
@@ -312,30 +354,47 @@ export function computeEstimateCostFromCatalog(
   catalog: CatalogItem[],
   taxPercent = 7.5,
   settings?: EstimatorSettings
-): { lines: LineItem[]; subtotal: number; tax: number; total: number } {
+): EstimateCostBreakdown {
   if (!estimate || estimate.connectedLoadWatts === 0) {
-    return { lines: [], subtotal: 0, tax: 0, total: 0 };
+    return { lines: [], subtotal: 0, tax: 0, total: undefined, undetermined: [] };
   }
   const lines = buildQuoteLinesFromEstimate(estimate, catalog, settings);
-  const requiredCategories = [
-    settings?.inverterCategory ?? 'Inverters',
-    (estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) > 0
-      ? settings?.panelCategory ?? 'Solar Panels'
-      : null,
-    estimate.batteryTargetKwh > 0 ? settings?.batteryCategory ?? 'Battery Storage' : null,
-  ].filter((category): category is string => Boolean(category));
-  const pricedSkus = new Set(lines.map((line) => line.sku));
-  if (requiredCategories.some(
-    (category) => !catalog.some((item) => item.category === category && pricedSkus.has(item.sku))
-  )) {
-    return { lines: [], subtotal: 0, tax: 0, total: 0 };
-  }
+  const requirements: UndeterminedEstimateComponent[] = [
+    { key: 'inverter', label: 'Inverter', requirement: `Requires at least ${estimate.inverterMinKw} kW.` },
+    ...((estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550) > 0
+      ? [{
+          key: 'panel' as const,
+          label: 'Solar panels',
+          requirement: `Requires ${estimate.recommendedArrayWatts ?? estimate.recommendedPanels550w * 550} W of solar capacity.`,
+        }]
+      : []),
+    ...(estimate.batteryTargetKwh > 0
+      ? [{
+          key: 'battery' as const,
+          label: 'Battery',
+          requirement: `Requires ${estimate.batteryTargetKwh} kWh of storage.`,
+        }]
+      : []),
+  ];
+  const componentCategories = {
+    inverter: settings?.inverterCategory ?? 'Inverters',
+    panel: settings?.panelCategory ?? 'Solar Panels',
+    battery: settings?.batteryCategory ?? 'Battery Storage',
+  };
+  const selectedSkus = new Set(lines.map((line) => line.sku));
+  const undetermined = requirements.filter((requirement) => {
+    const category = componentCategories[requirement.key];
+    return !catalog.some((item) =>
+      item.category === category && selectedSkus.has(item.sku)
+    );
+  });
   const totals = calculateDocumentTotals(lines, 0, taxPercent);
   return {
     lines,
     subtotal: totals.subtotal,
     tax: totals.tax,
-    total: totals.total,
+    total: undetermined.length === 0 ? totals.total : undefined,
+    undetermined,
   };
 }
 

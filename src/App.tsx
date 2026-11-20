@@ -19,14 +19,14 @@ import { defaultEstimatorSettings, normalizeEstimatorSettings } from './lib/esti
 
 const CACHED_CATALOG_KEY = 'hiso_cached_catalog';
 const THEME_MODE_KEY = 'hiso_theme_mode';
-type ThemeMode = 'system' | 'light' | 'dark';
+type ThemeMode = 'light' | 'dark';
 
 function readThemeMode(): ThemeMode {
   try {
     const saved = window.localStorage.getItem(THEME_MODE_KEY);
-    return saved === 'light' || saved === 'dark' ? saved : 'system';
+    return saved === 'dark' ? 'dark' : 'light';
   } catch {
-    return 'system';
+    return 'light';
   }
 }
 
@@ -65,10 +65,7 @@ export default function App() {
   const [homepage, setHomepage] = useState<HomepageContent>(DEFAULT_HOMEPAGE_CONTENT);
   const [importedAppliances, setImportedAppliances] = useState<ApplianceItem[]>([]);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
-  const [systemDarkMode, setSystemDarkMode] = useState(
-    () => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
-  );
-  const darkMode = themeMode === 'dark' || (themeMode === 'system' && systemDarkMode);
+  const darkMode = themeMode === 'dark';
 
   function saveAndSetCatalog(nextCatalog: CatalogItem[]) {
     setCatalog(nextCatalog);
@@ -101,24 +98,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const media = window.matchMedia?.('(prefers-color-scheme: dark)');
-    if (!media) return;
-    const syncSystemTheme = (event: MediaQueryListEvent) => setSystemDarkMode(event.matches);
-    setSystemDarkMode(media.matches);
-    media.addEventListener('change', syncSystemTheme);
-    return () => media.removeEventListener('change', syncSystemTheme);
-  }, []);
-
-  useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
   function cycleThemeMode() {
-    const nextMode: ThemeMode = themeMode === 'system'
-      ? 'light'
-      : themeMode === 'light'
-        ? 'dark'
-        : 'system';
+    const nextMode: ThemeMode = themeMode === 'light' ? 'dark' : 'light';
     setThemeMode(nextMode);
     try {
       window.localStorage.setItem(THEME_MODE_KEY, nextMode);
@@ -218,6 +202,11 @@ export default function App() {
       ) : (
         <WorkspaceView
           onOpenDocument={(type, id) => setDocView({ type, id, canEmail: true })}
+          onOpenStore={() => handleNavigate('store')}
+          onTrackRef={(refCode) => {
+            setTrackRef(refCode);
+            handleNavigate('track');
+          }}
           onCatalogChange={saveAndSetCatalog}
           onHomepageChange={setHomepage}
           onSettingsChange={(settings: PlatformSettings) => {

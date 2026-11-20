@@ -730,6 +730,15 @@ export function savePlatformSettings(actor: StaffMember, value: unknown): Platfo
       throw new Error('Estimator Store item selections are invalid. Refresh the Store and try again.');
     }
   }
+  const parallelInverterSkus = estimatorSource.parallelInverterSkus ?? [];
+  if (!Array.isArray(parallelInverterSkus) || parallelInverterSkus.length > 100
+      || parallelInverterSkus.some((sku) => typeof sku !== 'string'
+        || !catalog.some((item) => item.itemType === 'equipment'
+          && item.category === estimatorSource.inverterCategory
+          && item.sku === sku
+          && (item.capacityKw ?? 0) > 0))) {
+    throw new Error('Parallel inverter selections must reference capacity-rated items in the selected inverter category.');
+  }
   const settings: PlatformSettings = {
     bankDetails,
     estimator: normalizeEstimatorSettings(estimatorSource, catalog),

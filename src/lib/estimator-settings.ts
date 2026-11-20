@@ -22,6 +22,7 @@ export function defaultEstimatorSettings(catalog: CatalogItem[]): EstimatorSetti
 
   return {
     inverterCategory: chooseCategory('equipment', CORE_CATEGORIES.inverter, /inverter/i),
+    parallelInverterSkus: [],
     batteryCategory: chooseCategory('equipment', CORE_CATEGORIES.battery, /batter/i),
     panelCategory: chooseCategory('equipment', CORE_CATEGORIES.panel, /solar|panel|module|pv/i),
     accessorySkus: catalog
@@ -54,9 +55,21 @@ export function normalizeEstimatorSettings(value: unknown, catalog: CatalogItem[
     const allowed = new Set(catalog.filter((item) => item.itemType === itemType).map((item) => item.sku));
     return [...new Set(source[key].filter((sku): sku is string => typeof sku === 'string' && allowed.has(sku)))];
   };
+  const inverterCategory = safeCategory('inverterCategory', 'equipment');
+  const parallelInverterSkus = Array.isArray(source.parallelInverterSkus)
+    ? [...new Set(source.parallelInverterSkus.filter((sku): sku is string =>
+      typeof sku === 'string' && catalog.some((item) =>
+        item.sku === sku
+        && item.itemType === 'equipment'
+        && item.category === inverterCategory
+        && (item.capacityKw ?? 0) > 0
+      )
+    ))]
+    : [];
 
   return {
-    inverterCategory: safeCategory('inverterCategory', 'equipment'),
+    inverterCategory,
+    parallelInverterSkus,
     batteryCategory: safeCategory('batteryCategory', 'equipment'),
     panelCategory: safeCategory('panelCategory', 'equipment'),
     accessorySkus: safeSkus('accessorySkus', 'equipment'),

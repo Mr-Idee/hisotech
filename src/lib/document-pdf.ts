@@ -1,4 +1,5 @@
 import { calculateDocumentTotals, formatNgn } from './solar';
+import { amountInNairaWords } from './currency-words';
 import type { BankDetails, LineItem } from './types';
 
 export interface DocumentPdfData {
@@ -19,6 +20,7 @@ export interface DocumentPdfData {
   taxPercent: number;
   items: LineItem[];
   bankDetails?: BankDetails;
+  logoDataUrl?: string;
 }
 
 function printableText(value: string): string {
@@ -31,6 +33,10 @@ function printableText(value: string): string {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^\x20-\x7E]/g, '');
+}
+
+function titleCase(value: string): string {
+  return value.replace(/\b([a-z])/g, (_match, letter: string) => letter.toUpperCase());
 }
 
 export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
@@ -55,11 +61,13 @@ export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
   pdf.setTextColor(8, 30, 62);
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(18);
-  pdf.text('HI-SOTECH', left, y + 3);
+  if (data.logoDataUrl) pdf.addImage(data.logoDataUrl, 'PNG', left, y - 2, 12, 12);
+  const brandLeft = data.logoDataUrl ? left + 15 : left;
+  pdf.text('HI-SOTECH', brandLeft, y + 3);
   pdf.setFont('helvetica', 'normal');
   pdf.setTextColor(90, 101, 118);
   pdf.setFontSize(8);
-  pdf.text('Solar Inverter Co. Ltd | No. 5 Adamu Fika St, Life Camp, Abuja', left, y + 9);
+  pdf.text('Solar Inverter Co. Ltd | No. 5 Adamu Fika St, Life Camp, Abuja', brandLeft, y + 9);
 
   const isInvoice = data.type === 'invoice';
   pdf.setTextColor(214, 31, 38);
@@ -111,34 +119,22 @@ export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
   if (data.scope) {
     pdf.setFillColor(247, 248, 250);
     pdf.setDrawColor(220, 225, 232);
-    const scopeLines = pdf.splitTextToSize(`Scope: ${printableText(data.scope)}`, width - 10) as string[];
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9);
+    const scopeLines = pdf.splitTextToSize(`Scope: ${titleCase(printableText(data.scope))}`, width - 10) as string[];
     const scopeHeight = scopeLines.length * 4.5 + 7;
     ensureSpace(scopeHeight);
     pdf.roundedRect(left, y, width, scopeHeight, 2, 2, 'FD');
     pdf.setTextColor(55, 65, 81);
-    pdf.setFontSize(8);
-    pdf.text(scopeLines, left + 5, y + 5);
+    scopeLines.forEach((line, index) => {
+      const lineY = y + 5 + index * 4.5;
+      pdf.text(line, left + 5, lineY);
+      pdf.setDrawColor(55, 65, 81);
+      pdf.setLineWidth(0.2);
+      pdf.line(left + 5, lineY + 0.6, left + 5 + pdf.getTextWidth(line), lineY + 0.6);
+    });
     y += scopeHeight + 5;
   }
-
-  const warrantyText = [
-    "Installation warranty: 2 years on installation work only. Excludes theft, natural disasters, and end-user error. Product coverage is subject to each manufacturer's written warranty.",
-    'Expected equipment service life: inverters 5-10 years; battery banks 5-15 years; solar panels 10-25 years. These are estimates, not guaranteed lifetimes.',
-  ];
-  pdf.setFillColor(255, 249, 235);
-  pdf.setDrawColor(240, 218, 172);
-  const warrantyLines = warrantyText.flatMap((text) => pdf.splitTextToSize(printableText(text), width - 10) as string[]);
-  const warrantyHeight = warrantyLines.length * 4.1 + 9;
-  ensureSpace(warrantyHeight);
-  pdf.roundedRect(left, y, width, warrantyHeight, 2, 2, 'FD');
-  pdf.setTextColor(106, 73, 16);
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(8);
-  pdf.text('WARRANTY & EXPECTED EQUIPMENT LIFE', left + 5, y + 5);
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(7.5);
-  pdf.text(warrantyLines, left + 5, y + 10);
-  y += warrantyHeight + 6;
 
   const columns = { number: left, description: left + 11, qty: right - 69, unit: right - 49, amount: right };
   const drawTableHeader = () => {
@@ -216,6 +212,14 @@ export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
   pdf.text(printableText(formatNgn(totals.total)).replace('₦', 'NGN '), right, y, { align: 'right' });
   y += 10;
 
+  const amountWords = pdf.splitTextToSize(`Amount in words: ${amountInNairaWords(totals.total)}`, width) as string[];
+  ensureSpace(amountWords.length * 3.8 + 4);
+  pdf.setTextColor(75, 85, 99);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(8);
+  pdf.text(amountWords, left, y);
+  y += amountWords.length * 3.8 + 4;
+
   if (isInvoice && data.bankDetails && Object.values(data.bankDetails).some(Boolean)) {
     ensureSpace(24);
     pdf.setTextColor(214, 31, 38);
@@ -242,6 +246,40 @@ export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
     pdf.setFont('helvetica', 'normal');
     pdf.text(termsLines, left, y);
     y += termsLines.length * 3.84 + 2;
+  }
+
+  const warrantyItems = [
+    {
+      label: 'Installation warranty',
+      text: "2 years on installation work only. Excludes theft, natural disasters, and end-user error. Product coverage is subject to each manufacturer's written warranty.",
+    },
+    {
+      label: 'Expected service lifetime',
+      text: 'Inverters 5-10 years; battery banks 5-15 years; solar panels 10-25 years. These are estimates, not guaranteed lifetimes.',
+    },
+  ].map((item) => ({
+    ...item,
+    lines: pdf.splitTextToSize(printableText(item.text), width - 10) as string[],
+  }));
+  const warrantyHeight = 10 + warrantyItems.reduce((height, item) => height + 4 + item.lines.length * 3.6 + 2, 0);
+  ensureSpace(warrantyHeight);
+  pdf.setFillColor(255, 249, 235);
+  pdf.setDrawColor(240, 218, 172);
+  pdf.roundedRect(left, y, width, warrantyHeight, 2, 2, 'FD');
+  pdf.setTextColor(106, 73, 16);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(8);
+  pdf.text('WARRANTY & EXPECTED EQUIPMENT LIFE', left + 5, y + 5);
+  y += 9;
+  for (const item of warrantyItems) {
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(7.5);
+    pdf.text(`${item.label}:`, left + 5, y);
+    y += 3.8;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7.5);
+    pdf.text(item.lines, left + 5, y);
+    y += item.lines.length * 3.6 + 2;
   }
 
   const pageCount = pdf.getNumberOfPages();

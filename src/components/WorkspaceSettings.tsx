@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { formatNgn } from '../lib/solar';
 import type { CatalogItem, EstimatorSettings, PlatformSettings } from '../lib/types';
 
 interface WorkspaceSettingsProps {
@@ -30,6 +31,14 @@ export function WorkspaceSettings({ catalog, settings, onSaved, onOpenDocument }
       ].includes(item.category)
   ), [catalog, form.estimator]);
   const services = useMemo(() => catalog.filter((item) => item.itemType === 'service'), [catalog]);
+  const parallelInverters = useMemo(
+    () => catalog.filter((item) =>
+      item.itemType === 'equipment'
+      && item.category === form.estimator.inverterCategory
+      && (item.capacityKw ?? 0) > 0
+    ),
+    [catalog, form.estimator.inverterCategory]
+  );
 
   function updateBank(field: keyof PlatformSettings['bankDetails'], value: string) {
     setForm((current) => ({ ...current, bankDetails: { ...current.bankDetails, [field]: value } }));
@@ -44,7 +53,7 @@ export function WorkspaceSettings({ catalog, settings, onSaved, onOpenDocument }
     setSaved(false);
   }
 
-  function toggleSku(field: 'accessorySkus' | 'installationSkus' | 'logisticsSkus', sku: string) {
+  function toggleSku(field: 'accessorySkus' | 'installationSkus' | 'logisticsSkus' | 'parallelInverterSkus', sku: string) {
     const selected = form.estimator[field];
     updateEstimator({
       [field]: selected.includes(sku) ? selected.filter((item) => item !== sku) : [...selected, sku],
@@ -122,7 +131,13 @@ export function WorkspaceSettings({ catalog, settings, onSaved, onOpenDocument }
               <select
                 required
                 value={form.estimator[field]}
-                onChange={(event) => updateEstimator({ [field]: event.target.value })}
+                onChange={(event) => {
+                  if (field === 'inverterCategory') {
+                    updateEstimator({ inverterCategory: event.target.value, parallelInverterSkus: [] });
+                  } else {
+                    updateEstimator({ [field]: event.target.value });
+                  }
+                }}
                 className={inputClass}
               >
                 {!equipmentCategories.includes(form.estimator[field]) && <option value={form.estimator[field]}>{form.estimator[field]}</option>}
@@ -133,8 +148,36 @@ export function WorkspaceSettings({ catalog, settings, onSaved, onOpenDocument }
           ))}
         </div>
         <p className="mt-4 rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600 dark:bg-[#061327] dark:text-slate-300">
-          To change available equipment types, capacities, grade, or live prices, edit the corresponding Store items first. Battery capacity is maintained in the Store’s capacity field in kWh; inverter capacity is in kW; panels use their watt rating.
+          Set equipment types, capacities, grades, and prices in Store Items &amp; Prices. Battery capacity is in kWh, inverter capacity is in kW, and solar panels use their watt rating. Only inverter models explicitly approved below may be combined to meet a larger load.
         </p>
+        <div className="mt-5 rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+          <h3 className="text-sm font-bold text-[#081E3E] dark:text-white">Parallel-compatible inverter models</h3>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Select only models confirmed by their manufacturer to support parallel operation. Unselected models are sized as single units.
+          </p>
+          {parallelInverters.length === 0 ? (
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">Add capacity-rated inverter models to the selected Store category first.</p>
+          ) : (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {parallelInverters.map((item) => (
+                <label key={`parallel-${item.sku}`} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 p-3 text-xs hover:border-slate-400 dark:border-slate-700 dark:hover:border-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={form.estimator.parallelInverterSkus.includes(item.sku)}
+                    onChange={() => toggleSku('parallelInverterSkus', item.sku)}
+                    className="mt-0.5 accent-[#D61F26]"
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-slate-800 dark:text-slate-100">{item.name}</span>
+                    <span className="mt-0.5 block text-slate-500 dark:text-slate-400">
+                      {item.capacityKw} kW · {item.sku} · {formatNgn(item.priceNgn)}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       <div className="grid gap-6 xl:grid-cols-3">
@@ -145,7 +188,7 @@ export function WorkspaceSettings({ catalog, settings, onSaved, onOpenDocument }
         ] as const).map(([field, title, choices]) => (
           <section key={field} className={cardClass} aria-labelledby={`${field}-title`}>
             <h2 id={`${field}-title`} className="text-base font-bold text-[#081E3E] dark:text-white">{title}</h2>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Selected Store items are included in estimator pricing.</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Selected Store items are included as fixed charges per estimate.</p>
             {choices.length === 0 ? (
               <p className="mt-4 rounded-lg border border-dashed border-slate-300 p-4 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">Add matching items to the Store first.</p>
             ) : (

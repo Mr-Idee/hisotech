@@ -116,6 +116,7 @@ function hiso_default_estimator_settings(array $catalog): array {
     }
     return [
         'inverterCategory' => $inverterCategory,
+        'parallelInverterSkus' => [],
         'batteryCategory' => $batteryCategory,
         'panelCategory' => $panelCategory,
         'accessorySkus' => $accessories,
@@ -165,6 +166,21 @@ function hiso_load_platform_settings(?array $catalog = null): array {
         $normalized[$field] = array_values(array_unique(array_filter(
             $estimator[$field],
             static fn($sku) => is_string($sku) && isset($allowed[$sku])
+        )));
+    }
+    $parallelAllowed = [];
+    foreach ($catalog as $item) {
+        if (($item['itemType'] ?? '') === 'equipment'
+            && ($item['category'] ?? '') === $normalized['inverterCategory']
+            && (float)($item['capacityKw'] ?? 0) > 0) {
+            $parallelAllowed[(string)$item['sku']] = true;
+        }
+    }
+    $parallelSelected = $estimator['parallelInverterSkus'] ?? [];
+    if (is_array($parallelSelected)) {
+        $normalized['parallelInverterSkus'] = array_values(array_unique(array_filter(
+            $parallelSelected,
+            static fn($sku) => is_string($sku) && isset($parallelAllowed[$sku])
         )));
     }
     return [
@@ -234,6 +250,24 @@ function hiso_save_platform_settings(array $actor, array $body): array {
         }
         $safeEstimator[$field] = array_values(array_unique($selected));
     }
+    $parallelSelected = $estimator['parallelInverterSkus'] ?? [];
+    if (!is_array($parallelSelected) || count($parallelSelected) > 100) {
+        throw new InvalidArgumentException('Parallel inverter selections are invalid.');
+    }
+    $parallelAllowed = [];
+    foreach ($catalog as $item) {
+        if (($item['itemType'] ?? '') === 'equipment'
+            && ($item['category'] ?? '') === $safeEstimator['inverterCategory']
+            && (float)($item['capacityKw'] ?? 0) > 0) {
+            $parallelAllowed[(string)$item['sku']] = true;
+        }
+    }
+    foreach ($parallelSelected as $sku) {
+        if (!is_string($sku) || !isset($parallelAllowed[$sku])) {
+            throw new InvalidArgumentException('Parallel inverter selections must reference capacity-rated items in the selected inverter category.');
+        }
+    }
+    $safeEstimator['parallelInverterSkus'] = array_values(array_unique($parallelSelected));
     foreach (['inverterCategory', 'batteryCategory', 'panelCategory'] as $field) {
         if ($catalog === [] && $safeEstimator[$field] === '') $safeEstimator[$field] = $defaults[$field];
     }

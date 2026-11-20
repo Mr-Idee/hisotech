@@ -1,4 +1,4 @@
-import { Menu, Moon, Sun, Monitor, X } from 'lucide-react';
+import { Menu, Moon, Sun, X } from 'lucide-react';
 import { useState } from 'react';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -8,7 +8,7 @@ interface TopBarProps {
   activeRoute: AppRoute;
   onNavigate: (route: AppRoute, sectionId?: string) => void;
   darkMode: boolean;
-  themeMode: 'system' | 'light' | 'dark';
+  themeMode: 'light' | 'dark';
   onToggleTheme: () => void;
 }
 
@@ -23,7 +23,7 @@ export function TopBar({ activeRoute, onNavigate, darkMode, themeMode, onToggleT
     { label: 'Track Request', route: 'track' },
   ];
 
-  const ThemeIcon = themeMode === 'system' ? Monitor : darkMode ? Moon : Sun;
+  const ThemeIcon = darkMode ? Moon : Sun;
 
   const handleNav = (route: AppRoute, section?: string) => {
     setMobileOpen(false);

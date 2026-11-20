@@ -1,5 +1,6 @@
 import {
   Bell,
+  Calculator,
   CheckCircle2,
   ClipboardList,
   Eye,
@@ -13,6 +14,7 @@ import {
   LifeBuoy,
   LogOut,
   MessageSquareText,
+  Menu,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -24,6 +26,7 @@ import {
   Trash2,
   Users,
   Wallet,
+  X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
@@ -31,6 +34,7 @@ import {
   ALL_PERMISSIONS,
   buildQuoteLinesFromEstimate,
   calculateDocumentTotals,
+  computeEstimateCostFromCatalog,
   formatNgn,
   hasPermission,
   syncLineItemsWithCatalog,
@@ -53,6 +57,7 @@ import type {
 } from '../lib/types';
 import type { HomepageContent } from '../lib/homepage';
 import { PWAInstallButton } from './PWAInstallButton';
+import { EstimatorView } from './EstimatorView';
 import { WorkspaceFinance } from './WorkspaceFinance';
 import { WorkspaceInstallations } from './WorkspaceInstallations';
 import { WebsiteEditorView } from './WebsiteEditorView';
@@ -61,6 +66,7 @@ import { WorkspaceSettings } from './WorkspaceSettings';
 
 type WorkspaceTab =
   | 'overview'
+  | 'estimator'
   | 'enquiries'
   | 'tickets'
   | 'catalog'
@@ -78,16 +84,38 @@ type WorkspaceTab =
 
 interface WorkspaceViewProps {
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
+  onOpenStore: () => void;
+  onTrackRef: (refCode: string) => void;
   onCatalogChange?: (catalog: CatalogItem[]) => void;
   onHomepageChange?: (content: HomepageContent) => void;
   onSettingsChange?: (settings: PlatformSettings) => void;
 }
 
-export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChange, onSettingsChange }: WorkspaceViewProps) {
+const WORKSPACE_TABS: WorkspaceTab[] = [
+  'overview', 'estimator', 'enquiries', 'tickets', 'catalog', 'orders', 'quotes',
+  'invoices', 'finance', 'installations', 'staff', 'notifications', 'communications',
+  'audit', 'settings', 'website',
+];
+
+function readWorkspaceTabFromHash(): WorkspaceTab | null {
+  const query = window.location.hash.split('?').slice(1).join('?');
+  const tab = new URLSearchParams(query).get('tab');
+  return WORKSPACE_TABS.find((candidate) => candidate === tab) ?? null;
+}
+
+export function WorkspaceView({
+  onOpenDocument,
+  onOpenStore,
+  onTrackRef,
+  onCatalogChange,
+  onHomepageChange,
+  onSettingsChange,
+}: WorkspaceViewProps) {
   const [data, setData] = useState<WorkspaceBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<WorkspaceTab>('overview');
+  const [tab, setTab] = useState<WorkspaceTab>(() => readWorkspaceTabFromHash() ?? 'overview');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mainContentRef = useRef<HTMLElement>(null);
   const [toastMsg, setToastMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -185,6 +213,20 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   const [orderDraftStatus, setOrderDraftStatus] = useState<Record<string, StoreOrderStatus>>({});
   const [orderSavingId, setOrderSavingId] = useState<string | null>(null);
 
+  function selectTab(nextTab: WorkspaceTab, replaceHistory = false) {
+    setTab(nextTab);
+    setMobileNavOpen(false);
+    const nextHash = `#workspace?tab=${nextTab}`;
+    if (window.location.hash !== nextHash) {
+      if (replaceHistory) {
+        window.history.replaceState({ workspaceTab: nextTab }, '', nextHash);
+      } else {
+        window.history.pushState({ workspaceTab: nextTab }, '', nextHash);
+      }
+    }
+    mainContentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   function showToast(msg: string) {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(''), 4000);
@@ -207,8 +249,8 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
         ws.user.role === 'technician' &&
         !hasPermission(ws.user, 'manage_enquiries') &&
         !hasPermission(ws.user, 'manage_storefront');
-      if (isFieldOnly && !['installations', 'tickets', 'notifications'].includes(tab)) {
-        setTab('installations');
+      if (isFieldOnly && !['installations', 'tickets', 'notifications', 'estimator'].includes(tab)) {
+        selectTab('installations', true);
       }
       onSettingsChange?.(ws.settings);
     } catch {
@@ -224,6 +266,30 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   }, []);
 
   useEffect(() => {
+    const onPopState = () => {
+      setTab(readWorkspaceTabFromHash() ?? 'overview');
+      setMobileNavOpen(false);
+      mainContentRef.current?.scrollTo({ top: 0 });
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileNavOpen(false);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
     api.getFirstAdminSetupStatus()
       .then(({ available }) => setSetupAvailable(available))
       .catch(() => setSetupAvailable(false))
@@ -235,7 +301,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
     setLoginBusy(true);
     try {
       await api.login(email, password);
-      setTab('overview');
+      selectTab('overview', true);
       await loadWorkspace();
     } catch (err) {
       setErrorMsg((err as Error).message);
@@ -270,8 +336,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
       setSetupSecret('');
       setSetupPassword('');
       setSetupPasswordConfirm('');
-      window.history.replaceState(null, '', '#workspace');
-      setTab('overview');
+      selectTab('overview', true);
       await loadWorkspace();
     } catch (error) {
       setErrorMsg((error as Error).message);
@@ -283,6 +348,22 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
   function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord) {
     if (!data) return;
     setErrorMsg('');
+    if (enq) {
+      const estimatePricing = computeEstimateCostFromCatalog(
+        enq.estimate,
+        data.catalog,
+        7.5,
+        data.settings.estimator
+      );
+      if (estimatePricing.undetermined.length > 0) {
+        const categories = estimatePricing.undetermined.map((item) => item.label).join(', ');
+        setErrorMsg(
+          `Quotation drafting is paused because the estimator cannot price: ${categories}. ` +
+          'Add suitable Store inventory or review the approved parallel-inverter models, then try again.'
+        );
+        return;
+      }
+    }
     if (existing) {
       setEditQuoteId(existing.id);
       setQuoteEnqId(existing.enquiryId);
@@ -565,6 +646,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
 
   const navLinks: { id: WorkspaceTab; label: string; icon: typeof LayoutDashboard; allowed: boolean }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard, allowed: true },
+    { id: 'estimator', label: 'Load Estimator', icon: Calculator, allowed: true },
     { id: 'enquiries', label: 'Enquiries', icon: ClipboardList, allowed: hasPermission(user, 'manage_enquiries') },
     {
       id: 'tickets',
@@ -625,17 +707,25 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
     Number(quoteTax) || 0
   );
 
-  return (
-    <div className="mx-auto grid h-[calc(100dvh-65px)] min-h-[calc(100vh-65px)] max-w-7xl grid-cols-12 grid-rows-[minmax(0,35vh)_minmax(0,1fr)] overflow-hidden lg:grid-rows-1">
-      {/* Sidebar */}
-      <aside className={`col-span-12 min-h-0 overflow-y-auto border-b border-slate-200 bg-[#081E3E] p-3 text-slate-200 lg:border-r lg:border-b-0 dark:border-slate-800 ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
-        <div className="rounded-lg bg-white/10 p-3.5">
-          <div className="flex items-center justify-between gap-2">
-            {!sidebarCollapsed && (
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-red-300">
-                {user.roleName || user.role}
-              </span>
-            )}
+  const renderNavigationContents = (mobile = false) => (
+    <>
+      <div className="rounded-lg bg-white/10 p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          {(!sidebarCollapsed || mobile) && (
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-red-300">
+              {user.roleName || user.role}
+            </span>
+          )}
+          {mobile ? (
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="Close workspace navigation"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-200 hover:bg-white/10"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          ) : (
             <button
               type="button"
               onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
@@ -645,61 +735,98 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
             >
               {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
             </button>
-          </div>
-          {!sidebarCollapsed && (
-            <>
-              <div className="mt-0.5 text-base font-bold text-white">{user.name}</div>
-              <div className="text-[11px] text-slate-300">{user.title}</div>
-              <div className="mt-3"><PWAInstallButton variant="workspace" /></div>
-            </>
           )}
         </div>
+        {(!sidebarCollapsed || mobile) && (
+          <>
+            <div className="mt-0.5 text-base font-bold text-white">{user.name}</div>
+            <div className="text-[11px] text-slate-300">{user.title}</div>
+            {!mobile && <div className="mt-3"><PWAInstallButton variant="workspace" /></div>}
+          </>
+        )}
+      </div>
 
-        <nav className="mt-4 space-y-1">
-          {navLinks
-            .filter((item) => item.allowed)
-            .map((item) => {
-              const Icon = item.icon;
-              const active = tab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setTab(item.id);
-                    mainContentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-                  }}
-                  aria-label={item.label}
-                  title={sidebarCollapsed ? item.label : undefined}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${sidebarCollapsed ? 'justify-center' : ''} ${
-                    active ? 'bg-[#D61F26] text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                  }`}
-                >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  <span className={sidebarCollapsed ? 'sr-only' : 'truncate'}>{item.label}</span>
-                </button>
-              );
-            })}
-        </nav>
+      <nav className="mt-4 space-y-1" aria-label="Workspace sections">
+        {navLinks
+          .filter((item) => item.allowed)
+          .map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => selectTab(item.id)}
+                aria-label={item.label}
+                aria-current={active ? 'page' : undefined}
+                title={!mobile && sidebarCollapsed ? item.label : undefined}
+                className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${!mobile && sidebarCollapsed ? 'justify-center' : ''} ${
+                  active ? 'bg-[#D61F26] text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className={!mobile && sidebarCollapsed ? 'sr-only' : 'truncate'}>{item.label}</span>
+              </button>
+            );
+          })}
+      </nav>
 
-        <div className="mt-6 border-t border-white/15 pt-4">
+      <div className="mt-6 border-t border-white/15 pt-4">
+        <button
+          type="button"
+          onClick={async () => {
+            await api.logout();
+            setMobileNavOpen(false);
+            setData(null);
+          }}
+          aria-label="Sign Out"
+          className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white ${!mobile && sidebarCollapsed ? 'justify-center' : ''}`}
+        >
+          <LogOut className="h-4 w-4" />
+          {(!sidebarCollapsed || mobile) && 'Sign Out'}
+        </button>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="mx-auto grid h-[calc(100dvh-65px)] min-h-[calc(100vh-65px)] max-w-7xl grid-cols-12 grid-rows-1 overflow-hidden">
+      {/* Sidebar */}
+      <aside className={`hidden min-h-0 overflow-y-auto border-r border-slate-200 bg-[#081E3E] p-3 text-slate-200 dark:border-slate-800 lg:block ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
+        {renderNavigationContents()}
+      </aside>
+
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-[60] lg:hidden">
           <button
             type="button"
-            onClick={async () => {
-              await api.logout();
-              setData(null);
-            }}
-            aria-label="Sign Out"
-            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white ${sidebarCollapsed ? 'justify-center' : ''}`}
+            aria-label="Close workspace navigation"
+            onClick={() => setMobileNavOpen(false)}
+            className="absolute inset-0 h-full w-full bg-slate-950/5 backdrop-blur-[20px]"
+          />
+          <aside
+            id="workspace-mobile-navigation"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Workspace navigation"
+            className="absolute inset-y-0 left-0 z-10 w-[min(21rem,85vw)] overflow-y-auto border-r border-slate-700 bg-[#081E3E] p-3 text-slate-200 shadow-2xl"
           >
-            <LogOut className="h-4 w-4" />
-            {!sidebarCollapsed && 'Sign Out'}
-          </button>
+            {renderNavigationContents(true)}
+          </aside>
         </div>
-      </aside>
+      )}
 
       {/* Main Content */}
       <main ref={mainContentRef} className={`col-span-12 min-h-0 min-w-0 overflow-y-auto overscroll-contain p-4 sm:p-6 lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
+        {tab === 'estimator' && (
+          <EstimatorView
+            catalog={data.catalog}
+            settings={data.settings.estimator}
+            onOpenStore={onOpenStore}
+            onTrackRef={onTrackRef}
+          />
+        )}
+
         {toastMsg && (
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-sm font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
@@ -739,7 +866,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                   <button
                     key={kpi.label}
                     type="button"
-                    onClick={() => setTab(kpi.target)}
+                    onClick={() => selectTab(kpi.target)}
                     className="rounded-xl border border-slate-200 bg-white p-4 text-left transition-colors hover:border-[#D61F26] dark:border-slate-800 dark:bg-[#0B1D39]"
                   >
                     <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{kpi.label}</div>
@@ -757,7 +884,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                     <h2 className="text-base font-bold text-[#081E3E] dark:text-white">Customer Service &amp; Complaints</h2>
                     <button
                       type="button"
-                      onClick={() => setTab('tickets')}
+                      onClick={() => selectTab('tickets')}
                       className="text-xs font-semibold text-[#D61F26] hover:underline"
                     >
                       Open Help Desk →
@@ -786,7 +913,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                     <h2 className="text-base font-bold text-[#081E3E] dark:text-white">Enquiries Pipeline</h2>
                     <button
                       type="button"
-                      onClick={() => setTab('enquiries')}
+                      onClick={() => selectTab('enquiries')}
                       className="text-xs font-semibold text-[#D61F26] hover:underline"
                     >
                       View All →
@@ -1573,6 +1700,17 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
         )}
       </main>
 
+      <button
+        type="button"
+        onClick={() => setMobileNavOpen(true)}
+        aria-label="Open workspace navigation"
+        aria-expanded={mobileNavOpen}
+        aria-controls="workspace-mobile-navigation"
+        className="fixed bottom-5 right-5 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-[#D61F26] text-white shadow-xl ring-2 ring-white/70 transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#081E3E] lg:hidden"
+      >
+        <Menu className="h-6 w-6" />
+      </button>
+
       {/* Manual Enquiry Modal */}
       {enqModal && (
         <div role="dialog" aria-modal="true" aria-label="Log Offline or WhatsApp Enquiry" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -1989,7 +2127,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                   });
                   setQuoteModal(false);
                   await loadWorkspace();
-                  setTab('quotes');
+                  selectTab('quotes');
                   showToast(`Saved draft ${res.quoteCode}.`);
                 }}
                 className="rounded-lg border border-[#081E3E] px-4 py-2 text-xs font-semibold text-[#081E3E] dark:border-slate-500 dark:text-white"
@@ -2014,7 +2152,7 @@ export function WorkspaceView({ onOpenDocument, onCatalogChange, onHomepageChang
                   });
                   setQuoteModal(false);
                   await loadWorkspace();
-                  setTab('quotes');
+                  selectTab('quotes');
                   showToast(`Submitted ${res.quoteCode} for Director approval.`);
                 }}
                 className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"

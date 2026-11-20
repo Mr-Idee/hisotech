@@ -15,6 +15,7 @@ const catalog: CatalogItem[] = [
 test('default estimator settings map equipment categories and relevant Store services', () => {
   assert.deepEqual(defaultEstimatorSettings(catalog), {
     inverterCategory: 'Hybrid Inverters',
+    parallelInverterSkus: [],
     batteryCategory: 'Lithium Batteries',
     panelCategory: 'PV Modules',
     accessorySkus: ['BOS'],
@@ -26,6 +27,7 @@ test('default estimator settings map equipment categories and relevant Store ser
 test('normalization rejects unknown catalog references and accepts valid empty selections', () => {
   const settings = normalizeEstimatorSettings({
     inverterCategory: 'missing',
+    parallelInverterSkus: ['INV-3', 'BOS'],
     batteryCategory: 'Lithium Batteries',
     panelCategory: 'PV Modules',
     accessorySkus: ['BOS', 'UNKNOWN'],
@@ -34,6 +36,7 @@ test('normalization rejects unknown catalog references and accepts valid empty s
   }, catalog);
 
   assert.equal(settings.inverterCategory, 'Hybrid Inverters');
+  assert.deepEqual(settings.parallelInverterSkus, ['INV-3']);
   assert.deepEqual(settings.accessorySkus, ['BOS']);
   assert.deepEqual(settings.installationSkus, []);
   assert.deepEqual(settings.logisticsSkus, ['DELIVERY']);

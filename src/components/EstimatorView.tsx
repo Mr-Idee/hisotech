@@ -144,13 +144,26 @@ export function EstimatorView({
     () => computeEstimateCostFromCatalog(estimate, catalog, 7.5, settings),
     [estimate, catalog, settings]
   );
-  const hasCatalogPricing = costBreakdown.lines.length > 0;
   const selectedPanel = costBreakdown.lines
     .map((line) => ({ line, item: catalog.find((item) => item.sku === line.sku) }))
     .find(({ item }) => item?.category === settings.panelCategory);
   const selectedBattery = costBreakdown.lines
     .map((line) => ({ line, item: catalog.find((item) => item.sku === line.sku) }))
     .find(({ item }) => item?.category === settings.batteryCategory);
+  const selectedInverter = costBreakdown.lines
+    .map((line) => ({ line, item: catalog.find((item) => item.sku === line.sku) }))
+    .find(({ item }) => item?.category === settings.inverterCategory);
+  const priceSummary = costBreakdown.total !== undefined
+    ? `, est. ${formatNgn(costBreakdown.total)}`
+    : costBreakdown.undetermined.length > 0
+      ? ', estimated system total To Be Determined pending technical review'
+      : '';
+  const defaultNeedSummary = `${powerMode} solar estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day${priceSummary}.`;
+  const enquiryNeedSummary = needSummary.trim()
+    ? `${needSummary.trim()}${costBreakdown.undetermined.length > 0
+      ? ` Pricing To Be Determined for ${costBreakdown.undetermined.map((item) => item.label).join(', ')}; system total awaits technical review.`
+      : ''}`
+    : defaultNeedSummary;
 
   const storeAppliances = useMemo(
     () => catalog.filter((c) => c.itemType === 'appliance'),
@@ -245,11 +258,9 @@ export function EstimatorView({
       email: email.trim(),
       phone: safePhone,
       location: safeLocation,
-      needSummary:
-        needSummary.trim() ||
-        `Offline ${powerMode} load estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day.`,
+      needSummary: needSummary.trim() ? enquiryNeedSummary : `Offline ${enquiryNeedSummary}`,
       appliances,
-      estimate: { ...estimate, estimatedTotalNgn: hasCatalogPricing ? costBreakdown.total : undefined },
+      estimate: { ...estimate, estimatedTotalNgn: costBreakdown.total },
       whatsappUpdatesConsent,
       whatsappMarketingConsent,
     };
@@ -272,7 +283,7 @@ export function EstimatorView({
 
     const finalEstimate: SolarEstimateResult = {
       ...estimate,
-      estimatedTotalNgn: hasCatalogPricing ? costBreakdown.total : undefined,
+      estimatedTotalNgn: costBreakdown.total,
     };
 
     if (!isOnline) {
@@ -287,9 +298,7 @@ export function EstimatorView({
         email,
         phone,
         location,
-        needSummary:
-          needSummary.trim() ||
-          `${powerMode} solar estimate: ${estimate.connectedLoadWatts}W load, ${estimate.dailyEnergyKwh} kWh/day${hasCatalogPricing ? `, est. ${formatNgn(costBreakdown.total)}` : ''}.`,
+        needSummary: enquiryNeedSummary,
         appliances,
         estimate: finalEstimate,
         whatsappUpdatesConsent,
@@ -589,22 +598,42 @@ export function EstimatorView({
               </div>
             </dl>
 
-            <div className="mt-4 grid grid-cols-2 gap-3 border-t border-white/15 pt-4 text-xs">
+            <div className="mt-4 grid gap-3 border-t border-white/15 pt-4 text-xs sm:grid-cols-3">
               <div className="min-w-0 rounded-lg bg-white/10 p-3">
-                <div className="text-slate-300">Solar Array</div>
-                <div className="font-mono-num mt-1 text-base font-bold">
-                  {selectedPanel
-                    ? `${selectedPanel.line.qty} × ${selectedPanel.item?.watts ?? 0}W`
-                    : `${estimate.recommendedPanels550w} × 550W`}
+                <div className="text-slate-300">Inverter</div>
+                <div className="mt-1 break-words font-bold">
+                  {selectedInverter?.item?.name
+                    ?? (estimate.connectedLoadWatts > 0 ? 'To Be Determined' : 'Not required')}
                 </div>
+                {selectedInverter && (
+                  <div className="font-mono-num mt-1 text-slate-300">
+                    {selectedInverter.line.qty} × {selectedInverter.item?.capacityKw} kW
+                  </div>
+                )}
               </div>
               <div className="min-w-0 rounded-lg bg-white/10 p-3">
-                <div className="text-slate-300">LiFePO4 Storage</div>
-                <div className="font-mono-num mt-1 text-base font-bold">
-                  {selectedBattery
-                    ? `${selectedBattery.line.qty} × ${selectedBattery.item?.capacityKw ?? 0}kWh`
-                    : `${estimate.recommendedBatteries5kwh} × 5.12kWh`}
+                <div className="text-slate-300">Solar panels</div>
+                <div className="mt-1 break-words font-bold">
+                  {selectedPanel?.item?.name
+                    ?? (estimate.recommendedArrayWatts ? 'To Be Determined' : 'Not required')}
                 </div>
+                {selectedPanel && (
+                  <div className="font-mono-num mt-1 text-slate-300">
+                    {selectedPanel.line.qty} × {selectedPanel.item?.watts} W
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 rounded-lg bg-white/10 p-3">
+                <div className="text-slate-300">Battery</div>
+                <div className="mt-1 break-words font-bold">
+                  {selectedBattery?.item?.name
+                    ?? (estimate.batteryTargetKwh > 0 ? 'To Be Determined' : 'Not required')}
+                </div>
+                {selectedBattery && (
+                  <div className="font-mono-num mt-1 text-slate-300">
+                    {selectedBattery.line.qty} × {selectedBattery.item?.capacityKw} kWh
+                  </div>
+                )}
               </div>
             </div>
 
@@ -621,7 +650,7 @@ export function EstimatorView({
                 </button>
               </div>
 
-              {hasCatalogPricing ? (
+              {costBreakdown.lines.length > 0 || costBreakdown.undetermined.length > 0 ? (
                 <div className="mt-3 space-y-2 text-xs">
                   {costBreakdown.lines.map((line) => (
                     <div key={line.sku} className="flex items-center justify-between gap-2 text-slate-200">
@@ -633,14 +662,27 @@ export function EstimatorView({
                       </span>
                     </div>
                   ))}
-                  <div className="flex items-center justify-between gap-2 border-t border-white/15 pt-2 text-slate-300">
-                    <span>Subtotal + 7.5% VAT</span>
-                    <span className="font-mono-num shrink-0">{formatNgn(costBreakdown.tax)} VAT</span>
-                  </div>
+                  {costBreakdown.undetermined.map((component) => (
+                    <div key={component.key} className="flex items-start justify-between gap-2 text-amber-100">
+                      <span className="min-w-0 flex-1">
+                        {component.label}
+                        <span className="mt-0.5 block text-[11px] text-amber-200">{component.requirement}</span>
+                      </span>
+                      <span className="shrink-0 font-semibold">To Be Determined</span>
+                    </div>
+                  ))}
+                  {costBreakdown.total !== undefined && (
+                    <div className="flex items-center justify-between gap-2 border-t border-white/15 pt-2 text-slate-300">
+                      <span>Subtotal + 7.5% VAT</span>
+                      <span className="font-mono-num shrink-0">{formatNgn(costBreakdown.tax)} VAT</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-2 text-sm font-bold text-white sm:text-base">
                     <span>Estimated System Total</span>
-                    <span className="font-mono-num shrink-0 text-red-300" data-testid="estimator-total-cost">
-                      {formatNgn(costBreakdown.total)}
+                    <span className="shrink-0 text-right text-red-300" data-testid="estimator-total-cost">
+                      {costBreakdown.total !== undefined
+                        ? formatNgn(costBreakdown.total)
+                        : 'To Be Determined'}
                     </span>
                   </div>
                 </div>
@@ -653,6 +695,9 @@ export function EstimatorView({
                   Add appliances above to compute live hardware &amp; installation pricing from the Store.
                 </p>
               )}
+              <p className="mt-4 border-t border-white/15 pt-3 text-xs text-slate-300">
+                Prices are subject to change upon inspection - this is just an estimate
+              </p>
             </div>
           </div>
 

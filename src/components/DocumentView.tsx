@@ -3,7 +3,37 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { calculateDocumentTotals, formatNgn } from '../lib/solar';
 import { createDocumentPdf, downloadDocumentPdf } from '../lib/document-pdf';
+import { amountInNairaWords } from '../lib/currency-words';
 import type { BankDetails, LineItem } from '../lib/types';
+
+let companyLogoPromise: Promise<string> | null = null;
+
+function loadCompanyLogoDataUrl(): Promise<string> {
+  if (!companyLogoPromise) {
+    companyLogoPromise = fetch('/assets/hisotech-logo-mark.png')
+      .then(async (response) => {
+        if (!response.ok) throw new Error('The company logo could not be loaded for the PDF.');
+        return response.blob();
+      })
+      .then((blob) => new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('The company logo could not be read for the PDF.'));
+        reader.onload = () => {
+          if (typeof reader.result !== 'string') {
+            reject(new Error('The company logo could not be converted for the PDF.'));
+            return;
+          }
+          resolve(reader.result);
+        };
+        reader.readAsDataURL(blob);
+      }))
+      .catch((error: unknown) => {
+        companyLogoPromise = null;
+        throw error;
+      });
+  }
+  return companyLogoPromise;
+}
 
 interface DocumentViewProps {
   type: 'quote' | 'invoice';
@@ -42,7 +72,7 @@ function sampleDocument(type: 'quote' | 'invoice', bankDetails: BankDetails): Re
     validUntil: formatDate(validUntil),
     dueDate: formatDate(dueDate),
     scope: 'Supply and installation of a 3kVA-5kWh-2.5kW solar hybrid inverter system.',
-    terms: 'This example follows the supplied quotation. Quotation validity: 7 days. Confirm current Store prices before issuing a live document.',
+    terms: 'This example follows the supplied quotation. Quotation validity: 7 days.',
     note: 'Installation warranty is limited to installation work for 2 years. Product warranty coverage is subject to the manufacturer.',
     discountNgn: 0,
     taxPercent: 0,
@@ -119,7 +149,10 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
 
   async function createPdf() {
     if (!doc) throw new Error('Document is not ready.');
-    return createDocumentPdf(documentPdfData(doc, type));
+    return createDocumentPdf({
+      ...documentPdfData(doc, type),
+      logoDataUrl: await loadCompanyLogoDataUrl(),
+    });
   }
 
   async function handleDownload() {
@@ -211,7 +244,7 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
   const hasBankDetails = Boolean(bank && Object.values(bank).some(Boolean));
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+    <div className="document-print mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <div className="no-print mb-6 flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
@@ -240,9 +273,9 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
       </div>
       {actionMessage && <p role="status" className="no-print mb-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-[#0B1D39] dark:text-slate-200">{actionMessage}</p>}
 
-      <article className="overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm">
+      <article className="document-print-sheet overflow-hidden rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm">
         <div className="h-2 bg-[#D61F26]" />
-        <div className="p-8 sm:p-10">
+        <div className="document-print-content p-8 sm:p-10">
           {isSample && (
             <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-900">
               Sample document for layout and pricing reference only. Do not use for payment or fulfilment.
@@ -311,17 +344,10 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
           </section>
 
           {Boolean(doc.scope) && (
-            <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-              <strong className="text-[#081E3E]">Scope: </strong>
-              {String(doc.scope)}
+            <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4 text-[15px] font-bold capitalize text-slate-700 underline decoration-slate-500 underline-offset-2">
+              Scope: {String(doc.scope)}
             </div>
           )}
-
-          <section aria-label="Warranty and expected equipment life" className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-950">
-            <h2 className="font-bold uppercase tracking-wide">Warranty &amp; expected equipment life</h2>
-            <p className="mt-1">Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error. Product warranty coverage is subject to each manufacturer’s written terms.</p>
-            <p className="mt-1">Expected service life: inverters 5–10 years; battery banks 5–15 years; solar panels 10–25 years. These are estimates, not guaranteed lifetimes.</p>
-          </section>
 
           <div className="mt-6 overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -397,6 +423,16 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
               </div>
             </dl>
           </div>
+          <p className="mt-4 text-xs leading-relaxed text-slate-600">
+            <strong className="text-[#081E3E]">Amount in words: </strong>
+            {amountInNairaWords(totals.total)}
+          </p>
+
+          <section aria-label="Warranty and expected equipment life" className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-950">
+            <h2 className="font-bold uppercase tracking-wide">Warranty &amp; expected equipment life</h2>
+            <p className="mt-1"><strong>Installation warranty:</strong> 2 years on installation work only; excludes theft, natural disasters, and end-user error. Product warranty coverage is subject to each manufacturer’s written terms.</p>
+            <p className="mt-1"><strong>Expected service lifetime:</strong> inverters 5–10 years; battery banks 5–15 years; solar panels 10–25 years. These are estimates, not guaranteed lifetimes.</p>
+          </section>
         </div>
       </article>
     </div>

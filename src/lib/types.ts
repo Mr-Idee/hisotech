@@ -155,6 +155,7 @@ export interface BankDetails {
 
 export interface EstimatorSettings {
   inverterCategory: string;
+  parallelInverterSkus: string[];
   batteryCategory: string;
   panelCategory: string;
   accessorySkus: string[];

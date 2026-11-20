@@ -6,7 +6,6 @@ import {
   Clock,
   Mail,
   MapPin,
-  Monitor,
   Moon,
   Phone,
   ShieldCheck,
@@ -25,7 +24,7 @@ interface PublicSiteProps {
   catalog: CatalogItem[];
   homepage: HomepageContent;
   darkMode: boolean;
-  themeMode: 'system' | 'light' | 'dark';
+  themeMode: 'light' | 'dark';
   onToggleTheme: () => void;
   onNavigate: (route: AppRoute, sectionId?: string) => void;
 }
@@ -791,7 +790,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
             <div>
               <div className="text-xs font-semibold text-[#D61F26]">Quote Validity &amp; Warranty</div>
               <p className="mt-1 text-sm font-bold text-[#081E3E] dark:text-white">
-                7-Day Validity · 1-Year Workmanship
+                7-Day Validity · 2-Years Workmanship
               </p>
             </div>
             <div>
@@ -1065,7 +1064,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
               aria-label={`Theme: ${themeMode}. Change theme`}
               className="inline-flex items-center gap-1.5 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10"
             >
-              {themeMode === 'system' ? <Monitor className="h-3.5 w-3.5" /> : darkMode ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
+              {darkMode ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
               <span className="capitalize">{themeMode}</span>
             </button>
           </div>
