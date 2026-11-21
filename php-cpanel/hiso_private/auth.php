@@ -270,3 +270,23 @@ function hiso_send_mail(string $toEmail, string $subject, string $message, array
     }
     $mailer->send();
 }
+
+function hiso_mail_failure_category(Throwable $error): string {
+    $message = strtolower($error->getMessage());
+    if (str_contains($message, 'not configured') || str_contains($message, 'dependency unavailable')) {
+        return 'configuration';
+    }
+    if (preg_match('/authenticat|535|5\.7\.8/', $message)) {
+        return 'authentication';
+    }
+    if (preg_match('/certificate|ssl|tls|crypto|handshake/', $message)) {
+        return 'tls';
+    }
+    if (preg_match('/connect|connection|timed out|refused|network|socket/', $message)) {
+        return 'connection';
+    }
+    if (preg_match('/recipient|mailbox|sender|5\.1\.1|5\.7\.1/', $message)) {
+        return 'address_or_policy';
+    }
+    return 'smtp_other';
+}
