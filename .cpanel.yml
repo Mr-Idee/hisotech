@@ -8,3 +8,7 @@ deployment:
     - /bin/cp /home/hisotech/app.hisotechsolarinverters.com/hisotech/php-cpanel/hiso_private/auth.php /home/hisotech/app.hisotechsolarinverters.com/hiso_private/auth.php
     - /bin/cp /home/hisotech/app.hisotechsolarinverters.com/hisotech/php-cpanel/hiso_private/communications.php /home/hisotech/app.hisotechsolarinverters.com/hiso_private/communications.php
     - /bin/cp /home/hisotech/app.hisotechsolarinverters.com/hisotech/php-cpanel/hiso_private/upload.php /home/hisotech/app.hisotechsolarinverters.com/hiso_private/upload.php
+    - /bin/mkdir -p /home/hisotech/app.hisotechsolarinverters.com/hiso_private/vendor
+    - /bin/cp -R /home/hisotech/app.hisotechsolarinverters.com/hisotech/php-cpanel/hiso_private/vendor/. /home/hisotech/app.hisotechsolarinverters.com/hiso_private/vendor/
+    - /bin/test -f /home/hisotech/app.hisotechsolarinverters.com/hiso_private/vendor/autoload.php
+    - /bin/test -f /home/hisotech/app.hisotechsolarinverters.com/hiso_private/vendor/phpmailer/phpmailer/src/PHPMailer.php
