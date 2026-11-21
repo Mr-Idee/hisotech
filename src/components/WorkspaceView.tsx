@@ -516,7 +516,7 @@ export function WorkspaceView({
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   autoComplete="current-password"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 selection:bg-slate-300 selection:text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100 dark:selection:bg-slate-600 dark:selection:text-white"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 selection:bg-slate-300 selection:text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100 dark:selection:bg-amber-300 dark:selection:text-slate-950"
                 />
                 <button
                   type="button"
