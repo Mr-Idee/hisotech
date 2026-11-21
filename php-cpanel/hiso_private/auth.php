@@ -273,6 +273,9 @@ function hiso_send_mail(string $toEmail, string $subject, string $message, array
 
 function hiso_mail_failure_category(Throwable $error): string {
     $message = strtolower($error->getMessage());
+    if (str_contains($message, 'invalid email recipient')) {
+        return 'invalid_recipient';
+    }
     if (str_contains($message, 'not configured') || str_contains($message, 'dependency unavailable')) {
         return 'configuration';
     }
@@ -293,10 +296,13 @@ function hiso_mail_failure_category(Throwable $error): string {
 
 function hiso_log_mail_failure(Throwable $error): void {
     $entry = sprintf(
-        "%s category=%s exception=%s\n",
+        "%s category=%s exception=%s source=%s:%d code=%d\n",
         gmdate('c'),
         hiso_mail_failure_category($error),
-        get_class($error)
+        get_class($error),
+        basename($error->getFile()),
+        $error->getLine(),
+        $error->getCode()
     );
     $logPath = hiso_storage_dir('logs') . '/customer-mail-errors.log';
     if (file_put_contents($logPath, $entry, FILE_APPEND | LOCK_EX) === false) {
