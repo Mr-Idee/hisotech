@@ -261,7 +261,7 @@ export function CustomerProfileView() {
             <p className="mt-4 text-sm text-slate-500" role="status">Checking your secure customer session…</p>
           )}
           {error && (
-            <p className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
+            <p className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/80 dark:text-rose-100">
               {error}
             </p>
           )}
@@ -374,7 +374,7 @@ export function CustomerProfileView() {
         </div>
       )}
       {error && (
-        <div className="mt-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
+        <div className="mt-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/80 dark:text-rose-100">
           <AlertCircle className="h-4 w-4 shrink-0" />
           {error}
         </div>

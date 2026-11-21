@@ -47,8 +47,8 @@
   }
 
   .dark ::selection {
-    background: #334155;
-    color: #f8fafc;
+    background: #fbbf24;
+    color: #081e3e;
   }
 }
 
