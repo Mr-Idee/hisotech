@@ -290,3 +290,16 @@ function hiso_mail_failure_category(Throwable $error): string {
     }
     return 'smtp_other';
 }
+
+function hiso_log_mail_failure(Throwable $error): void {
+    $entry = sprintf(
+        "%s category=%s exception=%s\n",
+        gmdate('c'),
+        hiso_mail_failure_category($error),
+        get_class($error)
+    );
+    $logPath = hiso_storage_dir('logs') . '/customer-mail-errors.log';
+    if (file_put_contents($logPath, $entry, FILE_APPEND | LOCK_EX) === false) {
+        error_log('[hiso-customer-login] delivery failed; ' . trim($entry));
+    }
+}

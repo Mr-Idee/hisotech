@@ -1036,7 +1036,7 @@ try {
                     "Use this one-time link to access your HI-SOTECH customer portal:\n\n{$link}\n\nThe link expires in 15 minutes and can only be used once. If you did not request it, you can ignore this message."
                 );
             } catch (Throwable $e) {
-                error_log('[hiso-customer-login] delivery failed; category=' . hiso_mail_failure_category($e) . '; exception=' . get_class($e));
+                hiso_log_mail_failure($e);
                 $pdo->prepare('DELETE FROM customer_login_tokens WHERE token_hash = ?')->execute([$tokenHash]);
                 hiso_json_response(['error' => 'The sign-in email could not be sent. Please try again later.'], 503);
             }
