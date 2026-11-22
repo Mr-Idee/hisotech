@@ -67,11 +67,13 @@ CREATE TABLE IF NOT EXISTS `enquiries` (
   `need_summary` TEXT NOT NULL,
   `appliances_json` LONGTEXT NULL,
   `estimate_json` LONGTEXT NULL,
-  `status` ENUM('New', 'Technical review', 'Quoted', 'Invoiced', 'In delivery', 'Completed') NOT NULL DEFAULT 'New',
+  `status` ENUM('New', 'Technical review') NOT NULL DEFAULT 'New',
+  `archived_at` DATETIME NULL,
   `owner_user_id` VARCHAR(36) NOT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_enquiries_ref` (`ref_code`),
+  KEY `idx_enquiries_archive_created` (`archived_at`, `created_at`),
   KEY `idx_enquiries_owner` (`owner_user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

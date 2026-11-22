@@ -46,7 +46,7 @@ test('only approved estimator quotations can provision a customer account and th
     ).run(
       id, `REF-${id}`, 'Test Customer', email, '+2348012345678', 'Abuja',
       estimator ? 'Website · Load Estimator' : 'Website · Home Enquiry',
-      'Solar enquiry', '[]', estimator ? '{}' : null, 'Quoted', 'admin-user', new Date().toISOString(),
+      'Solar enquiry', '[]', estimator ? '{}' : null, 'New', 'admin-user', new Date().toISOString(),
     );
   };
   const addQuote = (id: string, enquiryId: string, status: string, itemsJson = '[]') => {
@@ -60,11 +60,29 @@ test('only approved estimator quotations can provision a customer account and th
   };
 
   addEnquiry('enq-homepage', 'homepage@example.com', false);
+  assert.throws(
+    () => workflow!.saveQuotation(actor, {
+      enquiryId: 'enq-homepage', customerName: 'Test Customer', scope: 'Solar', terms: 'Terms',
+      note: '', discountNgn: 0, taxPercent: 0, validUntil: '2026-01-08', items: [],
+    }),
+    /Only load-estimator enquiries and Store orders can have quotations/,
+  );
   addQuote('quote-homepage', 'enq-homepage', 'Approved');
   assert.throws(
     () => workflow!.createCustomerAccountForApprovedQuote(actor, 'quote-homepage'),
     /Director-approved estimator quotations/,
   );
+  addEnquiry('enq-estimator-new', 'estimate@example.com', true);
+  workflow!.saveQuotation(actor, {
+    enquiryId: 'enq-estimator-new', customerName: 'Test Customer', scope: 'Solar', terms: 'Terms',
+    note: '', discountNgn: 0, taxPercent: 0, validUntil: '2026-01-08', items: [],
+  });
+  assert.equal(
+    (database!.prepare('SELECT status FROM enquiries WHERE id=?').get('enq-estimator-new') as { status: string }).status,
+    'New',
+  );
+  workflow!.archiveEnquiry(actor, 'enq-estimator-new');
+  assert.equal(workflow!.getEnquiryForFollowUp('enq-estimator-new'), null);
 
   addEnquiry('enq-pending', 'pending@example.com', true);
   addQuote('quote-pending', 'enq-pending', 'Pending MD');
@@ -114,6 +132,10 @@ test('only approved estimator quotations can provision a customer account and th
     '[]', 1000, 0, 0, 1000, 'Pending', new Date().toISOString(), new Date().toISOString(),
   );
   assert.throws(
+    () => workflow!.archiveEnquiry(actor, 'enq-payment'),
+    /linked to an active Store order/,
+  );
+  assert.throws(
     () => workflow!.saveQuotation(actor, {
       enquiryId: 'enq-payment', customerName: 'Test Customer', scope: 'Solar', terms: 'Terms',
       note: '', discountNgn: 0, taxPercent: 0, validUntil: '2026-01-08', items: [],
@@ -131,4 +153,6 @@ test('only approved estimator quotations can provision a customer account and th
   });
   assert.equal(workflow!.verifyPayment(actor, secondPayment.id, 'Confirmed').invoiceStatus, 'Completed');
   assert.equal((database!.prepare('SELECT status FROM store_orders WHERE id=?').get('order-payment') as { status: string }).status, 'Completed');
+  workflow!.archiveEnquiry(actor, 'enq-payment');
+  assert.ok((database!.prepare('SELECT archived_at FROM enquiries WHERE id=?').get('enq-payment') as { archived_at: string }).archived_at);
 });

@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS enquiries (
   appliances_json TEXT NOT NULL DEFAULT '[]',
   estimate_json TEXT,
   status TEXT NOT NULL,
+  archived_at TEXT,
   owner_user_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -424,6 +425,8 @@ ensureColumn('catalog_items', 'grade', "grade TEXT NOT NULL DEFAULT 'Standard'")
 ensureColumn('catalog_items', 'watts', 'watts INTEGER');
 ensureColumn('catalog_items', 'description', "description TEXT NOT NULL DEFAULT ''");
 ensureColumn('invoices', 'status', "status TEXT NOT NULL DEFAULT 'Pending'");
+ensureColumn('enquiries', 'archived_at', 'archived_at TEXT');
+db.prepare("UPDATE enquiries SET status='New' WHERE status NOT IN ('New','Technical review')").run();
 db.exec(`
   UPDATE invoices
   SET status = CASE
@@ -928,7 +931,7 @@ export function createPublicEnquiry(payload: {
       payload.needSummary.trim(),
       JSON.stringify(appliances),
       estimate ? JSON.stringify(estimate) : null,
-      requestedSource === 'estimator' ? 'Quoted' : 'New',
+      'New',
       now
     );
     if (estimate) {
@@ -1121,9 +1124,6 @@ export function updateStoreOrderStatus(
     now,
     body.orderId
   );
-  if (savedStatus === 'Completed') {
-    db.prepare("UPDATE enquiries SET status = 'Completed' WHERE id = ?").run(String(existing.enquiry_id));
-  }
   writeAudit(actor, 'UPDATE_ORDER', 'StoreOrder', String(existing.order_code), `Marked Store order ${existing.order_code} as ${body.status}.`);
 }
 
@@ -2270,7 +2270,7 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
 
   const enquiries: EnquiryRecord[] = !canCommercial
     ? []
-    : (db.prepare('SELECT * FROM enquiries ORDER BY created_at DESC').all() as Record<string, unknown>[]).map((e) => ({
+    : (db.prepare('SELECT * FROM enquiries WHERE archived_at IS NULL ORDER BY created_at DESC').all() as Record<string, unknown>[]).map((e) => ({
         id: String(e.id),
         refCode: String(e.ref_code),
         customerName: String(e.customer_name),
@@ -2459,6 +2459,58 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
   };
 }
 
+export function getEnquiryForFollowUp(enquiryId: string): {
+  id: string;
+  refCode: string;
+  customerName: string;
+  email: string;
+  phone: string;
+  location: string;
+  channel: string;
+  needSummary: string;
+} | null {
+  const row = db.prepare(
+    'SELECT id, ref_code, customer_name, email, phone, location, channel, need_summary FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1'
+  ).get(enquiryId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    refCode: String(row.ref_code),
+    customerName: String(row.customer_name),
+    email: String(row.email),
+    phone: String(row.phone),
+    location: String(row.location),
+    channel: String(row.channel),
+    needSummary: String(row.need_summary),
+  };
+}
+
+export function forwardEnquiryToDirector(actor: StaffMember, enquiryId: string): ReturnType<typeof getEnquiryForFollowUp> {
+  const enquiry = getEnquiryForFollowUp(enquiryId);
+  if (!enquiry) return null;
+  notifyRoleMembers(
+    ['director', 'superadmin'],
+    `Enquiry forwarded: ${enquiry.refCode}`,
+    `${enquiry.customerName} — ${enquiry.location}.`,
+    'enquiries',
+    enquiry.id,
+  );
+  writeAudit(actor, 'FORWARD_ENQUIRY', 'Enquiry', enquiry.refCode, 'Forwarded enquiry to Director for follow-up.');
+  return enquiry;
+}
+
+export function archiveEnquiry(actor: StaffMember, enquiryId: string): void {
+  const activeOrder = db.prepare(
+    "SELECT 1 FROM store_orders WHERE enquiry_id=? AND status NOT IN ('Completed','Cancelled') LIMIT 1"
+  ).get(enquiryId);
+  if (activeOrder) throw new Error('This enquiry is linked to an active Store order and cannot be archived yet.');
+  const result = db.prepare('UPDATE enquiries SET archived_at=? WHERE id=? AND archived_at IS NULL')
+    .run(new Date().toISOString(), enquiryId);
+  if (result.changes !== 1) throw new Error('Enquiry not found or already archived.');
+  const row = db.prepare('SELECT ref_code FROM enquiries WHERE id=? LIMIT 1').get(enquiryId) as { ref_code: string };
+  writeAudit(actor, 'ARCHIVE_ENQUIRY', 'Enquiry', row.ref_code, 'Archived enquiry from the active desk.');
+}
+
 export function createStaffEnquiry(actor: StaffMember, body: { customerName: string; email: string; phone: string; location: string; channel: string; needSummary: string }) {
   const id = crypto.randomUUID();
   const refCode = nextCode('enquiries', 'ref_code', 'HISO');
@@ -2595,10 +2647,17 @@ export function saveQuotation(
     );
     code = String(existing.quote_code);
   } else {
+    const enquiry = db.prepare(
+      'SELECT estimate_json FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1'
+    ).get(body.enquiryId) as { estimate_json: string | null } | undefined;
+    if (!enquiry) throw new Error('Enquiry not found or already archived.');
     const existingQuote = db.prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1').get(body.enquiryId);
     const linkedOrder = db.prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1').get(body.enquiryId);
     if (existingQuote && linkedOrder) {
       throw new Error('A quotation already exists for this Store order. Revise the existing quotation instead.');
+    }
+    if (!linkedOrder && !enquiry.estimate_json) {
+      throw new Error('Only load-estimator enquiries and Store orders can have quotations.');
     }
     const id = crypto.randomUUID();
     savedId = id;
@@ -2607,7 +2666,6 @@ export function saveQuotation(
     db.prepare(
       'INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by, approved_at, items_json, revisions_json, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)'
     ).run(id, code, body.enquiryId, body.customerName, status, body.scope, body.terms, body.note, body.discountNgn, body.taxPercent, isoDateOffset(0), body.validUntil || isoDateOffset(7), JSON.stringify(body.items), JSON.stringify(revs), now);
-    db.prepare("UPDATE enquiries SET status = 'Quoted' WHERE id = ? AND status IN ('New','Technical review')").run(body.enquiryId);
   }
   if (status === 'Pending MD') {
     notifyRoleMembers(['director', 'superadmin'], `Quotation awaiting approval: ${code}`, `${body.customerName} submitted for Director review.`, 'quotes', code);
@@ -2657,7 +2715,6 @@ export function issueInvoice(actor: StaffMember, quotationId: string) {
     isoDateOffset(0), isoDateOffset(14), String(quote.items_json), now
   );
   db.prepare("UPDATE quotations SET status = 'Invoiced' WHERE id = ?").run(String(quote.id));
-  db.prepare("UPDATE enquiries SET status = 'Invoiced' WHERE id = ?").run(String(quote.enquiry_id));
   writeAudit(actor, 'ISSUE_INVOICE', 'Invoice', invoiceCode, `Issued invoice from ${quote.quote_code}`);
   return {
     id,
@@ -2700,8 +2757,6 @@ export function verifyPayment(actor: StaffMember, paymentId: string, decision: '
     if (invoiceStatus === 'Completed') {
       db.prepare("UPDATE store_orders SET status='Completed', updated_at=? WHERE enquiry_id=? AND status='Delivered'")
         .run(new Date().toISOString(), invoice.enquiry_id);
-      db.prepare("UPDATE enquiries SET status='Completed' WHERE id=? AND EXISTS (SELECT 1 FROM store_orders WHERE enquiry_id=? AND status='Completed')")
-        .run(invoice.enquiry_id, invoice.enquiry_id);
     }
   }
   writeAudit(actor, 'VERIFY_PAYMENT', 'Payment', String(pay.payment_code), `${actor.name} ${decision} receipt.`);
@@ -2741,7 +2796,6 @@ export function releaseInstallation(
     body.systemSummary || 'Solar Hybrid Installation', body.assignedEngineerId || null,
     body.targetDate || isoDateOffset(10), body.releaseType, body.releaseNote || 'Full verified payment', actor.name, now
   );
-  db.prepare("UPDATE enquiries SET status = 'In delivery' WHERE id = ?").run(String(inv.enquiry_id));
   if (body.assignedEngineerId) {
     createNotification(body.assignedEngineerId, `New installation assigned: ${jobCode}`, `${inv.customer_name} (${inv.location}) released for delivery.`, 'jobs', jobCode);
   }
@@ -2842,12 +2896,6 @@ export function submitInstallationReport(
 
     if (body.advanceStage) {
       db.prepare('UPDATE installations SET current_stage = MAX(current_stage, ?) WHERE id = ?').run(stage, body.installationId);
-      if (stage === 5) {
-        const job = db.prepare('SELECT enquiry_id FROM installations WHERE id = ?').get(body.installationId) as { enquiry_id: string } | undefined;
-        if (job) {
-          db.prepare("UPDATE enquiries SET status = 'Completed' WHERE id = ?").run(job.enquiry_id);
-        }
-      }
     }
     writeAudit(actor, 'FIELD_REPORT', 'Installation', body.installationId, `Stage ${stage}: ${body.activityTitle}`);
     db.exec('COMMIT');

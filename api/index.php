@@ -534,7 +534,7 @@ function hiso_hydrate_workspace(array $user): array {
 
     $catalog = hiso_hydrate_catalog();
 
-    $enquiriesRaw = $canCommercial ? $pdo->query('SELECT * FROM enquiries ORDER BY created_at DESC')->fetchAll() : [];
+    $enquiriesRaw = $canCommercial ? $pdo->query('SELECT * FROM enquiries WHERE archived_at IS NULL ORDER BY created_at DESC')->fetchAll() : [];
     $enquiries = array_map(fn($e) => [
         'id' => $e['id'],
         'refCode' => $e['ref_code'],
@@ -935,7 +935,7 @@ try {
                 trim((string)($body['needSummary'] ?? 'General solar consultation request')),
                 json_encode($appliances, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
                 $estimate ? json_encode($estimate, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) : null,
-                $source === 'estimator' ? 'Quoted' : 'New',
+                'New',
             ]);
             if ($estimate) {
                 $catalog = hiso_hydrate_catalog();
@@ -2104,6 +2104,74 @@ try {
         hiso_json_response(['id' => $id, 'refCode' => $ref], 201);
     }
 
+    if ($method === 'POST' && $route === 'enquiries/forward') {
+        $user = hiso_require_permission('manage_enquiries');
+        $body = hiso_json_body();
+        $enquiryId = is_string($body['enquiryId'] ?? null) ? trim($body['enquiryId']) : '';
+        $message = is_string($body['message'] ?? null) ? trim($body['message']) : '';
+        if ($enquiryId === '' || strlen($enquiryId) > 80 || $message === '' || strlen($message) > 4096) {
+            hiso_json_response(['error' => 'A valid enquiry and follow-up message are required.'], 422);
+        }
+        $pdo = hiso_pdo();
+        $stmt = $pdo->prepare('SELECT id, ref_code, customer_name, email, phone, location, channel, need_summary FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1');
+        $stmt->execute([$enquiryId]);
+        $enquiry = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$enquiry) hiso_json_response(['error' => 'Enquiry not found or already archived.'], 404);
+        hiso_notify_roles(
+            ['director', 'superadmin'],
+            'Enquiry forwarded: ' . $enquiry['ref_code'],
+            $enquiry['customer_name'] . ' — ' . $enquiry['location'] . '.',
+            'enquiries',
+            $enquiry['id']
+        );
+        $appUrl = rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/');
+        $emailBody = implode("\n", [
+            'Enquiry ' . $enquiry['ref_code'] . ' has been forwarded by ' . $user['name'] . '.',
+            '',
+            'Customer: ' . $enquiry['customer_name'],
+            'Phone / WhatsApp: ' . $enquiry['phone'],
+            'Email: ' . ($enquiry['email'] ?: 'Not provided'),
+            'Location: ' . $enquiry['location'],
+            'Channel: ' . $enquiry['channel'],
+            'Enquiry details: ' . $enquiry['need_summary'],
+            '',
+            'Follow-up draft / note:',
+            $message,
+            '',
+            'Open the enquiry workspace: ' . $appUrl . '/#workspace?tab=enquiries',
+        ]);
+        hiso_send_lifecycle_email_to_roles(
+            'new_enquiry',
+            ['director', 'superadmin'],
+            'HI-SOTECH enquiry forwarded for follow-up: ' . $enquiry['ref_code'],
+            $emailBody
+        );
+        hiso_audit($user, 'FORWARD_ENQUIRY', 'Enquiry', $enquiry['ref_code'], 'Forwarded enquiry to Director for follow-up.');
+        hiso_json_response(['ok' => true]);
+    }
+
+    if ($method === 'POST' && $route === 'enquiries/archive') {
+        $user = hiso_require_permission('manage_enquiries');
+        $body = hiso_json_body();
+        $enquiryId = is_string($body['enquiryId'] ?? null) ? trim($body['enquiryId']) : '';
+        if ($enquiryId === '' || strlen($enquiryId) > 80) {
+            hiso_json_response(['error' => 'A valid enquiry is required.'], 422);
+        }
+        $pdo = hiso_pdo();
+        $stmt = $pdo->prepare('SELECT ref_code FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1');
+        $stmt->execute([$enquiryId]);
+        $enquiry = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$enquiry) hiso_json_response(['error' => 'Enquiry not found or already archived.'], 404);
+        $activeOrder = $pdo->prepare('SELECT 1 FROM store_orders WHERE enquiry_id=? AND status NOT IN ("Completed","Cancelled") LIMIT 1');
+        $activeOrder->execute([$enquiryId]);
+        if ($activeOrder->fetchColumn()) {
+            hiso_json_response(['error' => 'This enquiry is linked to an active Store order and cannot be archived yet.'], 422);
+        }
+        $pdo->prepare('UPDATE enquiries SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND archived_at IS NULL')->execute([$enquiryId]);
+        hiso_audit($user, 'ARCHIVE_ENQUIRY', 'Enquiry', $enquiry['ref_code'], 'Archived enquiry from the active desk.');
+        hiso_json_response(['ok' => true]);
+    }
+
     if ($method === 'POST' && $route === 'customers/provision') {
         $user = hiso_require_roles(['admin', 'superadmin']);
         $body = hiso_json_body();
@@ -2268,14 +2336,24 @@ try {
                 ->execute([$status, $revNo, $body['scope'], $body['terms'], $body['note'], $discount, $tax, $body['validUntil'], json_encode($items), json_encode($revs), $existing['id']]);
             $code = $existing['quote_code'];
         } else {
+            $enquiryStmt = $pdo->prepare('SELECT estimate_json FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1');
+            $enquiryStmt->execute([(string)($body['enquiryId'] ?? '')]);
+            $enquiry = $enquiryStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$enquiry) {
+                hiso_json_response(['error' => 'Enquiry not found or already archived.'], 404);
+            }
             $orderStmt = $pdo->prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1');
             $orderStmt->execute([(string)($body['enquiryId'] ?? '')]);
-            if ($orderStmt->fetchColumn()) {
+            $linkedOrder = (bool)$orderStmt->fetchColumn();
+            if ($linkedOrder) {
                 $quoteStmt = $pdo->prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1');
                 $quoteStmt->execute([(string)$body['enquiryId']]);
                 if ($quoteStmt->fetchColumn()) {
                     hiso_json_response(['error' => 'A quotation already exists for this Store order. Revise the existing quotation instead.'], 422);
                 }
+            }
+            if (!$linkedOrder && empty($enquiry['estimate_json'])) {
+                hiso_json_response(['error' => 'Only load-estimator enquiries and Store orders can have quotations.'], 422);
             }
             $id = hiso_uuid();
             $savedId = $id;
@@ -2283,7 +2361,6 @@ try {
             $revs = [['revisionNo' => 1, 'changedBy' => $user['name'], 'note' => 'Initial quotation', 'createdAt' => gmdate('c'), 'totalNgn' => $total]];
             $pdo->prepare('INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, items_json, revisions_json) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, CURDATE(), ?, ?, ?)')
                 ->execute([$id, $code, $body['enquiryId'], $body['customerName'], $status, $body['scope'], $body['terms'], $body['note'], $discount, $tax, $body['validUntil'], json_encode($items), json_encode($revs)]);
-            $pdo->prepare('UPDATE enquiries SET status = "Quoted" WHERE id = ? AND status IN ("New","Technical review")')->execute([$body['enquiryId']]);
         }
         if ($status === 'Pending MD') {
             hiso_notify_roles(['director', 'superadmin'], 'Quotation awaiting approval: ' . $code, $body['customerName'] . ' submitted for Director review.', 'quotes', $code);
@@ -2351,7 +2428,6 @@ try {
         $pdo->prepare('INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, discount_ngn, tax_percent, total_ngn, bank_details_json, issued_date, due_date, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 14 DAY), ?)')
             ->execute([$invId, $invCode, $quote['id'], $quote['enquiry_id'], $quote['customer_name'], $quote['discount_ngn'], $quote['tax_percent'], $total, json_encode($bankDetails, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $quote['items_json']]);
         $pdo->prepare('UPDATE quotations SET status = "Invoiced" WHERE id = ?')->execute([$quote['id']]);
-        $pdo->prepare('UPDATE enquiries SET status = "Invoiced" WHERE id = ?')->execute([$quote['enquiry_id']]);
         hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);
         $enquiryStmt = $pdo->prepare('SELECT id, email, phone FROM enquiries WHERE id=? LIMIT 1');
         $enquiryStmt->execute([$quote['enquiry_id']]);
@@ -2424,8 +2500,6 @@ try {
         $pdo->prepare('UPDATE invoices SET status=? WHERE id=?')->execute([$invoiceStatus, $invoiceId]);
         if ($invoiceStatus === 'Completed') {
             $pdo->prepare('UPDATE store_orders SET status="Completed" WHERE enquiry_id=? AND status="Delivered"')->execute([$payment['enquiry_id']]);
-            $pdo->prepare('UPDATE enquiries SET status="Completed" WHERE id=? AND EXISTS (SELECT 1 FROM store_orders WHERE enquiry_id=? AND status="Completed")')
-                ->execute([$payment['enquiry_id'], $payment['enquiry_id']]);
         }
         hiso_audit($user, 'VERIFY_PAYMENT', 'Payment', (string)$body['paymentId'], 'Receipt ' . $decision);
         if ($invoiceId !== '') hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invoiceId, 'A payment receipt for your invoice was ' . strtolower($decision) . '. Invoice status: ' . $invoiceStatus . '.');
@@ -2454,7 +2528,6 @@ try {
         $engId = $body['assignedEngineerId'] ?: null;
         $pdo->prepare('INSERT INTO installations (id, job_code, invoice_id, enquiry_id, customer_name, location, system_summary, assigned_engineer_id, engineer_acknowledged, current_stage, target_date, release_type, release_note, released_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?)')
             ->execute([$jobId, $jobCode, $inv['id'], $inv['enquiry_id'], $inv['customer_name'], $inv['location'], $body['systemSummary'] ?? 'Solar Hybrid Installation', $engId, $body['targetDate'] ?? date('Y-m-d', strtotime('+10 days')), $releaseType, $releaseNote ?: 'Full verified settlement', $user['name']]);
-        $pdo->prepare('UPDATE enquiries SET status = "In delivery" WHERE id = ?')->execute([$inv['enquiry_id']]);
         if ($engId) hiso_notify($engId, 'New installation assigned: ' . $jobCode, $inv['customer_name'] . ' (' . $inv['location'] . ') released for delivery.', 'jobs', $jobId);
         hiso_audit($user, 'RELEASE_INSTALLATION', 'Installation', $jobCode, 'Released installation (' . $releaseType . ').');
         hiso_send_lifecycle_whatsapp('installation_status', 'installation', $jobId, 'Installation ' . $jobCode . ' has been scheduled.');
@@ -2648,9 +2721,6 @@ try {
         }
         $pdo->prepare('UPDATE store_orders SET status = ?, notes = ? WHERE id = ?')
             ->execute([$status, trim((string)($body['notes'] ?? $ord['notes'])), $body['orderId']]);
-        if ($status === 'Completed') {
-            $pdo->prepare('UPDATE enquiries SET status = "Completed" WHERE id = ?')->execute([$ord['enquiry_id']]);
-        }
         hiso_audit($user, 'UPDATE_ORDER', 'StoreOrder', $ord['order_code'], 'Marked ' . $status);
         hiso_json_response(['ok' => true]);
     }

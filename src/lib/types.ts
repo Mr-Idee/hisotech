@@ -107,7 +107,7 @@ export interface EnquiryRecord {
   needSummary: string;
   appliances: ApplianceItem[];
   estimate: SolarEstimateResult | null;
-  status: 'New' | 'Technical review' | 'Quoted' | 'Invoiced' | 'In delivery' | 'Completed';
+  status: 'New' | 'Technical review';
   ownerUserId: string;
   createdAt: string;
 }

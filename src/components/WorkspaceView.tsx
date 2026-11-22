@@ -150,6 +150,9 @@ export function WorkspaceView({
   const [enqLocation, setEnqLocation] = useState('');
   const [enqChannel, setEnqChannel] = useState('WhatsApp · Manual Intake');
   const [enqNeed, setEnqNeed] = useState('');
+  const [followUpEnquiry, setFollowUpEnquiry] = useState<EnquiryRecord | null>(null);
+  const [followUpMessage, setFollowUpMessage] = useState('');
+  const [followUpBusy, setFollowUpBusy] = useState(false);
 
   // Store catalogue modal and view.
   const [catalogView, setCatalogView] = useState<'cards' | 'list'>('cards');
@@ -234,6 +237,47 @@ export function WorkspaceView({
 
   function showToast(msg: string) {
     notifyUser(msg);
+  }
+
+  function openEnquiryFollowUp(enquiry: EnquiryRecord) {
+    setErrorMsg('');
+    setFollowUpEnquiry(enquiry);
+    setFollowUpMessage(
+      `Hello ${enquiry.customerName},\n\nThank you for your enquiry ${enquiry.refCode}. A representative will review your request and get back to you shortly.\n\nHI-SOTECH Solar Solutions`
+    );
+  }
+
+  async function forwardEnquiryToDirector() {
+    if (!followUpEnquiry) return;
+    setErrorMsg('');
+    setFollowUpBusy(true);
+    try {
+      await api.forwardEnquiryToDirector(followUpEnquiry.id, followUpMessage);
+      setFollowUpEnquiry(null);
+      showToast(`Enquiry ${followUpEnquiry.refCode} forwarded to the Director.`);
+      await loadWorkspace();
+    } catch (error) {
+      setErrorMsg((error as Error).message);
+    } finally {
+      setFollowUpBusy(false);
+    }
+  }
+
+  async function archiveDeskEnquiry() {
+    if (!followUpEnquiry) return;
+    setErrorMsg('');
+    setFollowUpBusy(true);
+    try {
+      await api.archiveEnquiry(followUpEnquiry.id);
+      const refCode = followUpEnquiry.refCode;
+      setFollowUpEnquiry(null);
+      showToast(`Enquiry ${refCode} archived from the active desk.`);
+      await loadWorkspace();
+    } catch (error) {
+      setErrorMsg((error as Error).message);
+    } finally {
+      setFollowUpBusy(false);
+    }
   }
 
   async function loadWorkspace() {
@@ -418,6 +462,10 @@ export function WorkspaceView({
       setQuoteValid(existing.validUntil);
       setQuoteItems(existing.items);
     } else if (enq) {
+      if (!storeOrder && !enq.estimate) {
+        setErrorMsg('Only load-estimator enquiries and Store orders can have quotations.');
+        return;
+      }
       setEditQuoteId(undefined);
       setQuoteEnqId(enq.id);
       setQuoteCustomer(enq.customerName);
@@ -625,23 +673,6 @@ export function WorkspaceView({
             </button>
           </form>
 
-          {setupChecked && setupAvailable && (
-          <div className="mt-4 border-t border-slate-200 pt-4 text-center text-sm dark:border-slate-700">
-            <a
-              href="#workspace?setup=superuser"
-              onClick={(event) => {
-                event.preventDefault();
-                setErrorMsg('');
-                setSetupOpen(true);
-                window.history.pushState(null, '', '#workspace?setup=superuser');
-              }}
-              className="font-semibold text-[#D61F26] underline underline-offset-2"
-            >
-              Create the first Super Admin account
-            </a>
-          </div>
-          )}
-
           {setupOpen && (
             <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-5 dark:border-slate-700 dark:bg-[#061327]">
               <div className="flex items-start justify-between gap-3">
@@ -794,7 +825,8 @@ export function WorkspaceView({
     (s) => (s.role === 'technician' || hasPermission(s, 'update_installations')) && s.status === 'Active'
   );
   const enquiriesAvailableForQuote = data.enquiries.filter(
-    (enquiry) => !data.quotes.some((quote) => quote.enquiryId === enquiry.id && quote.status !== 'Rejected')
+    (enquiry) => Boolean(enquiry.estimate)
+      && !data.quotes.some((quote) => quote.enquiryId === enquiry.id && quote.status !== 'Rejected')
   );
   const approvedQuotesAvailableForInvoice = data.quotes.filter((quote) => quote.status === 'Approved');
 
@@ -1162,6 +1194,11 @@ export function WorkspaceView({
             </div>
 
             <div className="space-y-3">
+              {data.enquiries.length === 0 && (
+                <p className="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                  No active enquiries. Archived enquiries remain in the system records.
+                </p>
+              )}
               {data.enquiries.map((e) => (
                 <div
                   key={e.id}
@@ -1180,20 +1217,14 @@ export function WorkspaceView({
                       {e.location} · {e.phone} {e.email ? `· ${e.email}` : ''}
                     </p>
                     <p className="mt-2 text-sm text-slate-700 dark:text-slate-300">{e.needSummary}</p>
-                    {e.estimate && e.estimate.connectedLoadWatts > 0 && (
-                      <p className="font-mono-num mt-1 text-xs font-semibold text-[#081E3E] dark:text-red-300">
-                        Load Estimate: {e.estimate.connectedLoadWatts}W · {e.estimate.dailyEnergyKwh}kWh/day ·{' '}
-                        {e.estimate.inverterMinKw}kW Inverter · {e.estimate.recommendedPanels550w}×550W PV
-                      </p>
-                    )}
                   </div>
-                  {hasPermission(user, 'draft_quotes') && (
+                  {hasPermission(user, 'manage_enquiries') && (
                     <button
                       type="button"
-                      onClick={() => openQuoteBuilder(e)}
+                      onClick={() => openEnquiryFollowUp(e)}
                       className="rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26]"
                     >
-                      Draft Quotation
+                      Follow up
                     </button>
                   )}
                 </div>
@@ -2746,6 +2777,80 @@ export function WorkspaceView({
         </div>
       )}
 
+      {followUpEnquiry && (
+        <div role="dialog" aria-modal="true" aria-label={`Follow up enquiry ${followUpEnquiry.refCode}`} className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Follow up enquiry</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  {followUpEnquiry.refCode} · {followUpEnquiry.customerName} · {followUpEnquiry.phone}
+                </p>
+              </div>
+              <button type="button" onClick={() => setFollowUpEnquiry(null)} aria-label="Close enquiry follow-up" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="mt-4 block text-xs font-semibold text-slate-600 dark:text-slate-300">
+              Customer message
+              <textarea
+                value={followUpMessage}
+                onChange={(event) => setFollowUpMessage(event.target.value)}
+                maxLength={4096}
+                rows={7}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-[#061327] dark:text-white"
+              />
+            </label>
+            {errorMsg && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-200">{errorMsg}</p>}
+            {data?.orders.some((order) => order.enquiryId === followUpEnquiry.id && order.status !== 'Completed' && order.status !== 'Cancelled') && (
+              <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+                This enquiry is linked to an active Store order and must stay available until the order is completed or cancelled.
+              </p>
+            )}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              {followUpEnquiry.email && (
+                <a
+                  href={`mailto:${encodeURIComponent(followUpEnquiry.email)}?subject=${encodeURIComponent(`HI-SOTECH enquiry ${followUpEnquiry.refCode}`)}&body=${encodeURIComponent(followUpMessage)}`}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold dark:border-slate-700"
+                >
+                  Draft email
+                </a>
+              )}
+              {createWhatsAppLink(followUpEnquiry.phone, followUpMessage) ? (
+                <a
+                  href={createWhatsAppLink(followUpEnquiry.phone, followUpMessage) || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold dark:border-slate-700"
+                >
+                  Open WhatsApp
+                </a>
+              ) : (
+                <button type="button" disabled className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-400 dark:border-slate-700">
+                  WhatsApp unavailable
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={forwardEnquiryToDirector}
+                disabled={followUpBusy || !followUpMessage.trim()}
+                className="rounded-lg bg-[#081E3E] px-3 py-2 text-xs font-semibold text-white hover:bg-[#D61F26] disabled:opacity-50"
+              >
+                {followUpBusy ? 'Working…' : 'Forward to Director'}
+              </button>
+              <button
+                type="button"
+                onClick={archiveDeskEnquiry}
+                disabled={followUpBusy || Boolean(data?.orders.some((order) => order.enquiryId === followUpEnquiry.id && order.status !== 'Completed' && order.status !== 'Cancelled'))}
+                className="rounded-lg border border-red-300 px-3 py-2 text-xs font-semibold text-red-700 dark:border-red-900 dark:text-red-300"
+              >
+                Archive enquiry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {newQuotePickerOpen && (
         <div role="dialog" aria-modal="true" aria-label="Choose an enquiry for a new quotation" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
@@ -2761,7 +2866,7 @@ export function WorkspaceView({
             <div className="mt-4 max-h-[60vh] space-y-2 overflow-y-auto">
               {enquiriesAvailableForQuote.length === 0 ? (
                 <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600 dark:bg-[#061327] dark:text-slate-300">
-                  No enquiries are available for a new quotation. Create an enquiry first or revise an existing quotation.
+                  Only load-estimator enquiries can be quoted here. Store orders have their own quote action; revise an existing quotation from the Quotes workspace.
                 </p>
               ) : enquiriesAvailableForQuote.map((enquiry) => (
                 <button

@@ -17,6 +17,7 @@ import {
   authenticateUser,
   checkAuthRateLimit,
   createPublicEnquiry,
+  archiveEnquiry,
   createCustomerLoginLink,
   createCustomerAccountForApprovedQuote,
   issueCustomerPasswordResetPin,
@@ -33,6 +34,7 @@ import {
   getPublicEstimatorSettings,
   getPublicDocument,
   getPublicTracking,
+  forwardEnquiryToDirector,
   getUploadedCatalogImage,
   getUserBySessionToken,
   hydrateWorkspace,
@@ -1812,6 +1814,72 @@ async function startServer() {
     const enquiry = createStaffEnquiry(user!, req.body);
     await sendLifecycleWhatsApp('new_enquiry', 'enquiry', enquiry.id, `New enquiry ${enquiry.refCode} received. Our team will follow up.`);
     res.status(201).json(enquiry);
+  });
+
+  app.post('/api/enquiries/forward', async (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!hasPermission(user, 'manage_enquiries')) {
+      res.status(user ? 403 : 401).json({ error: 'Enquiry management permission required.' });
+      return;
+    }
+    const enquiryId = typeof req.body?.enquiryId === 'string' ? req.body.enquiryId.trim() : '';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!enquiryId || enquiryId.length > 80 || !message || message.length > 4096) {
+      res.status(422).json({ error: 'A valid enquiry and follow-up message are required.' });
+      return;
+    }
+    try {
+      const enquiry = forwardEnquiryToDirector(user!, enquiryId);
+      if (!enquiry) {
+        res.status(404).json({ error: 'Enquiry not found or already archived.' });
+        return;
+      }
+      const appUrl = (process.env.APP_URL || '').replace(/\/+$/, '');
+      await sendOperationalEmailToRoles(
+        'new_enquiry',
+        ['director', 'superadmin'],
+        `HI-SOTECH enquiry forwarded for follow-up: ${enquiry.refCode}`,
+        [
+          `Enquiry ${enquiry.refCode} has been forwarded by ${user!.name}.`,
+          '',
+          `Customer: ${enquiry.customerName}`,
+          `Phone / WhatsApp: ${enquiry.phone}`,
+          `Email: ${enquiry.email || 'Not provided'}`,
+          `Location: ${enquiry.location}`,
+          `Channel: ${enquiry.channel}`,
+          `Enquiry details: ${enquiry.needSummary}`,
+          '',
+          'Follow-up draft / note:',
+          message,
+          '',
+          `Open the enquiry workspace: ${appUrl}/#workspace?tab=enquiries`,
+        ].join('\n'),
+      );
+      res.json({ ok: true });
+    } catch (error) {
+      const message = (error as Error).message;
+      res.status(message.includes('not found or already archived') ? 404 : 422).json({ error: message });
+    }
+  });
+
+  app.post('/api/enquiries/archive', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!hasPermission(user, 'manage_enquiries')) {
+      res.status(user ? 403 : 401).json({ error: 'Enquiry management permission required.' });
+      return;
+    }
+    const enquiryId = typeof req.body?.enquiryId === 'string' ? req.body.enquiryId.trim() : '';
+    if (!enquiryId || enquiryId.length > 80) {
+      res.status(422).json({ error: 'A valid enquiry is required.' });
+      return;
+    }
+    try {
+      archiveEnquiry(user!, enquiryId);
+      res.json({ ok: true });
+    } catch (error) {
+      const message = (error as Error).message;
+      res.status(message.includes('not found or already archived') ? 404 : 422).json({ error: message });
+    }
   });
 
   app.post('/api/customers/provision', async (req, res) => {

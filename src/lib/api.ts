@@ -401,6 +401,18 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  forwardEnquiryToDirector: (enquiryId: string, message: string) =>
+    request<{ ok: boolean }>('/api/enquiries/forward', {
+      method: 'POST',
+      body: JSON.stringify({ enquiryId, message }),
+    }),
+
+  archiveEnquiry: (enquiryId: string) =>
+    request<{ ok: boolean }>('/api/enquiries/archive', {
+      method: 'POST',
+      body: JSON.stringify({ enquiryId }),
+    }),
+
   upsertCatalog: (payload: {
     sku: string;
     name: string;
