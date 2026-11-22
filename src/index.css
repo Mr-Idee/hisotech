@@ -146,6 +146,12 @@
   stroke: none;
 }
 
+.inverter-node .inverter-status-led {
+  animation: inverterLedBreathe 2.5s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
 .house-window {
   fill: #fbbf24;
   stroke: none;
@@ -219,6 +225,36 @@
   50% {
     opacity: 1;
     transform: scale(1.15);
+  }
+}
+
+@keyframes inverterLedBreathe {
+  0%, 100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes noticeEnter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-notice-in {
+  animation: noticeEnter 180ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-notice-in {
+    animation: none;
   }
 }
 

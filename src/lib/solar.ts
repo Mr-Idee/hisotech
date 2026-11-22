@@ -511,15 +511,10 @@ export function calculateStoreOrderTotals(
   const subtotalNgn = Math.round(
     resolvedItems.reduce((sum, it) => sum + it.qty * it.unitPriceNgn, 0)
   );
-  const deliveryFeeNgn =
-    resolvedItems.length === 0 ||
-    deliveryMethod === 'Abuja Warehouse Pickup' ||
-    subtotalNgn >= 5000000
-      ? 0
-      : 25000;
+  const deliveryFeeNgn = 0;
   const safeTaxRate = Math.min(100, Math.max(0, Number(taxPercent) || 0));
   const taxNgn = Math.round(subtotalNgn * (safeTaxRate / 100));
-  const totalNgn = subtotalNgn + deliveryFeeNgn + taxNgn;
+  const totalNgn = subtotalNgn + taxNgn;
 
   return { resolvedItems, subtotalNgn, deliveryFeeNgn, taxNgn, totalNgn };
 }

@@ -49,13 +49,13 @@ test('only approved estimator quotations can provision a customer account and th
       'Solar enquiry', '[]', estimator ? '{}' : null, 'Quoted', 'admin-user', new Date().toISOString(),
     );
   };
-  const addQuote = (id: string, enquiryId: string, status: string) => {
+  const addQuote = (id: string, enquiryId: string, status: string, itemsJson = '[]') => {
     database!.prepare(
       'INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by, approved_at, items_json, revisions_json, created_at) ' +
       'VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?, NULL, NULL, ?, ?, ?)'
     ).run(
       id, `QUO-${id}`, enquiryId, 'Test Customer', status, 'Solar system', 'Terms', '',
-      '2026-01-01', '2026-01-08', '[]', '[]', new Date().toISOString(),
+      '2026-01-01', '2026-01-08',       itemsJson, '[]', new Date().toISOString(),
     );
   };
 
@@ -100,4 +100,35 @@ test('only approved estimator quotations can provision a customer account and th
     () => workflow!.setupCustomerPassword(account.email, account.pin, 'Another long password!'),
     /invalid or has expired/,
   );
+
+  addEnquiry('enq-payment', 'payment@example.com', true);
+  addQuote('quote-payment', 'enq-payment', 'Approved', JSON.stringify([{
+    sku: 'INV-1', description: 'Solar inverter', unit: 'unit', qty: 1, unitPriceNgn: 1000,
+  }]));
+  database!.prepare(
+    'INSERT INTO store_orders (id, order_code, enquiry_id, ref_code, customer_name, email, phone, location, delivery_address, delivery_method, payment_method, notes, items_json, subtotal_ngn, delivery_fee_ngn, tax_ngn, total_ngn, status, created_at, updated_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    'order-payment', 'ORD-payment', 'enq-payment', 'REF-enq-payment', 'Test Customer', 'payment@example.com',
+    '+2348012345678', 'Abuja', 'Abuja', 'Abuja Warehouse Pickup', 'Bank Transfer on Invoice', '',
+    '[]', 1000, 0, 0, 1000, 'Pending', new Date().toISOString(), new Date().toISOString(),
+  );
+  assert.throws(
+    () => workflow!.saveQuotation(actor, {
+      enquiryId: 'enq-payment', customerName: 'Test Customer', scope: 'Solar', terms: 'Terms',
+      note: '', discountNgn: 0, taxPercent: 0, validUntil: '2026-01-08', items: [],
+    }),
+    /quotation already exists for this Store order/,
+  );
+  workflow!.updateStoreOrderStatus(actor, { orderId: 'order-payment', status: 'Delivered' });
+  const invoice = workflow!.issueInvoice(actor, 'quote-payment');
+  const firstPayment = workflow!.recordPayment(actor, {
+    invoiceId: invoice.id, amountNgn: 500, paymentDate: '2026-01-01', method: 'Transfer', reference: 'first', evidenceNote: '',
+  });
+  assert.equal(workflow!.verifyPayment(actor, firstPayment.id, 'Confirmed').invoiceStatus, 'Confirmed');
+  const secondPayment = workflow!.recordPayment(actor, {
+    invoiceId: invoice.id, amountNgn: 500, paymentDate: '2026-01-02', method: 'Transfer', reference: 'second', evidenceNote: '',
+  });
+  assert.equal(workflow!.verifyPayment(actor, secondPayment.id, 'Confirmed').invoiceStatus, 'Completed');
+  assert.equal((database!.prepare('SELECT status FROM store_orders WHERE id=?').get('order-payment') as { status: string }).status, 'Completed');
 });

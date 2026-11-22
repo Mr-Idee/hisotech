@@ -47,6 +47,180 @@ function hiso_send_lifecycle_email_to_roles(string $eventKey, array $roles, stri
     }
 }
 
+function hiso_send_enquiry_emails(array $enquiry, ?string $quoteCode = null): void {
+    $eventKey = 'new_enquiry';
+    global $CONFIG;
+    $appUrl = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/');
+    $name = trim((string)($enquiry['customerName'] ?? ''));
+    $email = trim((string)($enquiry['email'] ?? ''));
+    $id = (string)($enquiry['id'] ?? '');
+    $refCode = (string)($enquiry['refCode'] ?? '');
+    $customerMessage = "Hello {$name},\n\n"
+        . "We have received your HI-SOTECH enquiry {$refCode}"
+        . ($quoteCode ? " (load estimate {$quoteCode})" : '') . ".\n"
+        . "A representative will review your request and get back to you shortly using the WhatsApp number you provided.\n\n"
+        . "Thank you,\nHI-SOTECH Solar Solutions";
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        hiso_communications_log($eventKey, 'enquiry', $id, 'email', 'skipped', 'recipient_email_unavailable');
+    } else {
+        try {
+            hiso_send_mail($email, 'We received your HI-SOTECH enquiry ' . $refCode, $customerMessage);
+            hiso_communications_log($eventKey, 'enquiry', $id, 'email', 'sent');
+        } catch (Throwable $error) {
+            hiso_log_mail_failure($error);
+            hiso_communications_log($eventKey, 'enquiry', $id, 'email', 'failed', hiso_mail_failure_category($error));
+        }
+    }
+
+    $adminMessage = "A customer has submitted a HI-SOTECH enquiry.\n\n"
+        . 'Name: ' . $name . "\n"
+        . 'Phone / WhatsApp: ' . trim((string)($enquiry['phone'] ?? '')) . "\n"
+        . 'Email: ' . ($email !== '' ? $email : 'Not provided') . "\n"
+        . 'Location: ' . trim((string)($enquiry['location'] ?? '')) . "\n"
+        . 'Enquiry code: ' . $refCode . "\n"
+        . ($quoteCode ? "Estimator quotation: {$quoteCode}\n" : '')
+        . 'Details: ' . trim((string)($enquiry['needSummary'] ?? '')) . "\n\n"
+        . 'Open the enquiry workspace to follow up: ' . $appUrl . '/#workspace?tab=enquiries';
+    hiso_send_lifecycle_email_to_roles(
+        $eventKey,
+        ['admin', 'superadmin'],
+        'New enquiry ' . $refCode . ': ' . $name,
+        $adminMessage
+    );
+}
+
+function hiso_send_enquiry_confirmation_whatsapp(
+    string $enquiryId,
+    string $phone,
+    string $name,
+    string $refCode,
+    ?string $quoteCode = null
+): void {
+    $message = "Hello {$name}, we have received your HI-SOTECH enquiry {$refCode}"
+        . ($quoteCode ? " and load estimate {$quoteCode}" : '')
+        . '. A representative will get back to you shortly using this WhatsApp number. Thank you.';
+    try {
+        $contact = hiso_whatsapp_consent_contact('enquiry', $enquiryId, 'operational');
+    } catch (Throwable $error) {
+        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'failed', 'consent_lookup_failed');
+        return;
+    }
+    if (!$contact || (string)$contact['phone'] !== $phone) {
+        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'skipped', 'no_active_operational_consent');
+        return;
+    }
+    try {
+        $config = hiso_whatsapp_template_config('new_enquiry');
+        hiso_whatsapp_send_template($config, $phone, $message);
+        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'sent');
+    } catch (Throwable $error) {
+        $configured = str_contains(strtolower($error->getMessage()), 'not configured')
+            || str_contains(strtolower($error->getMessage()), 'configuration')
+            || str_contains(strtolower($error->getMessage()), 'template header');
+        hiso_communications_log(
+            'new_enquiry', 'enquiry', $enquiryId, 'whatsapp',
+            $configured ? 'not_configured' : 'failed',
+            $configured ? 'template_or_credentials_missing' : 'provider_delivery_failed'
+        );
+    }
+}
+
+function hiso_send_store_order_emails(array $order): void {
+    $eventKey = 'store_order_created';
+    $id = (string)($order['enquiryId'] ?? '');
+    $name = trim((string)($order['customerName'] ?? ''));
+    $orderCode = (string)($order['orderCode'] ?? '');
+    $email = trim((string)($order['email'] ?? ''));
+    $items = is_array($order['items'] ?? null) ? $order['items'] : [];
+    $itemRows = implode("\n", array_map(static fn($item) =>
+        (int)$item['qty'] . ' × ' . (string)$item['name'] . ' — ₦' .
+        number_format((float)$item['qty'] * (float)$item['unitPriceNgn']),
+        $items
+    ));
+    $customerMessage = "Hello {$name},\n\n"
+        . "We received your purchase order {$orderCode} (enquiry reference " . (string)($order['refCode'] ?? '') . ").\n\n"
+        . "Items:\n{$itemRows}\n\n"
+        . 'Items subtotal: ₦' . number_format((float)($order['subtotalNgn'] ?? 0)) . "\n"
+        . 'VAT: ₦' . number_format((float)($order['taxNgn'] ?? 0)) . "\n"
+        . "Logistics / delivery: TBD\n"
+        . 'Current total excluding delivery: ₦' . number_format((float)($order['totalNgn'] ?? 0)) . "\n\n"
+        . "Your purchase order is pending Director confirmation. We will confirm delivery/logistics pricing and any additional items before issuing your invoice. No payment is due from this purchase-order email.\n\n"
+        . "Thank you,\nHI-SOTECH Solar Solutions";
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        hiso_communications_log($eventKey, 'enquiry', $id, 'email', 'skipped', 'recipient_email_unavailable');
+    } else {
+        try {
+            hiso_send_mail($email, 'HI-SOTECH purchase order ' . $orderCode . ' received — pending confirmation', $customerMessage);
+            hiso_communications_log($eventKey, 'enquiry', $id, 'email', 'sent');
+        } catch (Throwable $error) {
+            hiso_log_mail_failure($error);
+            hiso_communications_log($eventKey, 'enquiry', $id, 'email', 'failed', hiso_mail_failure_category($error));
+        }
+    }
+
+    global $CONFIG;
+    $appUrl = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/');
+    $adminMessage = "New customer purchase order {$orderCode}; status: Pending Director confirmation.\n\n"
+        . "Customer: {$name}\n"
+        . 'Phone / WhatsApp: ' . trim((string)($order['phone'] ?? '')) . "\n"
+        . 'Email: ' . ($email !== '' ? $email : 'Not provided') . "\n"
+        . 'Location: ' . trim((string)($order['location'] ?? '')) . "\n"
+        . 'Delivery method/address: ' . (string)($order['deliveryMethod'] ?? '') . ' — ' . (string)($order['deliveryAddress'] ?? '') . "\n"
+        . 'Enquiry reference: ' . (string)($order['refCode'] ?? '') . "\n"
+        . "Items:\n{$itemRows}\n"
+        . 'Subtotal: ₦' . number_format((float)($order['subtotalNgn'] ?? 0)) . "\n"
+        . 'VAT: ₦' . number_format((float)($order['taxNgn'] ?? 0)) . "\n"
+        . "Logistics / delivery: TBD\n"
+        . 'Current total excluding delivery: ₦' . number_format((float)($order['totalNgn'] ?? 0)) . "\n"
+        . 'Customer notes: ' . (trim((string)($order['notes'] ?? '')) ?: 'None') . "\n\n"
+        . 'Review and follow up: ' . $appUrl . '/#workspace?tab=orders';
+    hiso_send_lifecycle_email_to_roles(
+        $eventKey, ['admin', 'superadmin', 'director'],
+        'Purchase order ' . $orderCode . ' awaits Director confirmation', $adminMessage
+    );
+}
+
+function hiso_send_invoice_issued_emails(array $invoice): void {
+    $eventKey = 'invoice_status';
+    $enquiryId = (string)($invoice['enquiryId'] ?? '');
+    $name = trim((string)($invoice['customerName'] ?? ''));
+    $email = trim((string)($invoice['email'] ?? ''));
+    $invoiceCode = (string)($invoice['invoiceCode'] ?? '');
+    $items = is_array($invoice['items'] ?? null) ? $invoice['items'] : [];
+    $itemRows = implode("\n", array_map(static fn($item) =>
+        (float)$item['qty'] . ' × ' . (string)($item['description'] ?? $item['name'] ?? '') . ' — ₦' .
+        number_format((float)$item['qty'] * (float)$item['unitPriceNgn']),
+        $items
+    ));
+    global $CONFIG;
+    $appUrl = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/');
+    $message = "Hello {$name},\n\n"
+        . "Your HI-SOTECH invoice {$invoiceCode} has been issued and is pending payment.\n\n"
+        . "Invoice items:\n{$itemRows}\n\n"
+        . 'Amount due: ₦' . number_format((float)($invoice['totalNgn'] ?? 0)) . "\n"
+        . 'View your account and invoice at: ' . $appUrl . '/#customer' . "\n\n"
+        . "Please contact the HI-SOTECH front desk if you have any questions.";
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        hiso_communications_log($eventKey, 'enquiry', $enquiryId, 'email', 'skipped', 'recipient_email_unavailable');
+    } else {
+        try {
+            hiso_send_mail($email, 'HI-SOTECH invoice ' . $invoiceCode, $message);
+            hiso_communications_log($eventKey, 'enquiry', $enquiryId, 'email', 'sent');
+        } catch (Throwable $error) {
+            hiso_log_mail_failure($error);
+            hiso_communications_log($eventKey, 'enquiry', $enquiryId, 'email', 'failed', hiso_mail_failure_category($error));
+        }
+    }
+    hiso_send_lifecycle_email_to_roles(
+        $eventKey,
+        ['admin', 'superadmin'],
+        'Invoice issued: ' . $invoiceCode,
+        "Invoice {$invoiceCode} for {$name} was issued.\nCustomer email: " . ($email ?: 'Not provided') .
+            "\nAmount: ₦" . number_format((float)($invoice['totalNgn'] ?? 0)) .
+            "\nFollow up: " . $appUrl . '/#workspace?tab=invoices'
+    );
+}
+
 function hiso_send_account_setup_email(
     string $eventKey,
     string $recipientType,
@@ -75,7 +249,10 @@ function hiso_send_account_setup_email(
         . "Open {$link}, choose first-time password setup, enter the PIN, and create a password of at least 12 characters.\n"
         . "If you did not expect this account, contact HI-SOTECH support.";
     try {
-        hiso_send_mail($email, 'Your HI-SOTECH account setup instructions', $message);
+        $subject = $eventKey === 'customer_password_reset'
+            ? 'Your HI-SOTECH password reset instructions'
+            : 'Your HI-SOTECH account setup instructions';
+        hiso_send_mail($email, $subject, $message);
         hiso_communications_log($eventKey, $recipientType, $recipientId, 'email', 'sent');
         return true;
     } catch (Throwable $error) {
@@ -133,7 +310,7 @@ function hiso_whatsapp_send(string $phone, string $message): void {
     global $CONFIG;
     $phone = trim($phone);
     if (!preg_match('/^\+[1-9][0-9]{7,14}$/', $phone)) {
-        throw new InvalidArgumentException('Customer phone number is not valid E.164 format.');
+        throw new InvalidArgumentException('Please use the required country code for the WhatsApp number (for example, +234…).');
     }
     $characterCount = preg_match_all('/./us', $message);
     if (trim($message) === '' || $characterCount === false || $characterCount > 4096 || strlen($message) > 16384) {
@@ -300,7 +477,7 @@ function hiso_save_whatsapp_recipient_consent(
         return;
     }
     if (!preg_match('/^\+[1-9][0-9]{7,14}$/', $phone)) {
-        throw new InvalidArgumentException('WhatsApp consent requires a valid E.164 phone number.');
+        throw new InvalidArgumentException('Please use the required country code for the WhatsApp number (for example, +234…).');
     }
     $pdo->prepare(
         'INSERT INTO whatsapp_recipient_consents (recipient_type, recipient_id, purpose, phone_at_consent, consented_at, revoked_at, consent_source) ' .
@@ -527,7 +704,8 @@ function hiso_send_lifecycle_whatsapp(
     string $eventKey,
     string $entityType,
     string $entityId,
-    string $message
+    string $message,
+    bool $sendEmail = true
 ): void {
     $valid = ['new_enquiry', 'quote_status', 'invoice_status', 'ticket_status', 'installation_status'];
     if (!in_array($eventKey, $valid, true)) return;
@@ -615,7 +793,7 @@ function hiso_send_lifecycle_whatsapp(
         $recipientType = (string)$target['recipient_type'];
         $recipientId = (string)$target['id'];
         $email = trim((string)($target['email'] ?? ''));
-        if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        if ($sendEmail && filter_var($email, FILTER_VALIDATE_EMAIL)) {
             global $CONFIG;
             $smtpConfigured = trim((string)($CONFIG['MAIL_HOST'] ?? '')) !== ''
                 && trim((string)($CONFIG['MAIL_USERNAME'] ?? '')) !== ''
@@ -630,7 +808,7 @@ function hiso_send_lifecycle_whatsapp(
                     hiso_communications_log($eventKey, $recipientType, $recipientId, 'email', 'failed', 'smtp_delivery_failed');
                 }
             }
-        } else {
+        } elseif ($sendEmail) {
             hiso_communications_log($eventKey, $recipientType, $recipientId, 'email', 'skipped', 'recipient_email_unavailable');
         }
 

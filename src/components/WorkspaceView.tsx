@@ -1,6 +1,5 @@
 import {
   Bell,
-  CheckCircle2,
   ClipboardList,
   Eye,
   EyeOff,
@@ -31,6 +30,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
 import { listenForStaffLogout, notifyStaffLogoutAcrossTabs } from '../lib/auth-sync';
 import { createWhatsAppLink } from '../lib/communications';
+import { notifyUser } from '../lib/notifications';
 import {
   ALL_PERMISSIONS,
   buildQuoteLinesFromEstimate,
@@ -49,6 +49,7 @@ import type {
   RoleDefinition,
   ServiceTicket,
   StaffStatus,
+  StoreOrderRecord,
   StoreOrderStatus,
   TicketStatus,
   UserRole,
@@ -112,7 +113,6 @@ export function WorkspaceView({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mainContentRef = useRef<HTMLElement>(null);
   const authEpochRef = useRef(0);
-  const [toastMsg, setToastMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   // Login form state
@@ -233,8 +233,7 @@ export function WorkspaceView({
   }
 
   function showToast(msg: string) {
-    setToastMsg(msg);
-    setTimeout(() => setToastMsg(''), 4000);
+    notifyUser(msg);
   }
 
   async function loadWorkspace() {
@@ -404,7 +403,7 @@ export function WorkspaceView({
     }
   }
 
-  function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord) {
+  function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord, storeOrder?: StoreOrderRecord) {
     if (!data) return;
     setErrorMsg('');
     if (existing) {
@@ -422,8 +421,30 @@ export function WorkspaceView({
       setEditQuoteId(undefined);
       setQuoteEnqId(enq.id);
       setQuoteCustomer(enq.customerName);
-      setQuoteScope(`Turnkey hybrid solar engineering supply and installation for ${enq.location}.`);
-      setQuoteItems(buildQuoteLinesFromEstimate(enq.estimate, data.catalog, data.settings.estimator));
+      if (storeOrder) {
+        setQuoteScope(`Supply of items in purchase order ${storeOrder.orderCode} for ${storeOrder.location}.`);
+        setQuoteNote(`Prepared from customer purchase order ${storeOrder.orderCode}. Logistics / delivery remains TBD until priced.`);
+        setQuoteItems([
+          ...storeOrder.items.map((item) => ({
+            sku: item.sku,
+            description: item.name,
+            unit: item.unit,
+            qty: item.qty,
+            unitPriceNgn: item.unitPriceNgn,
+          })),
+          {
+            sku: `TBD-LOG-${storeOrder.orderCode}`.slice(0, 80),
+            description: 'Logistics / Delivery — To Be Determined',
+            unit: 'lot',
+            qty: 1,
+            unitPriceNgn: 0,
+            isTbd: true,
+          },
+        ]);
+      } else {
+        setQuoteScope(`Turnkey hybrid solar engineering supply and installation for ${enq.location}.`);
+        setQuoteItems(buildQuoteLinesFromEstimate(enq.estimate, data.catalog, data.settings.estimator));
+      }
     } else {
       setEditQuoteId(undefined);
       setQuoteEnqId('');
@@ -947,12 +968,6 @@ export function WorkspaceView({
       {/* Main Content */}
       <main ref={mainContentRef} className={`col-span-12 min-h-0 min-w-0 overflow-visible p-4 sm:p-6 lg:overflow-y-auto lg:overscroll-contain lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
 
-        {toastMsg && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-sm font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
-            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-            {toastMsg}
-          </div>
-        )}
         {errorMsg && (
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3.5 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300">
             {errorMsg}
@@ -1408,6 +1423,7 @@ export function WorkspaceView({
                             <option value="Confirmed">Confirmed</option>
                             <option value="Dispatched">Dispatched</option>
                             <option value="Delivered">Delivered</option>
+                            <option value="Completed" disabled>Completed</option>
                             <option value="Cancelled">Cancelled</option>
                           </select>
                           <button
@@ -1430,14 +1446,21 @@ export function WorkspaceView({
                           >
                             {orderSavingId === ord.id ? 'Saving...' : 'Update Status'}
                           </button>
-                          {linkedEnquiry && hasPermission(user, 'draft_quotes') && (
+                          {linkedEnquiry && hasPermission(user, 'draft_quotes')
+                            && !data.quotes.some((quote) => quote.enquiryId === ord.enquiryId)
+                            && (
                             <button
                               type="button"
-                              onClick={() => openQuoteBuilder(linkedEnquiry)}
+                              onClick={() => openQuoteBuilder(linkedEnquiry, undefined, ord)}
                               className="rounded-lg border border-[#081E3E] px-3 py-2 text-xs font-semibold text-[#081E3E] hover:bg-[#081E3E] hover:text-white dark:border-slate-600 dark:text-white"
                             >
-                              Draft Quote
+                              Prepare &amp; Submit Purchase Quote
                             </button>
+                          )}
+                          {data.quotes.some((quote) => quote.enquiryId === ord.enquiryId) && (
+                            <span className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                              Quote: {data.quotes.find((quote) => quote.enquiryId === ord.enquiryId)?.status}
+                            </span>
                           )}
                         </div>
                       </div>
@@ -1475,7 +1498,7 @@ export function WorkspaceView({
 
                       <div className="font-mono-num mt-3 flex flex-wrap items-center justify-end gap-4 text-xs text-slate-600 dark:text-slate-300">
                         <span>Subtotal: {formatNgn(ord.subtotalNgn)}</span>
-                        <span>Delivery: {ord.deliveryFeeNgn === 0 ? 'Free' : formatNgn(ord.deliveryFeeNgn)}</span>
+                        <span>Logistics / Delivery: TBD</span>
                         <span>VAT (7.5%): {formatNgn(ord.taxNgn)}</span>
                         <span className="text-sm font-bold text-[#D61F26]">Total: {formatNgn(ord.totalNgn)}</span>
                       </div>
@@ -1586,6 +1609,7 @@ export function WorkspaceView({
                         && q.status === 'Approved'
                         && data.enquiries.some((enquiry) => enquiry.id === q.enquiryId && enquiry.estimate)
                         && (
+                          <>
                           <button
                             type="button"
                             disabled={customerAccountCreatingId === q.id || customerAccountProvisionedQuoteIds.includes(q.id)}
@@ -1610,6 +1634,26 @@ export function WorkspaceView({
                                 ? 'Setup PIN Emailed'
                                 : 'Approve Profile & Email PIN'}
                           </button>
+                          <button
+                            type="button"
+                            disabled={customerAccountCreatingId === q.id}
+                            onClick={async () => {
+                              if (!window.confirm(`Send a password reset PIN to the existing customer account at ${q.customerName}'s enquiry email? This will sign out all active customer sessions.`)) return;
+                              setCustomerAccountCreatingId(q.id);
+                              try {
+                                const result = await api.resetCustomerPassword(q.id);
+                                showToast(`Password reset PIN emailed to ${result.email}.`);
+                              } catch (error) {
+                                setErrorMsg((error as Error).message);
+                              } finally {
+                                setCustomerAccountCreatingId(null);
+                              }
+                            }}
+                            className="rounded-lg border border-amber-600 px-3 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-60 dark:border-amber-400 dark:text-amber-300"
+                          >
+                            Reset Customer Password
+                          </button>
+                          </>
                         )}
                       {hasPermission(user, 'manage_invoices') && q.status === 'Approved' && (
                         <button
@@ -1783,7 +1827,7 @@ export function WorkspaceView({
                           Edit
                         </button>
                       )}
-                      {user.role === 'superadmin' && s.mustSetPassword && (
+                      {['admin', 'superadmin'].includes(user.role) && (
                         <button
                           type="button"
                           onClick={async () => {
@@ -1797,7 +1841,7 @@ export function WorkspaceView({
                           }}
                           className="rounded-lg border border-[#D61F26] px-3 py-1 text-xs font-semibold text-[#D61F26]"
                         >
-                          Resend Setup PIN
+                          Reset Password / Resend PIN
                         </button>
                       )}
                     </div>
@@ -2236,9 +2280,12 @@ export function WorkspaceView({
                       value={it.unitPriceNgn}
                       onChange={(e) =>
                         setQuoteItems((prev) =>
-                          prev.map((x, i) => (i === idx ? { ...x, unitPriceNgn: Number(e.target.value) } : x))
+                          prev.map((x, i) => (i === idx
+                            ? { ...x, unitPriceNgn: Number(e.target.value), isTbd: Number(e.target.value) === 0 }
+                            : x))
                         )
                       }
+                      placeholder={it.isTbd ? 'TBD' : 'Unit price'}
                       className="font-mono-num col-span-3 rounded border border-slate-300 px-2 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
                     />
                     <button

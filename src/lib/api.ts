@@ -23,6 +23,7 @@ import type {
 } from './types';
 import type { HomepageContent } from './homepage';
 import type { NewsletterAttachment } from './communications';
+import { notifyUser } from './notifications';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData;
@@ -39,7 +40,9 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   try {
     data = await res.json();
   } catch {
-    throw new Error('Server returned an invalid response.');
+    const error = new Error('Server returned an invalid response.');
+    notifyUser(error.message, 'error');
+    throw error;
   }
   if (!res.ok) {
     const message =
@@ -49,6 +52,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       typeof data.error === 'string'
         ? data.error
         : `Request failed (${res.status})`;
+    notifyUser(message, 'error');
     throw new Error(message);
   }
   return data as T;
@@ -73,6 +77,12 @@ export const api = {
     request<{ homepage: Partial<HomepageContent> }>('/api/website/content', {
       method: 'POST',
       body: JSON.stringify({ homepage }),
+    }),
+
+  resetCustomerPassword: (quoteId: string) =>
+    request<{ ok: boolean; email: string }>('/api/customers/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ quoteId }),
     }),
 
   submitPublicEnquiry: (payload: {
@@ -113,6 +123,7 @@ export const api = {
         id: string;
         invoiceCode: string;
         totalNgn: number;
+        status: 'Pending' | 'Confirmed' | 'Completed';
         confirmedPaidNgn: number;
         balanceNgn: number;
         customerAccepted: boolean;
@@ -442,7 +453,7 @@ export const api = {
     }),
 
   issueInvoice: (quotationId: string) =>
-    request<{ id: string; invoiceCode: string }>('/api/invoices', {
+    request<{ id: string; invoiceCode: string; totalNgn?: number }>('/api/invoices', {
       method: 'POST',
       body: JSON.stringify({ quotationId }),
     }),

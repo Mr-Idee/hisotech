@@ -231,7 +231,7 @@ export function TrackerView({ initialRef, onOpenDocument, onOpenCustomerPortal }
                       <div className="font-mono-num text-sm font-bold text-[#081E3E] dark:text-white">
                         {data.invoice.invoiceCode}
                       </div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400">Due {data.invoice.dueDate}</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">{data.invoice.status} · Due {data.invoice.dueDate}</div>
                     </div>
                     <button
                       type="button"

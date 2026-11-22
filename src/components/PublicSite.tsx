@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { notifyUser } from '../lib/notifications';
 import { formatNgn } from '../lib/solar';
 import type { CatalogItem } from '../lib/types';
 import type { HomepageContent } from '../lib/homepage';
@@ -314,6 +315,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
       setContactMessage('');
       setWhatsappUpdatesConsent(false);
       setWhatsappMarketingConsent(false);
+      notifyUser(`Thank you, ${contactName.trim()}. Your enquiry ${created.refCode} has been received.`);
     } catch (err) {
       setContactError((err as Error).message);
     } finally {
@@ -413,7 +415,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                     <rect x="224" y="105" width="110" height="89" rx="14" />
                     <rect className="inverter-display" x="244" y="121" width="70" height="31" rx="5" />
                     <path d="M255 139h18l7-9 8 15 7-6h10M279 162h0" />
-                    <circle className="status-led" cx="315" cy="174" r="4" />
+                    <circle className="status-led inverter-status-led" cx="315" cy="174" r="4" />
                     <text x="279" y="210" textAnchor="middle">HYBRID INVERTER</text>
                   </g>
                   <g className="flow-node battery-node">

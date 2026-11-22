@@ -202,6 +202,51 @@ function hiso_clear_customer_initial_pin(string $customerId): void {
     )->execute([$customerId]);
 }
 
+function hiso_issue_customer_password_reset_pin(array $actor, string $quoteId): array {
+    if (!in_array($actor['role'] ?? '', ['admin', 'superadmin'], true)) {
+        throw new RuntimeException('Only Admin can issue customer password reset instructions.');
+    }
+    $pdo = hiso_pdo();
+    $stmt = $pdo->prepare(
+        'SELECT e.id, e.customer_name, e.email, e.phone, c.id AS customer_id, c.password_hash, c.email_verified_at ' .
+        'FROM quotations q JOIN enquiries e ON e.id=q.enquiry_id ' .
+        'JOIN customer_profiles c ON LOWER(c.email)=LOWER(e.email) ' .
+        'WHERE q.id=? AND q.status="Approved" AND e.estimate_json IS NOT NULL LIMIT 1'
+    );
+    $stmt->execute([$quoteId]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$account || empty($account['password_hash']) || empty($account['email_verified_at'])) {
+        throw new RuntimeException('An active verified customer account was not found for this approved estimator enquiry.');
+    }
+    $pin = (string)random_int(1000, 9999);
+    $pinHash = password_hash($pin, PASSWORD_DEFAULT);
+    if (!is_string($pinHash)) {
+        throw new RuntimeException('Customer account setup could not be secured.');
+    }
+    $expires = gmdate('Y-m-d H:i:s', time() + 86400);
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare(
+            'UPDATE customer_profiles SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?'
+        )->execute([$pinHash, $expires, $account['customer_id']]);
+        $pdo->prepare('DELETE FROM customer_sessions WHERE customer_id=?')->execute([$account['customer_id']]);
+        $pdo->prepare('DELETE FROM customer_login_tokens WHERE customer_id=?')->execute([$account['customer_id']]);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $error;
+    }
+    hiso_audit($actor, 'RESET_CUSTOMER_PASSWORD', 'Customer', (string)$account['customer_id'], 'Issued one-time customer password reset instructions.');
+    return [
+        'id' => (string)$account['customer_id'],
+        'enquiryId' => (string)$account['id'],
+        'name' => (string)$account['customer_name'],
+        'email' => strtolower(trim((string)$account['email'])),
+        'phone' => (string)$account['phone'],
+        'pin' => $pin,
+    ];
+}
+
 function hiso_setup_customer_password(string $email, string $pin, string $password): void {
     if (!preg_match('/^\d{4}$/', $pin) || strlen($password) < 12 || strlen($password) > 128) {
         throw new InvalidArgumentException('Enter the four-digit PIN and a password between 12 and 128 characters.');
@@ -267,6 +312,27 @@ function hiso_setup_staff_password(string $identifier, string $pin, string $pass
     if ($update->rowCount() !== 1) {
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
     }
+}
+
+function hiso_issue_staff_password_reset_pin(array $actor, string $staffId): array {
+    if (!in_array($actor['role'] ?? '', ['admin', 'superadmin'], true)) {
+        throw new RuntimeException('Only Admin can reset staff passwords.');
+    }
+    $pdo = hiso_pdo();
+    $stmt = $pdo->prepare('SELECT id, name, username, email, phone FROM users WHERE id=? AND status="Active" LIMIT 1');
+    $stmt->execute([$staffId]);
+    $staff = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$staff) throw new RuntimeException('An active staff account was not found.');
+    $pin = (string)random_int(1000, 9999);
+    $pinHash = password_hash($pin, PASSWORD_DEFAULT);
+    if (!is_string($pinHash)) throw new RuntimeException('Staff account setup could not be secured.');
+    $expires = gmdate('Y-m-d H:i:s', time() + 86400);
+    $pdo->prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?')
+        ->execute([$pinHash, $expires, $staff['id']]);
+    $pdo->prepare('DELETE FROM sessions WHERE user_id=?')->execute([$staff['id']]);
+    hiso_audit($actor, 'RESET_STAFF_PASSWORD', 'Staff', (string)$staff['id'], 'Issued one-time staff password reset instructions.');
+    $staff['pin'] = $pin;
+    return $staff;
 }
 
 function hiso_user_permissions(string $role): array {

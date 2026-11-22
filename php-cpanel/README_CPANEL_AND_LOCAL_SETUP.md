@@ -34,8 +34,11 @@ For databases imported from an earlier version, first create and verify a restor
 
 The current homepage editor uses `homepage_sections`; that table is included in `schema.sql` for fresh installs and `migrations/002-homepage-sections.sql` for older databases. Import `migrations/003-communications-integrations.sql` and then `migrations/004-whatsapp-consent-lifecycle.sql` once on an existing database after taking a verified backup. Import `migrations/005-platform-settings.sql` once to enable invoice bank details and configurable estimator settings. Migration `005` is already included in `schema.sql` for fresh installs. Do not rerun migrations that have already been applied.
 Import `migrations/006-customer-equipment-photos.sql` once on an existing database after taking a backup to enable customer equipment photo storage. Import `migrations/007-pin-password-onboarding.sql` once to add the hashed initial-PIN, expiry, and forced-password fields for staff and customer accounts. Both migrations are already represented in `schema.sql` for fresh installs. Do not rerun migrations that have already been applied.
+Import `migrations/008-invoice-payment-order-completion.sql` once on an existing database after taking a backup. It adds invoice payment status and the completed Store-order state; both are already represented in `schema.sql` for fresh installs.
 
 Customer portal accounts are created by Admin only after a Director-approved estimator quotation. Admin approval sends the customer a four-digit, 24-hour setup PIN by email; the customer must use it once to create a password before accessing the portal. New staff receive the same forced password setup flow. Passwords and PINs are stored as hashes; only the delivery email contains the one-time PIN.
+
+Store checkout creates a pending purchase order (ORD), not an invoice. Director confirmation and Admin pricing of delivery/TBD lines are required before the Admin issues the customer invoice (INV). Invoice status becomes Confirmed after a verified partial payment and Completed once Director/Super Admin verification confirms payments cover the total. A Store order is marked Completed only when it has also been delivered.
 
 ## Communications integrations
 

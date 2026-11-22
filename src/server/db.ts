@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS invoices (
   discount_ngn REAL NOT NULL DEFAULT 0,
   tax_percent REAL NOT NULL DEFAULT 0,
   total_ngn REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Pending',
   bank_details_json TEXT NOT NULL,
   customer_accepted INTEGER NOT NULL DEFAULT 0,
   accepted_at TEXT,
@@ -422,6 +423,26 @@ ensureColumn('catalog_items', 'item_type', "item_type TEXT NOT NULL DEFAULT 'equ
 ensureColumn('catalog_items', 'grade', "grade TEXT NOT NULL DEFAULT 'Standard'");
 ensureColumn('catalog_items', 'watts', 'watts INTEGER');
 ensureColumn('catalog_items', 'description', "description TEXT NOT NULL DEFAULT ''");
+ensureColumn('invoices', 'status', "status TEXT NOT NULL DEFAULT 'Pending'");
+db.exec(`
+  UPDATE invoices
+  SET status = CASE
+    WHEN (SELECT COALESCE(SUM(amount_ngn), 0) FROM payments WHERE invoice_id = invoices.id AND status = 'Confirmed') >= total_ngn THEN 'Completed'
+    WHEN (SELECT COALESCE(SUM(amount_ngn), 0) FROM payments WHERE invoice_id = invoices.id AND status = 'Confirmed') > 0 THEN 'Confirmed'
+    ELSE 'Pending'
+  END
+`);
+db.exec(`
+  UPDATE store_orders
+  SET status = 'Completed'
+  WHERE status = 'Delivered'
+    AND EXISTS (SELECT 1 FROM invoices WHERE invoices.enquiry_id = store_orders.enquiry_id AND invoices.status = 'Completed')
+`);
+db.exec(`
+  UPDATE enquiries
+  SET status = 'Completed'
+  WHERE EXISTS (SELECT 1 FROM store_orders WHERE store_orders.enquiry_id = enquiries.id AND store_orders.status = 'Completed')
+`);
 ensureColumn('customer_profiles', 'email_verified_at', 'email_verified_at TEXT');
 ensureColumn('customer_profiles', 'password_hash', 'password_hash TEXT');
 ensureColumn('customer_profiles', 'initial_pin_hash', 'initial_pin_hash TEXT');
@@ -885,7 +906,7 @@ export function createPublicEnquiry(payload: {
   }
   if ((payload.whatsappUpdatesConsent || payload.whatsappMarketingConsent)
       && !/^\+[1-9]\d{7,14}$/.test(payload.phone.trim())) {
-    throw new Error('WhatsApp consent requires a valid E.164 phone number.');
+    throw new Error('Please use the required country code for the WhatsApp number (for example, +234…).');
   }
   const id = crypto.randomUUID();
   const refCode = nextCode('enquiries', 'ref_code', 'HISO');
@@ -1083,17 +1104,24 @@ export function updateStoreOrderStatus(
   actor: StaffMember,
   body: { orderId: string; status: StoreOrderStatus; notes?: string }
 ): void {
+  if (!['Pending', 'Confirmed', 'Dispatched', 'Delivered', 'Cancelled'].includes(body.status)) {
+    throw new Error('Store order status is invalid.');
+  }
   const existing = db.prepare('SELECT * FROM store_orders WHERE id = ? LIMIT 1').get(body.orderId) as Record<string, unknown> | undefined;
   if (!existing) throw new Error('Store order not found.');
   const now = new Date().toISOString();
   const nextNotes = body.notes !== undefined ? body.notes.trim() : String(existing.notes || '');
+  const invoicePaid = db.prepare(
+    "SELECT EXISTS(SELECT 1 FROM invoices i WHERE i.enquiry_id=? AND i.status='Completed') AS paid"
+  ).get(String(existing.enquiry_id)) as { paid: number };
+  const savedStatus: StoreOrderStatus = body.status === 'Delivered' && invoicePaid.paid ? 'Completed' : body.status;
   db.prepare('UPDATE store_orders SET status = ?, notes = ?, updated_at = ? WHERE id = ?').run(
-    body.status,
+    savedStatus,
     nextNotes,
     now,
     body.orderId
   );
-  if (body.status === 'Delivered') {
+  if (savedStatus === 'Completed') {
     db.prepare("UPDATE enquiries SET status = 'Completed' WHERE id = ?").run(String(existing.enquiry_id));
   }
   writeAudit(actor, 'UPDATE_ORDER', 'StoreOrder', String(existing.order_code), `Marked Store order ${existing.order_code} as ${body.status}.`);
@@ -1185,6 +1213,7 @@ export function getPublicTracking(refCode: string, customerEmail?: string) {
           id: String(inv.id),
           invoiceCode: String(inv.invoice_code),
           totalNgn: Number(inv.total_ngn),
+          status: String(inv.status || 'Pending'),
           confirmedPaidNgn: confirmedPaid,
           balanceNgn: Math.max(0, Number(inv.total_ngn) - confirmedPaid),
           customerAccepted: Boolean(inv.customer_accepted),
@@ -1376,7 +1405,7 @@ function recordWhatsAppRecipientConsent(
     return;
   }
 
-  if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new Error('WhatsApp consent requires a valid E.164 phone number.');
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new Error('Please use the required country code for the WhatsApp number (for example, +234…).');
   db.prepare(
     'INSERT INTO whatsapp_recipient_consents (recipient_type, recipient_id, purpose, phone_at_consent, consented_at, revoked_at, consent_source) VALUES (?, ?, ?, ?, ?, NULL, ?) ' +
     'ON CONFLICT(recipient_type, recipient_id, purpose) DO UPDATE SET phone_at_consent = excluded.phone_at_consent, consented_at = CASE WHEN whatsapp_recipient_consents.revoked_at IS NOT NULL OR whatsapp_recipient_consents.phone_at_consent <> excluded.phone_at_consent THEN excluded.consented_at ELSE whatsapp_recipient_consents.consented_at END, revoked_at = NULL, consent_source = excluded.consent_source'
@@ -1397,7 +1426,7 @@ export function updateStaffWhatsAppConsents(
   const staff = db.prepare("SELECT phone FROM users WHERE id = ? AND status = 'Active' LIMIT 1").get(staffId) as { phone: string } | undefined;
   if (!staff) throw new Error('Active staff account not found.');
   if ((consent.operational || consent.marketing) && !/^\+[1-9]\d{7,14}$/.test(staff.phone.trim())) {
-    throw new Error('Save a valid E.164 phone number in your staff profile before opting in.');
+    throw new Error('Please use the required country code in your staff phone number before opting in to WhatsApp.');
   }
   recordWhatsAppRecipientConsent('staff', staffId, 'operational', staff.phone.trim(), consent.operational, 'staff_self_service');
   recordWhatsAppRecipientConsent('staff', staffId, 'marketing', staff.phone.trim(), consent.marketing, 'staff_self_service');
@@ -1646,6 +1675,11 @@ export function getLifecycleNotificationTargets(
         else addTarget('enquiry', enquiry);
       }
     }
+    if (entity === 'invoice') {
+      const staff = db.prepare("SELECT id, name, email, phone FROM users WHERE status='Active' AND role IN ('admin','director','superadmin')")
+        .all() as { id: string; name: string; email: string; phone: string }[];
+      for (const person of staff) addTarget('staff', person);
+    }
     if (assignedEngineerId) {
       const engineer = db.prepare("SELECT id, name, email, phone FROM users WHERE id=? AND status='Active' LIMIT 1")
         .get(assignedEngineerId) as { id: string; name: string; email: string; phone: string } | undefined;
@@ -1883,6 +1917,48 @@ export function clearCustomerInitialPin(customerId: string): void {
     .run(customerId);
 }
 
+export function issueCustomerPasswordResetPin(actor: StaffMember, quoteId: string): {
+  id: string; enquiryId: string; name: string; email: string; phone: string; pin: string;
+} {
+  if (!['admin', 'superadmin'].includes(actor.role)) {
+    throw new Error('Only Admin can issue customer password reset instructions.');
+  }
+  const enquiry = db.prepare(
+    "SELECT e.id, e.customer_name, e.email, e.phone FROM quotations q " +
+    "JOIN enquiries e ON e.id=q.enquiry_id WHERE q.id=? AND q.status='Approved' AND e.estimate_json IS NOT NULL LIMIT 1"
+  ).get(quoteId) as { id: string; customer_name: string; email: string; phone: string } | undefined;
+  if (!enquiry) throw new Error('Only an approved estimator customer can receive a password reset.');
+  const account = db.prepare(
+    'SELECT id, password_hash, email_verified_at FROM customer_profiles WHERE LOWER(email)=LOWER(?) LIMIT 1'
+  ).get(enquiry.email.trim()) as { id: string; password_hash: string | null; email_verified_at: string | null } | undefined;
+  if (!account?.password_hash || !account.email_verified_at) {
+    throw new Error('An active verified customer account was not found for this enquiry.');
+  }
+  const pin = makeInitialPin();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(
+      'UPDATE customer_profiles SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?'
+    ).run(hashPassword(pin), expiresAt, account.id);
+    db.prepare('DELETE FROM customer_sessions WHERE customer_id=?').run(account.id);
+    db.prepare('DELETE FROM customer_login_tokens WHERE customer_id=?').run(account.id);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  writeAudit(actor, 'RESET_CUSTOMER_PASSWORD', 'Customer', account.id, 'Issued one-time customer password reset instructions.');
+  return {
+    id: account.id,
+    enquiryId: enquiry.id,
+    name: enquiry.customer_name,
+    email: enquiry.email.trim().toLowerCase(),
+    phone: enquiry.phone,
+    pin,
+  };
+}
+
 export function authenticateCustomer(emailValue: string, password: string): {
   sessionToken: string;
   profile: CustomerProfile;
@@ -1945,16 +2021,17 @@ export function setupStaffPassword(identifierValue: string, pin: string, passwor
 export function reissueStaffSetupPin(actor: StaffMember, staffId: string): {
   id: string; name: string; email: string; phone: string; username: string; pin: string;
 } {
-  if (actor.role !== 'superadmin') throw new Error('Only Super Admin can resend staff setup credentials.');
+  if (!['admin', 'superadmin'].includes(actor.role)) throw new Error('Only Admin can reset staff passwords.');
   const staff = db.prepare(
-    'SELECT id, name, email, phone, username FROM users WHERE id=? AND status="Active" AND must_set_password=1 LIMIT 1'
+    'SELECT id, name, email, phone, username FROM users WHERE id=? AND status="Active" LIMIT 1'
   ).get(staffId) as { id: string; name: string; email: string; phone: string; username: string } | undefined;
-  if (!staff) throw new Error('An active staff account awaiting password setup was not found.');
+  if (!staff) throw new Error('An active staff account was not found.');
   const pin = makeInitialPin();
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  db.prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=? WHERE id=? AND must_set_password=1')
+  db.prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?')
     .run(hashPassword(pin), expiresAt, staff.id);
-  writeAudit(actor, 'RESEND_STAFF_SETUP', 'Staff', staff.id, 'Resent staff first-sign-in setup instructions.');
+  db.prepare('DELETE FROM sessions WHERE user_id=?').run(staff.id);
+  writeAudit(actor, 'RESET_STAFF_PASSWORD', 'Staff', staff.id, 'Issued one-time staff password reset instructions.');
   return { ...staff, pin };
 }
 
@@ -2242,6 +2319,7 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
         discountNgn: Number(i.discount_ngn),
         taxPercent: Number(i.tax_percent),
         totalNgn: Number(i.total_ngn),
+        status: String(i.status || 'Pending') as InvoiceRecord['status'],
         bankDetails: JSON.parse(String(i.bank_details_json)),
         customerAccepted: Boolean(i.customer_accepted),
         acceptedAt: i.accepted_at ? String(i.accepted_at) : null,
@@ -2517,6 +2595,11 @@ export function saveQuotation(
     );
     code = String(existing.quote_code);
   } else {
+    const existingQuote = db.prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1').get(body.enquiryId);
+    const linkedOrder = db.prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1').get(body.enquiryId);
+    if (existingQuote && linkedOrder) {
+      throw new Error('A quotation already exists for this Store order. Revise the existing quotation instead.');
+    }
     const id = crypto.randomUUID();
     savedId = id;
     code = nextCode('quotations', 'quote_code', 'QUO');
@@ -2544,6 +2627,10 @@ export function decideQuotation(actor: StaffMember, quoteId: string, decision: '
     }
   }
   db.prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?').run(decision, actor.name, new Date().toISOString(), quoteId);
+  if (decision === 'Approved') {
+    db.prepare('UPDATE store_orders SET status = "Confirmed", updated_at = ? WHERE enquiry_id = ?')
+      .run(new Date().toISOString(), String(quote.enquiry_id));
+  }
   notifyRoleMembers(['admin'], `Quotation ${decision}: ${quote.quote_code}`, `${actor.name} marked ${quote.quote_code} as ${decision}.`, 'quotes', String(quote.quote_code));
   writeAudit(actor, 'DECIDE_QUOTE', 'Quotation', String(quote.quote_code), `Marked quotation ${decision}.`);
   return { status: decision };
@@ -2556,6 +2643,8 @@ export function issueInvoice(actor: StaffMember, quotationId: string) {
   }
   const items = JSON.parse(String(quote.items_json)) as LineItem[];
   const totals = calculateDocumentTotals(items, Number(quote.discount_ngn), Number(quote.tax_percent));
+  const enquiry = db.prepare('SELECT email, phone FROM enquiries WHERE id=? LIMIT 1')
+    .get(String(quote.enquiry_id)) as { email: string; phone: string } | undefined;
   const id = crypto.randomUUID();
   const invoiceCode = nextCode('invoices', 'invoice_code', 'INV');
   const now = new Date().toISOString();
@@ -2570,7 +2659,16 @@ export function issueInvoice(actor: StaffMember, quotationId: string) {
   db.prepare("UPDATE quotations SET status = 'Invoiced' WHERE id = ?").run(String(quote.id));
   db.prepare("UPDATE enquiries SET status = 'Invoiced' WHERE id = ?").run(String(quote.enquiry_id));
   writeAudit(actor, 'ISSUE_INVOICE', 'Invoice', invoiceCode, `Issued invoice from ${quote.quote_code}`);
-  return { id, invoiceCode };
+  return {
+    id,
+    invoiceCode,
+    enquiryId: String(quote.enquiry_id),
+    customerName: String(quote.customer_name),
+    email: String(enquiry?.email || ''),
+    phone: String(enquiry?.phone || ''),
+    totalNgn: totals.total,
+    items,
+  };
 }
 
 export function recordPayment(actor: StaffMember, body: { invoiceId: string; amountNgn: number; paymentDate: string; method: string; reference: string; evidenceNote: string }) {
@@ -2587,11 +2685,27 @@ export function recordPayment(actor: StaffMember, body: { invoiceId: string; amo
 export function verifyPayment(actor: StaffMember, paymentId: string, decision: 'Confirmed' | 'Rejected', reason?: string) {
   const pay = db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId) as Record<string, unknown> | undefined;
   if (!pay) throw new Error('Payment receipt not found.');
+  if (!['Confirmed', 'Rejected'].includes(decision)) throw new Error('Payment decision is invalid.');
   db.prepare('UPDATE payments SET status = ?, verified_by = ?, verified_at = ?, rejection_reason = ? WHERE id = ?').run(
     decision, actor.name, new Date().toISOString(), reason ?? null, paymentId
   );
+  const invoice = db.prepare('SELECT id, total_ngn, enquiry_id FROM invoices WHERE id=? LIMIT 1')
+    .get(String(pay.invoice_id)) as { id: string; total_ngn: number; enquiry_id: string } | undefined;
+  let invoiceStatus: 'Pending' | 'Confirmed' | 'Completed' | null = null;
+  if (invoice) {
+    const confirmed = db.prepare("SELECT COALESCE(SUM(amount_ngn),0) AS paid FROM payments WHERE invoice_id=? AND status='Confirmed'")
+      .get(invoice.id) as { paid: number };
+    invoiceStatus = Number(confirmed.paid) >= Number(invoice.total_ngn) ? 'Completed' : Number(confirmed.paid) > 0 ? 'Confirmed' : 'Pending';
+    db.prepare('UPDATE invoices SET status=? WHERE id=?').run(invoiceStatus, invoice.id);
+    if (invoiceStatus === 'Completed') {
+      db.prepare("UPDATE store_orders SET status='Completed', updated_at=? WHERE enquiry_id=? AND status='Delivered'")
+        .run(new Date().toISOString(), invoice.enquiry_id);
+      db.prepare("UPDATE enquiries SET status='Completed' WHERE id=? AND EXISTS (SELECT 1 FROM store_orders WHERE enquiry_id=? AND status='Completed')")
+        .run(invoice.enquiry_id, invoice.enquiry_id);
+    }
+  }
   writeAudit(actor, 'VERIFY_PAYMENT', 'Payment', String(pay.payment_code), `${actor.name} ${decision} receipt.`);
-  return { status: decision };
+  return { status: decision, invoiceStatus };
 }
 
 export function getPaymentInvoiceId(paymentId: string): { invoiceId: string } | null {

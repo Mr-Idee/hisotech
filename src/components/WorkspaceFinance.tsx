@@ -260,7 +260,7 @@ export function WorkspaceFinance({
                 <tr key={inv.id}>
                   <td className="font-mono-num py-3 pr-4 font-bold text-[#081E3E] dark:text-white">
                     {inv.invoiceCode}
-                    <div className="text-[11px] font-normal text-slate-500">Due {inv.dueDate} · {band}</div>
+                    <div className="text-[11px] font-normal text-slate-500">{inv.status} · Due {inv.dueDate} · {band}</div>
                   </td>
                   <td className="py-3 pr-4 font-medium">{inv.customerName}</td>
                   <td className="font-mono-num py-3 pr-4 text-right">{formatNgn(inv.totalNgn)}</td>

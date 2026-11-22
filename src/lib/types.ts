@@ -179,6 +179,7 @@ export interface InvoiceRecord {
   discountNgn: number;
   taxPercent: number;
   totalNgn: number;
+  status: 'Pending' | 'Confirmed' | 'Completed';
   bankDetails: BankDetails;
   customerAccepted: boolean;
   acceptedAt: string | null;
@@ -329,7 +330,7 @@ export interface AuditLogRecord {
 
 export type OrderDeliveryMethod = 'Abuja Warehouse Pickup' | 'Nationwide Delivery';
 export type OrderPaymentMethod = 'Bank Transfer on Invoice' | 'Pay on Delivery (Abuja)';
-export type StoreOrderStatus = 'Pending' | 'Confirmed' | 'Dispatched' | 'Delivered' | 'Cancelled';
+export type StoreOrderStatus = 'Pending' | 'Confirmed' | 'Dispatched' | 'Delivered' | 'Completed' | 'Cancelled';
 
 export interface StoreOrderItem {
   sku: string;

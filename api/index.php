@@ -79,6 +79,14 @@ function hiso_platform_settings_table_exists(): bool {
     return (int)$stmt->fetchColumn() > 0;
 }
 
+function hiso_table_exists(string $table): bool {
+    $stmt = hiso_pdo()->prepare(
+        'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?'
+    );
+    $stmt->execute([$table]);
+    return (int)$stmt->fetchColumn() > 0;
+}
+
 function hiso_default_estimator_settings(array $catalog): array {
     $categories = [];
     foreach ($catalog as $item) {
@@ -574,6 +582,7 @@ function hiso_hydrate_workspace(array $user): array {
         'discountNgn' => (float)$i['discount_ngn'],
         'taxPercent' => (float)$i['tax_percent'],
         'totalNgn' => (float)$i['total_ngn'],
+        'status' => (string)$i['status'],
         'bankDetails' => json_decode($i['bank_details_json'] ?: '{}', true) ?: [],
         'customerAccepted' => (bool)$i['customer_accepted'],
         'acceptedAt' => $i['accepted_at'],
@@ -889,7 +898,7 @@ try {
             hiso_json_response(['error' => 'WhatsApp consent choices are invalid.'], 422);
         }
         if (($updatesConsent || $marketingConsent) && !preg_match('/^\+[1-9][0-9]{7,14}$/', $phone)) {
-            hiso_json_response(['error' => 'WhatsApp consent requires a valid E.164 phone number.'], 422);
+            hiso_json_response(['error' => 'Please use the required country code for the WhatsApp number (for example, +234…).'], 422);
         }
         $estimate = null;
         $appliances = [];
@@ -960,7 +969,16 @@ try {
             hiso_save_whatsapp_recipient_consent('enquiry', $id, 'marketing', $phone, true, 'public_enquiry_form');
         }
         hiso_notify_roles(['superadmin', 'director', 'admin'], 'New solar enquiry ' . $ref, $name . ' (' . $location . ') submitted an enquiry.', 'enquiries', $id);
-        hiso_send_lifecycle_whatsapp('new_enquiry', 'enquiry', $id, 'New enquiry ' . $ref . ' received. Our team will follow up.');
+        hiso_send_enquiry_emails([
+            'id' => $id,
+            'refCode' => $ref,
+            'customerName' => $name,
+            'email' => trim((string)($body['email'] ?? '')),
+            'phone' => $phone,
+            'location' => $location,
+            'needSummary' => trim((string)($body['needSummary'] ?? 'General solar consultation request')),
+        ], $quoteCode);
+        hiso_send_enquiry_confirmation_whatsapp($id, $phone, $name, $ref, $quoteCode);
         hiso_audit(['name' => $name, 'role' => 'customer'], 'CREATE_ENQUIRY', 'Enquiry', $ref, 'Public enquiry submitted.');
         hiso_json_response(['refCode' => $ref, 'id' => $id, 'quoteId' => $quoteId, 'quoteCode' => $quoteCode], 201);
     }
@@ -1006,9 +1024,9 @@ try {
         }
         $deliveryMethod = ($body['deliveryMethod'] ?? '') === 'Abuja Warehouse Pickup' ? 'Abuja Warehouse Pickup' : 'Nationwide Delivery';
         $paymentMethod = ($body['paymentMethod'] ?? '') === 'Pay on Delivery (Abuja)' ? 'Pay on Delivery (Abuja)' : 'Bank Transfer on Invoice';
-        $deliveryFee = ($deliveryMethod === 'Abuja Warehouse Pickup' || $subtotal >= 5000000) ? 0.0 : 25000.0;
+        $deliveryFee = 0.0;
         $tax = round($subtotal * 0.075);
-        $total = round($subtotal + $deliveryFee + $tax);
+        $total = round($subtotal + $tax);
 
         $orderId = hiso_uuid();
         $orderCode = hiso_next_code('store_orders', 'order_code', 'ORD');
@@ -1029,6 +1047,9 @@ try {
         $oStmt = $pdo->prepare('SELECT * FROM store_orders WHERE id = ? LIMIT 1');
         $oStmt->execute([$orderId]);
         $orderRow = $oStmt->fetch();
+        if ($orderRow) {
+            hiso_send_store_order_emails(hiso_hydrate_order($orderRow));
+        }
         hiso_json_response(['id' => $orderId, 'orderCode' => $orderCode, 'refCode' => $refCode, 'totalNgn' => $total, 'order' => $orderRow ? hiso_hydrate_order($orderRow) : null], 201);
     }
 
@@ -1085,7 +1106,7 @@ try {
         $qStmt->execute([$enq['id']]);
         $quote = $qStmt->fetch();
 
-        $iStmt = $pdo->prepare('SELECT id, invoice_code, total_ngn, customer_accepted, accepted_at, issued_date, due_date FROM invoices WHERE enquiry_id = ? ORDER BY created_at DESC LIMIT 1');
+        $iStmt = $pdo->prepare('SELECT id, invoice_code, total_ngn, status, customer_accepted, accepted_at, issued_date, due_date FROM invoices WHERE enquiry_id = ? ORDER BY created_at DESC LIMIT 1');
         $iStmt->execute([$enq['id']]);
         $inv = $iStmt->fetch();
 
@@ -1126,7 +1147,7 @@ try {
                 'estimate' => $enq['estimate_json'] ? json_decode($enq['estimate_json'], true) : null,
             ],
             'quotation' => $quote ? ['id' => $quote['id'], 'quoteCode' => $quote['quote_code'], 'status' => $quote['status'], 'revisionNo' => (int)$quote['revision_no'], 'validUntil' => $quote['valid_until']] : null,
-            'invoice' => $inv ? ['id' => $inv['id'], 'invoiceCode' => $inv['invoice_code'], 'totalNgn' => (float)$inv['total_ngn'], 'confirmedPaidNgn' => $confirmedPaid, 'balanceNgn' => max(0, (float)$inv['total_ngn'] - $confirmedPaid), 'customerAccepted' => (bool)$inv['customer_accepted'], 'dueDate' => $inv['due_date']] : null,
+            'invoice' => $inv ? ['id' => $inv['id'], 'invoiceCode' => $inv['invoice_code'], 'totalNgn' => (float)$inv['total_ngn'], 'status' => $inv['status'], 'confirmedPaidNgn' => $confirmedPaid, 'balanceNgn' => max(0, (float)$inv['total_ngn'] - $confirmedPaid), 'customerAccepted' => (bool)$inv['customer_accepted'], 'dueDate' => $inv['due_date']] : null,
             'installation' => $jobPayload,
             'order' => $orderRow ? hiso_hydrate_order($orderRow) : null,
         ]);
@@ -1451,7 +1472,7 @@ try {
             hiso_json_response(['error' => 'Email, WhatsApp marketing, and WhatsApp service-update consent choices are required.'], 422);
         }
         if (($body['whatsapp'] || $body['whatsappUpdates']) && !preg_match('/^\+[1-9][0-9]{7,14}$/', trim((string)$customer['phone']))) {
-            hiso_json_response(['error' => 'Save a valid E.164 phone number (+country code and digits) before opting in to WhatsApp.'], 422);
+            hiso_json_response(['error' => 'Please use the required country code in the phone number before opting in to WhatsApp.'], 422);
         }
         $pdo = hiso_pdo();
         $save = $pdo->prepare(
@@ -2021,6 +2042,9 @@ try {
         $user = hiso_current_user();
         $customer = $user ? null : hiso_current_customer();
         if (!$user && !$customer) hiso_json_response(['error' => 'Sign in to subscribe to notifications.'], 401);
+        if (!hiso_table_exists('push_subscriptions')) {
+            hiso_json_response(['error' => 'Push notification storage is not installed. Apply php-cpanel/migrations/003-communications-integrations.sql.'], 503);
+        }
         $body = hiso_json_body();
         $subscription = $body['subscription'] ?? null;
         $endpoint = is_array($subscription) ? trim((string)($subscription['endpoint'] ?? '')) : '';
@@ -2052,6 +2076,9 @@ try {
         $user = hiso_current_user();
         $customer = $user ? null : hiso_current_customer();
         if (!$user && !$customer) hiso_json_response(['error' => 'Sign in to manage notification subscriptions.'], 401);
+        if (!hiso_table_exists('push_subscriptions')) {
+            hiso_json_response(['error' => 'Push notification storage is not installed. Apply php-cpanel/migrations/003-communications-integrations.sql.'], 503);
+        }
         $body = hiso_json_body();
         $endpoint = trim((string)($body['endpoint'] ?? ''));
         if ($endpoint === '' || strlen($endpoint) > 2048) hiso_json_response(['error' => 'Invalid push subscription endpoint.'], 422);
@@ -2112,6 +2139,44 @@ try {
                 $account['pin']
             );
             hiso_json_response(['ok' => true, 'email' => $account['email']], 201);
+        } catch (RuntimeException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
+    if ($method === 'POST' && $route === 'customers/reset-password') {
+        $user = hiso_require_roles(['admin', 'superadmin']);
+        $body = hiso_json_body();
+        $quoteId = is_string($body['quoteId'] ?? null) ? trim($body['quoteId']) : '';
+        if ($quoteId === '' || strlen($quoteId) > 80) {
+            hiso_json_response(['error' => 'A valid approved quotation is required.'], 422);
+        }
+        try {
+            $account = hiso_issue_customer_password_reset_pin($user, $quoteId);
+            if (!hiso_send_account_setup_email(
+                'customer_password_reset',
+                'customer',
+                $account['id'],
+                $account['email'],
+                $account['name'],
+                $account['email'],
+                $account['pin']
+            )) {
+                hiso_clear_customer_initial_pin($account['id']);
+                hiso_json_response(['error' => 'The reset email could not be delivered. Verify SMTP settings and retry.'], 503);
+            }
+            hiso_send_account_setup_whatsapp(
+                'customer_password_reset',
+                'customer',
+                $account['id'],
+                'enquiry',
+                $account['enquiryId'],
+                $account['phone'],
+                $account['name'],
+                $account['email'],
+                $account['pin']
+            );
+            hiso_json_response(['ok' => true, 'email' => $account['email']]);
         } catch (RuntimeException $error) {
             hiso_json_response(['error' => $error->getMessage()], 422);
         }
@@ -2203,6 +2268,15 @@ try {
                 ->execute([$status, $revNo, $body['scope'], $body['terms'], $body['note'], $discount, $tax, $body['validUntil'], json_encode($items), json_encode($revs), $existing['id']]);
             $code = $existing['quote_code'];
         } else {
+            $orderStmt = $pdo->prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1');
+            $orderStmt->execute([(string)($body['enquiryId'] ?? '')]);
+            if ($orderStmt->fetchColumn()) {
+                $quoteStmt = $pdo->prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1');
+                $quoteStmt->execute([(string)$body['enquiryId']]);
+                if ($quoteStmt->fetchColumn()) {
+                    hiso_json_response(['error' => 'A quotation already exists for this Store order. Revise the existing quotation instead.'], 422);
+                }
+            }
             $id = hiso_uuid();
             $savedId = $id;
             $code = hiso_next_code('quotations', 'quote_code', 'QUO');
@@ -2243,6 +2317,9 @@ try {
             hiso_json_response(['error' => 'Price all To Be Determined quotation lines before approving.'], 422);
         }
         $pdo->prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = NOW() WHERE id = ?')->execute([$decision, $user['name'], $quoteId]);
+        if ($decision === 'Approved') {
+            $pdo->prepare('UPDATE store_orders SET status = "Confirmed" WHERE enquiry_id = (SELECT enquiry_id FROM quotations WHERE id = ?)')->execute([$quoteId]);
+        }
         hiso_notify_roles(['admin'], 'Quotation ' . $decision, $user['name'] . ' marked quotation ' . $decision . '.', 'quotes', $quoteId);
         hiso_send_lifecycle_email_to_roles(
             'quote_status',
@@ -2276,8 +2353,29 @@ try {
         $pdo->prepare('UPDATE quotations SET status = "Invoiced" WHERE id = ?')->execute([$quote['id']]);
         $pdo->prepare('UPDATE enquiries SET status = "Invoiced" WHERE id = ?')->execute([$quote['enquiry_id']]);
         hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);
-        hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invId, 'Invoice ' . $invCode . ' has been issued.');
-        hiso_send_lifecycle_whatsapp('quote_status', 'quote', (string)$quote['id'], 'Your approved quotation has been converted to an invoice.');
+        $enquiryStmt = $pdo->prepare('SELECT id, email, phone FROM enquiries WHERE id=? LIMIT 1');
+        $enquiryStmt->execute([$quote['enquiry_id']]);
+        $enquiry = $enquiryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        $invoiceMessage = [
+            'id' => $invId,
+            'enquiryId' => (string)$quote['enquiry_id'],
+            'invoiceCode' => $invCode,
+            'customerName' => (string)$quote['customer_name'],
+            'email' => (string)($enquiry['email'] ?? ''),
+            'phone' => (string)($enquiry['phone'] ?? ''),
+            'totalNgn' => $total,
+            'items' => is_array($items) ? $items : [],
+        ];
+        hiso_send_invoice_issued_emails($invoiceMessage);
+        hiso_send_lifecycle_whatsapp(
+            'invoice_status',
+            'invoice',
+            $invId,
+            "Hello " . (string)$quote['customer_name'] . ", your HI-SOTECH invoice {$invCode} has been issued and is pending payment.\n" .
+                implode("\n", array_map(static fn($item) => (float)$item['qty'] . ' × ' . (string)($item['description'] ?? $item['name'] ?? '') . ': ₦' . number_format((float)$item['qty'] * (float)$item['unitPriceNgn']), $items)) .
+                "\nAmount due: ₦" . number_format($total) . ". Open your customer portal: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#customer',
+            false
+        );
         hiso_json_response(['id' => $invId, 'invoiceCode' => $invCode], 201);
     }
 
@@ -2308,14 +2406,30 @@ try {
     if ($method === 'POST' && $route === 'payments/verify') {
         $user = hiso_require_permission('verify_payments');
         $body = hiso_json_body();
+        if (!in_array($body['decision'] ?? null, ['Confirmed', 'Rejected'], true)) {
+            hiso_json_response(['error' => 'Payment decision is invalid.'], 422);
+        }
         $decision = ($body['decision'] ?? '') === 'Confirmed' ? 'Confirmed' : 'Rejected';
-        $paymentStmt = hiso_pdo()->prepare('SELECT invoice_id FROM payments WHERE id = ? LIMIT 1');
+        $paymentStmt = hiso_pdo()->prepare('SELECT p.invoice_id, i.total_ngn, i.enquiry_id FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.id = ? LIMIT 1');
         $paymentStmt->execute([$body['paymentId']]);
-        $invoiceId = (string)($paymentStmt->fetchColumn() ?: '');
-        hiso_pdo()->prepare('UPDATE payments SET status = ?, verified_by = ?, verified_at = NOW(), rejection_reason = ? WHERE id = ?')->execute([$decision, $user['name'], $body['reason'] ?? null, $body['paymentId']]);
+        $payment = $paymentStmt->fetch();
+        if (!$payment) hiso_json_response(['error' => 'Payment receipt not found.'], 404);
+        $invoiceId = (string)$payment['invoice_id'];
+        $pdo = hiso_pdo();
+        $pdo->prepare('UPDATE payments SET status = ?, verified_by = ?, verified_at = NOW(), rejection_reason = ? WHERE id = ?')->execute([$decision, $user['name'], $body['reason'] ?? null, $body['paymentId']]);
+        $paidStmt = $pdo->prepare('SELECT COALESCE(SUM(amount_ngn),0) FROM payments WHERE invoice_id=? AND status="Confirmed"');
+        $paidStmt->execute([$invoiceId]);
+        $confirmedPaid = (float)$paidStmt->fetchColumn();
+        $invoiceStatus = $confirmedPaid >= (float)$payment['total_ngn'] ? 'Completed' : ($confirmedPaid > 0 ? 'Confirmed' : 'Pending');
+        $pdo->prepare('UPDATE invoices SET status=? WHERE id=?')->execute([$invoiceStatus, $invoiceId]);
+        if ($invoiceStatus === 'Completed') {
+            $pdo->prepare('UPDATE store_orders SET status="Completed" WHERE enquiry_id=? AND status="Delivered"')->execute([$payment['enquiry_id']]);
+            $pdo->prepare('UPDATE enquiries SET status="Completed" WHERE id=? AND EXISTS (SELECT 1 FROM store_orders WHERE enquiry_id=? AND status="Completed")')
+                ->execute([$payment['enquiry_id'], $payment['enquiry_id']]);
+        }
         hiso_audit($user, 'VERIFY_PAYMENT', 'Payment', (string)$body['paymentId'], 'Receipt ' . $decision);
-        if ($invoiceId !== '') hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invoiceId, 'A payment receipt for your invoice was ' . strtolower($decision) . '.');
-        hiso_json_response(['status' => $decision]);
+        if ($invoiceId !== '') hiso_send_lifecycle_whatsapp('invoice_status', 'invoice', $invoiceId, 'A payment receipt for your invoice was ' . strtolower($decision) . '. Invoice status: ' . $invoiceStatus . '.');
+        hiso_json_response(['status' => $decision, 'invoiceStatus' => $invoiceStatus]);
     }
 
     if ($method === 'POST' && $route === 'installations/release') {
@@ -2518,17 +2632,26 @@ try {
             hiso_json_response(['error' => 'Order management permission required.'], 403);
         }
         $body = hiso_json_body();
+        if (!in_array($body['status'] ?? null, ['Pending', 'Confirmed', 'Dispatched', 'Delivered', 'Cancelled'], true)) {
+            hiso_json_response(['error' => 'Order status is invalid.'], 422);
+        }
         $pdo = hiso_pdo();
         $stmt = $pdo->prepare('SELECT * FROM store_orders WHERE id = ? LIMIT 1');
         $stmt->execute([$body['orderId']]);
         $ord = $stmt->fetch();
         if (!$ord) hiso_json_response(['error' => 'Order not found.'], 404);
+        $status = (string)$body['status'];
+        if ($status === 'Delivered') {
+            $invoiceStmt = $pdo->prepare('SELECT status FROM invoices WHERE enquiry_id=? ORDER BY created_at DESC LIMIT 1');
+            $invoiceStmt->execute([$ord['enquiry_id']]);
+            if ($invoiceStmt->fetchColumn() === 'Completed') $status = 'Completed';
+        }
         $pdo->prepare('UPDATE store_orders SET status = ?, notes = ? WHERE id = ?')
-            ->execute([$body['status'], trim((string)($body['notes'] ?? $ord['notes'])), $body['orderId']]);
-        if ($body['status'] === 'Delivered') {
+            ->execute([$status, trim((string)($body['notes'] ?? $ord['notes'])), $body['orderId']]);
+        if ($status === 'Completed') {
             $pdo->prepare('UPDATE enquiries SET status = "Completed" WHERE id = ?')->execute([$ord['enquiry_id']]);
         }
-        hiso_audit($user, 'UPDATE_ORDER', 'StoreOrder', $ord['order_code'], 'Marked ' . $body['status']);
+        hiso_audit($user, 'UPDATE_ORDER', 'StoreOrder', $ord['order_code'], 'Marked ' . $status);
         hiso_json_response(['ok' => true]);
     }
 
@@ -2627,6 +2750,15 @@ try {
                     ->execute([password_hash($password, PASSWORD_DEFAULT), $id]);
             }
         } else {
+            $orderStmt = $pdo->prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1');
+            $orderStmt->execute([(string)($body['enquiryId'] ?? '')]);
+            if ($orderStmt->fetchColumn()) {
+                $quoteStmt = $pdo->prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1');
+                $quoteStmt->execute([(string)$body['enquiryId']]);
+                if ($quoteStmt->fetchColumn()) {
+                    hiso_json_response(['error' => 'A quotation already exists for this Store order. Revise the existing quotation instead.'], 422);
+                }
+            }
             $id = hiso_uuid();
             $pin = (string)random_int(1000, 9999);
             $pinHash = password_hash($pin, PASSWORD_DEFAULT);
@@ -2660,23 +2792,18 @@ try {
     }
 
     if ($method === 'POST' && $route === 'staff/resend-pin') {
-        $user = hiso_require_roles(['superadmin']);
+        $user = hiso_require_roles(['admin', 'superadmin']);
         $body = hiso_json_body();
         $staffId = is_string($body['staffId'] ?? null) ? trim($body['staffId']) : '';
         if ($staffId === '' || strlen($staffId) > 80) {
             hiso_json_response(['error' => 'A valid staff account is required.'], 422);
         }
-        $pdo = hiso_pdo();
-        $stmt = $pdo->prepare('SELECT id, name, email, phone, username FROM users WHERE id=? AND status="Active" AND must_set_password=1 LIMIT 1');
-        $stmt->execute([$staffId]);
-        $account = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$account) hiso_json_response(['error' => 'An active staff account awaiting password setup was not found.'], 404);
-        $pin = (string)random_int(1000, 9999);
-        $pinHash = password_hash($pin, PASSWORD_DEFAULT);
-        $expires = gmdate('Y-m-d H:i:s', time() + 86400);
-        $pdo->prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=? WHERE id=? AND must_set_password=1')
-            ->execute([$pinHash, $expires, $account['id']]);
-        hiso_audit($user, 'RESEND_STAFF_SETUP', 'Staff', (string)$account['id'], 'Resent staff first-sign-in setup instructions.');
+        try {
+            $account = hiso_issue_staff_password_reset_pin($user, $staffId);
+        } catch (RuntimeException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+        $pin = (string)$account['pin'];
         if (!hiso_send_account_setup_email(
             'staff_account_created', 'staff', (string)$account['id'], (string)$account['email'],
             (string)$account['name'], (string)$account['username'], $pin

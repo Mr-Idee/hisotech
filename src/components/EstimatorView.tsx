@@ -11,6 +11,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import { useOnlineStatus } from '../hooks/usePWAInstall';
 import { api } from '../lib/api';
+import { notifyUser } from '../lib/notifications';
 import {
   calculateSolarEstimate,
   computeEstimateCostFromCatalog,
@@ -313,6 +314,7 @@ export function EstimatorView({
       });
       setSubmittedRef(res.refCode);
       setSubmittedQuoteCode(res.quoteCode || '');
+      notifyUser(`Your estimate enquiry ${res.refCode} has been received.`);
     } catch {
       // Network failure fallback -> save locally to offline queue cleanly
       saveEstimateOffline();

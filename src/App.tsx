@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CustomerProfileView } from './components/CustomerProfileView';
+import { GlobalNotice } from './components/GlobalNotice';
 import { DocumentView } from './components/DocumentView';
 import { EstimatorView } from './components/EstimatorView';
 import { OfflineIndicator } from './components/PWAInstallButton';
@@ -213,6 +214,7 @@ export default function App() {
       )}
 
       <OfflineIndicator />
+      <GlobalNotice />
     </div>
   );
 }

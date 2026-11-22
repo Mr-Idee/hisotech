@@ -308,7 +308,7 @@ test('canUpdateStaffStatusOrRole blocks deactivating technician with open instal
   assert.equal(canUpdateStaffStatusOrRole('eng-1', 'technician', 'Active', jobs).allowed, true);
 });
 
-test('calculateStoreOrderTotals resolves catalog prices, delivery threshold, and 7.5% VAT', () => {
+test('calculateStoreOrderTotals leaves delivery TBD and applies VAT to product subtotal', () => {
   const pickup = calculateStoreOrderTotals(
     [{ sku: 'PV-550M', qty: 2, unitPriceNgn: 1 }],
     'Abuja Warehouse Pickup',
@@ -326,8 +326,8 @@ test('calculateStoreOrderTotals resolves catalog prices, delivery threshold, and
     'Nationwide Delivery',
     SAMPLE_CATALOG
   );
-  assert.equal(deliveryUnder5m.deliveryFeeNgn, 25000);
-  assert.equal(deliveryUnder5m.totalNgn, 320000 + 25000 + 24000);
+  assert.equal(deliveryUnder5m.deliveryFeeNgn, 0);
+  assert.equal(deliveryUnder5m.totalNgn, 320000 + 24000);
 
   const deliveryFreeOver5m = calculateStoreOrderTotals(
     [{ sku: 'BAT-512L', qty: 4 }],
@@ -336,4 +336,5 @@ test('calculateStoreOrderTotals resolves catalog prices, delivery threshold, and
   );
   assert.equal(deliveryFreeOver5m.subtotalNgn, 6000000);
   assert.equal(deliveryFreeOver5m.deliveryFeeNgn, 0);
+  assert.equal(deliveryFreeOver5m.totalNgn, 6450000);
 });

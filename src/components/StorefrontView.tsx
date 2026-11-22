@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { notifyUser } from '../lib/notifications';
 import { calculateStoreOrderTotals, formatNgn } from '../lib/solar';
 import type {
   CatalogItem,
@@ -173,6 +174,7 @@ export function StorefrontView({
         refCode: created.refCode,
         totalNgn: created.totalNgn,
       });
+      notifyUser(`Purchase order ${created.orderCode} submitted for Director confirmation.`);
       setCart([]);
       setNotes('');
     } catch (err) {
@@ -444,7 +446,7 @@ export function StorefrontView({
                     <h3 className="text-lg font-bold">Order Received by HI-SOTECH</h3>
                   </div>
                   <p className="mt-2 text-sm">
-                    Your order has been logged with our Abuja procurement &amp; dispatch desk.
+                    Purchase order submitted and pending Director confirmation. Logistics and delivery will be priced before a separate invoice is issued.
                   </p>
                   <dl className="mt-4 space-y-2 rounded-lg bg-white/80 p-4 text-xs dark:bg-[#061327]">
                     <div className="flex justify-between">
@@ -458,7 +460,7 @@ export function StorefrontView({
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-slate-500">Order Total (incl. 7.5% VAT)</dt>
+                      <dt className="text-slate-500">Products + VAT (delivery TBD)</dt>
                       <dd className="font-mono-num font-bold text-[#081E3E] dark:text-white">
                         {formatNgn(placedOrder.totalNgn)}
                       </dd>
@@ -566,8 +568,8 @@ export function StorefrontView({
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {(
                         [
-                          { id: 'Nationwide Delivery', sub: '₦25,000 (Free ≥ ₦5M)' },
-                          { id: 'Abuja Warehouse Pickup', sub: 'Free · Life Camp, Abuja' },
+                          { id: 'Nationwide Delivery', sub: 'Delivery charge confirmed after order review' },
+                          { id: 'Abuja Warehouse Pickup', sub: 'Pickup details confirmed after order review' },
                         ] as const
                       ).map((opt) => (
                         <button
@@ -593,16 +595,14 @@ export function StorefrontView({
                       </div>
                       <div className="flex justify-between">
                         <dt className="text-slate-500">Logistics / Delivery</dt>
-                        <dd className="font-mono-num font-semibold">
-                          {cartTotals.deliveryFeeNgn === 0 ? 'Free' : formatNgn(cartTotals.deliveryFeeNgn)}
-                        </dd>
+                        <dd className="font-semibold">TBD</dd>
                       </div>
                       <div className="flex justify-between">
                         <dt className="text-slate-500">VAT (7.5%)</dt>
                         <dd className="font-mono-num font-semibold">{formatNgn(cartTotals.taxNgn)}</dd>
                       </div>
                       <div className="flex justify-between border-t border-slate-200 pt-2 text-sm font-bold text-[#081E3E] dark:border-slate-700 dark:text-white">
-                        <dt>Order Total</dt>
+                        <dt>Products + VAT (delivery TBD)</dt>
                         <dd className="font-mono-num text-[#D61F26]">{formatNgn(cartTotals.totalNgn)}</dd>
                       </div>
                     </dl>

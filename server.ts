@@ -19,6 +19,7 @@ import {
   createPublicEnquiry,
   createCustomerLoginLink,
   createCustomerAccountForApprovedQuote,
+  issueCustomerPasswordResetPin,
   createStaffEnquiry,
   createStoreOrder,
   decideQuotation,
@@ -85,6 +86,7 @@ import {
   validateWhatsAppAttachment,
 } from './src/lib/communications';
 import type { NewsletterAttachment } from './src/lib/communications';
+import type { StoreOrderRecord } from './src/lib/types';
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -198,6 +200,7 @@ async function sendLifecycleWhatsApp(
   entity: 'enquiry' | 'quote' | 'invoice' | 'ticket' | 'installation',
   entityId: string,
   message: string,
+  emailSubject?: string,
 ): Promise<void> {
   const targets = getLifecycleNotificationTargets(entity, entityId);
   for (const target of targets) {
@@ -217,7 +220,7 @@ async function sendLifecycleWhatsApp(
         await transport.sendMail({
           from: process.env.MAIL_FROM,
           to: target.email,
-          subject: `HI-SOTECH update: ${eventKey.replaceAll('_', ' ')}`,
+          subject: emailSubject || `HI-SOTECH update: ${eventKey.replaceAll('_', ' ')}`,
           text: message,
         });
         logCommunicationDelivery({
@@ -342,8 +345,192 @@ async function sendOperationalEmailToRoles(
   }
 }
 
+async function sendEnquiryEmailNotifications(enquiry: {
+  id: string;
+  refCode: string;
+  customerName: string;
+  email: string;
+  phone: string;
+  location: string;
+  needSummary: string;
+  quoteCode?: string;
+}): Promise<void> {
+  const eventKey = 'new_enquiry';
+  const appUrl = (process.env.APP_URL || '').replace(/\/+$/, '');
+  const customerMessage = [
+    `Hello ${enquiry.customerName},`,
+    '',
+    `We have received your HI-SOTECH enquiry ${enquiry.refCode}${enquiry.quoteCode ? ` (load estimate ${enquiry.quoteCode})` : ''}.`,
+    'A representative will review your request and get back to you shortly using the WhatsApp number you provided.',
+    '',
+    'Thank you,',
+    'HI-SOTECH Solar Solutions',
+  ].join('\n');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(enquiry.email)) {
+    logCommunicationDelivery({
+      eventKey, recipientType: 'enquiry', recipientId: enquiry.id, channel: 'email',
+      status: 'skipped', errorCode: 'recipient_email_unavailable',
+    });
+  } else if (!process.env.SMTP_URL || !process.env.MAIL_FROM) {
+    logCommunicationDelivery({
+      eventKey, recipientType: 'enquiry', recipientId: enquiry.id, channel: 'email',
+      status: 'not_configured', errorCode: 'smtp_credentials_missing',
+    });
+  } else {
+    try {
+      await nodemailer.createTransport(process.env.SMTP_URL).sendMail({
+        from: process.env.MAIL_FROM,
+        to: enquiry.email,
+        subject: `We received your HI-SOTECH enquiry ${enquiry.refCode}`,
+        text: customerMessage,
+      });
+      logCommunicationDelivery({
+        eventKey, recipientType: 'enquiry', recipientId: enquiry.id, channel: 'email', status: 'sent',
+      });
+    } catch {
+      logCommunicationDelivery({
+        eventKey, recipientType: 'enquiry', recipientId: enquiry.id, channel: 'email',
+        status: 'failed', errorCode: 'smtp_delivery_failed',
+      });
+    }
+  }
+  const adminMessage = [
+    `A customer has submitted a HI-SOTECH enquiry.`,
+    '',
+    `Name: ${enquiry.customerName}`,
+    `Phone / WhatsApp: ${enquiry.phone}`,
+    `Email: ${enquiry.email || 'Not provided'}`,
+    `Location: ${enquiry.location}`,
+    `Enquiry code: ${enquiry.refCode}`,
+    enquiry.quoteCode ? `Estimator quotation: ${enquiry.quoteCode}` : '',
+    `Details: ${enquiry.needSummary}`,
+    '',
+    `Open the enquiry workspace to follow up: ${appUrl}/#workspace?tab=enquiries`,
+  ].filter(Boolean).join('\n');
+  await sendOperationalEmailToRoles(
+    eventKey, ['admin', 'superadmin'], `New enquiry ${enquiry.refCode}: ${enquiry.customerName}`, adminMessage,
+  );
+}
+
+async function sendEnquiryConfirmationWhatsApp(
+  enquiryId: string,
+  phone: string,
+  name: string,
+  refCode: string,
+  quoteCode?: string,
+): Promise<void> {
+  const message = `Hello ${name}, we have received your HI-SOTECH enquiry ${refCode}${quoteCode ? ` and load estimate ${quoteCode}` : ''}. A representative will get back to you shortly using this WhatsApp number. Thank you.`;
+  let contact: ReturnType<typeof getWhatsAppConsentContact>;
+  try {
+    contact = getWhatsAppConsentContact('enquiry', enquiryId, 'operational');
+  } catch {
+    logCommunicationDelivery({
+      eventKey: 'new_enquiry', recipientType: 'enquiry', recipientId: enquiryId,
+      channel: 'whatsapp', status: 'failed', errorCode: 'consent_lookup_failed',
+    });
+    return;
+  }
+  if (!contact || contact.phone !== phone) {
+    logCommunicationDelivery({
+      eventKey: 'new_enquiry', recipientType: 'enquiry', recipientId: enquiryId,
+      channel: 'whatsapp', status: 'skipped', errorCode: 'no_active_operational_consent',
+    });
+    return;
+  }
+  try {
+    await sendWhatsAppTemplate(getWhatsAppConfiguration('new_enquiry'), phone, message);
+    logCommunicationDelivery({
+      eventKey: 'new_enquiry', recipientType: 'enquiry', recipientId: enquiryId,
+      channel: 'whatsapp', status: 'sent',
+    });
+  } catch (error) {
+    const notConfigured = error instanceof WhatsAppConfigurationError;
+    logCommunicationDelivery({
+      eventKey: 'new_enquiry', recipientType: 'enquiry', recipientId: enquiryId,
+      channel: 'whatsapp', status: notConfigured ? 'not_configured' : 'failed',
+      errorCode: notConfigured ? 'template_or_credentials_missing' : 'provider_delivery_failed',
+    });
+  }
+}
+
+async function sendStoreOrderEmails(order: StoreOrderRecord): Promise<void> {
+  const eventKey = 'store_order_created';
+  const itemRows = order.items.map((item) =>
+    `${item.qty} × ${item.name} — ₦${(item.qty * item.unitPriceNgn).toLocaleString('en-NG')}`
+  ).join('\n');
+  const appUrl = (process.env.APP_URL || '').replace(/\/+$/, '');
+  const customerMessage = [
+    `Hello ${order.customerName},`,
+    '',
+    `We received your purchase order ${order.orderCode} (enquiry reference ${order.refCode}).`,
+    '',
+    'Items:',
+    itemRows,
+    '',
+    `Items subtotal: ₦${order.subtotalNgn.toLocaleString('en-NG')}`,
+    `VAT: ₦${order.taxNgn.toLocaleString('en-NG')}`,
+    'Logistics / delivery: TBD',
+    `Current total excluding delivery: ₦${order.totalNgn.toLocaleString('en-NG')}`,
+    '',
+    'Your purchase order is pending Director confirmation. We will confirm delivery/logistics pricing and any additional items before issuing your invoice. No payment is due from this purchase-order email.',
+    '',
+    'Thank you,',
+    'HI-SOTECH Solar Solutions',
+  ].join('\n');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(order.email)) {
+    logCommunicationDelivery({
+      eventKey, recipientType: 'enquiry', recipientId: order.enquiryId,
+      channel: 'email', status: 'skipped', errorCode: 'recipient_email_unavailable',
+    });
+  } else if (!process.env.SMTP_URL || !process.env.MAIL_FROM) {
+    logCommunicationDelivery({
+      eventKey, recipientType: 'enquiry', recipientId: order.enquiryId,
+      channel: 'email', status: 'not_configured', errorCode: 'smtp_credentials_missing',
+    });
+  } else {
+    try {
+      await nodemailer.createTransport(process.env.SMTP_URL).sendMail({
+        from: process.env.MAIL_FROM,
+        to: order.email,
+        subject: `HI-SOTECH purchase order ${order.orderCode} received — pending confirmation`,
+        text: customerMessage,
+      });
+      logCommunicationDelivery({
+        eventKey, recipientType: 'enquiry', recipientId: order.enquiryId, channel: 'email', status: 'sent',
+      });
+    } catch {
+      logCommunicationDelivery({
+        eventKey, recipientType: 'enquiry', recipientId: order.enquiryId,
+        channel: 'email', status: 'failed', errorCode: 'smtp_delivery_failed',
+      });
+    }
+  }
+  const adminMessage = [
+    `New customer purchase order ${order.orderCode}; status: Pending Director confirmation.`,
+    '',
+    `Customer: ${order.customerName}`,
+    `Phone / WhatsApp: ${order.phone}`,
+    `Email: ${order.email || 'Not provided'}`,
+    `Location: ${order.location}`,
+    `Delivery method/address: ${order.deliveryMethod} — ${order.deliveryAddress}`,
+    `Enquiry reference: ${order.refCode}`,
+    `Items:\n${itemRows}`,
+    `Subtotal: ₦${order.subtotalNgn.toLocaleString('en-NG')}`,
+    `VAT: ₦${order.taxNgn.toLocaleString('en-NG')}`,
+    'Logistics / delivery: TBD',
+    `Current total excluding delivery: ₦${order.totalNgn.toLocaleString('en-NG')}`,
+    `Customer notes: ${order.notes || 'None'}`,
+    '',
+    `Review and follow up: ${appUrl}/#workspace?tab=orders`,
+  ].join('\n');
+  await sendOperationalEmailToRoles(
+    eventKey, ['admin', 'superadmin', 'director'],
+    `Purchase order ${order.orderCode} awaits Director confirmation`, adminMessage,
+  );
+}
+
 async function sendAccountSetupEmail(
-  eventKey: 'customer_account_created' | 'staff_account_created',
+  eventKey: 'customer_account_created' | 'staff_account_created' | 'customer_password_reset',
   recipientType: 'customer' | 'staff',
   recipientId: string,
   email: string,
@@ -376,7 +563,9 @@ async function sendAccountSetupEmail(
     await transport.sendMail({
       from: process.env.MAIL_FROM,
       to: email,
-      subject: 'Your HI-SOTECH account setup instructions',
+      subject: eventKey === 'customer_password_reset'
+        ? 'Your HI-SOTECH password reset instructions'
+        : 'Your HI-SOTECH account setup instructions',
       text,
     });
     logCommunicationDelivery({ eventKey, recipientType, recipientId, channel: 'email', status: 'sent' });
@@ -391,7 +580,7 @@ async function sendAccountSetupEmail(
 }
 
 async function sendAccountSetupWhatsApp(
-  eventKey: 'customer_account_created' | 'staff_account_created',
+  eventKey: 'customer_account_created' | 'staff_account_created' | 'customer_password_reset',
   recipientType: 'customer' | 'staff',
   accountId: string,
   consentRecipientType: 'customer' | 'staff' | 'enquiry',
@@ -717,19 +906,34 @@ async function startServer() {
       return;
     }
     if ((whatsappUpdatesConsent || whatsappMarketingConsent) && !isValidE164(phone)) {
-      res.status(422).json({ error: 'WhatsApp consent requires a valid E.164 phone number.' });
+      res.status(422).json({ error: 'Please use the required country code for the WhatsApp number (for example, +234…).'});
       return;
     }
     try {
       const created = createPublicEnquiry(req.body);
-      await sendLifecycleWhatsApp('new_enquiry', 'enquiry', created.id, `New enquiry ${created.refCode} received. Our team will follow up.`);
+      const { customerName, email, phone, location, needSummary } = req.body as {
+        customerName: string; email?: string; phone: string; location: string; needSummary: string;
+      };
+      await sendEnquiryEmailNotifications({
+        id: created.id,
+        refCode: created.refCode,
+        customerName: customerName.trim(),
+        email: String(email || '').trim(),
+        phone: phone.trim(),
+        location: location.trim(),
+        needSummary: String(needSummary || 'General solar consultation request').trim(),
+        quoteCode: created.quoteCode || undefined,
+      });
+      await sendEnquiryConfirmationWhatsApp(
+        created.id, phone.trim(), customerName.trim(), created.refCode, created.quoteCode || undefined,
+      );
       res.status(201).json(created);
     } catch (error) {
       res.status(422).json({ error: (error as Error).message });
     }
   });
 
-  app.post('/api/public/orders', (req, res) => {
+  app.post('/api/public/orders', async (req, res) => {
     const { customerName, phone, deliveryAddress, location, items } = req.body ?? {};
     if (!customerName?.trim() || !phone?.trim() || !(deliveryAddress?.trim() || location?.trim())) {
       res.status(422).json({ error: 'Customer name, phone number, and delivery address are required.' });
@@ -757,6 +961,7 @@ async function startServer() {
         notes: String(req.body?.notes || ''),
         items,
       });
+      await sendStoreOrderEmails(created.order);
       res.status(201).json(created);
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
@@ -961,7 +1166,7 @@ async function startServer() {
       return;
     }
     if ((whatsapp || whatsappUpdates) && !isValidE164(session.profile.phone)) {
-      res.status(422).json({ error: 'Save a valid E.164 phone number (+country code and digits) before opting in to WhatsApp.' });
+      res.status(422).json({ error: 'Please use the required country code in the phone number before opting in to WhatsApp.' });
       return;
     }
     updateCustomerConsents(session.profile.id, { email, whatsapp });
@@ -1300,7 +1505,7 @@ async function startServer() {
       return;
     }
     if (!isValidE164(contact.phone)) {
-      res.status(422).json({ error: 'The opted-in recipient phone number must be in E.164 format.' });
+      res.status(422).json({ error: 'Please use the required country code for the opted-in phone number.' });
       return;
     }
     const attachments = req.body?.attachments ?? [];
@@ -1640,6 +1845,37 @@ async function startServer() {
     }
   });
 
+  app.post('/api/customers/reset-password', async (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user || !['admin', 'superadmin'].includes(user.role)) {
+      res.status(user ? 403 : 401).json({ error: 'Only Admin can reset customer passwords.' });
+      return;
+    }
+    const quoteId = typeof req.body?.quoteId === 'string' ? req.body.quoteId.trim() : '';
+    if (!quoteId || quoteId.length > 80) {
+      res.status(422).json({ error: 'A valid approved quotation is required.' });
+      return;
+    }
+    try {
+      const account = issueCustomerPasswordResetPin(user, quoteId);
+      const sent = await sendAccountSetupEmail(
+        'customer_password_reset', 'customer', account.id, account.email, account.name, account.email, account.pin,
+      );
+      if (!sent) {
+        clearCustomerInitialPin(account.id);
+        res.status(503).json({ error: 'The reset email could not be delivered. Verify SMTP settings and retry.' });
+        return;
+      }
+      await sendAccountSetupWhatsApp(
+        'customer_password_reset', 'customer', account.id, 'enquiry', account.enquiryId,
+        account.phone, account.name, account.email, account.pin,
+      );
+      res.json({ ok: true, email: account.email });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/api/catalog', (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_storefront')) {
@@ -1780,9 +2016,18 @@ async function startServer() {
     }
     try {
       const invoice = issueInvoice(user!, req.body.quotationId);
-      await sendLifecycleWhatsApp('invoice_status', 'invoice', invoice.id, `Invoice ${invoice.invoiceCode} has been issued.`);
+      const invoiceDetails = invoice.items
+        .map((item) => `${item.qty} × ${item.description}: ₦${(item.qty * item.unitPriceNgn).toLocaleString('en-NG')}`)
+        .join('\n');
+      await sendLifecycleWhatsApp(
+        'invoice_status',
+        'invoice',
+        invoice.id,
+        `Hello ${invoice.customerName}, your HI-SOTECH invoice ${invoice.invoiceCode} has been issued and is pending payment.\n\n${invoiceDetails}\n\nAmount due: ₦${invoice.totalNgn.toLocaleString('en-NG')}\nOpen the customer portal: ${(process.env.APP_URL || '').replace(/\/+$/, '')}/#customer`,
+        `HI-SOTECH invoice ${invoice.invoiceCode}`,
+      );
       await sendLifecycleWhatsApp('quote_status', 'quote', req.body.quotationId, 'Your approved quotation has been converted to an invoice.');
-      res.status(201).json(invoice);
+      res.status(201).json({ id: invoice.id, invoiceCode: invoice.invoiceCode });
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
     }
@@ -1820,7 +2065,13 @@ async function startServer() {
       const result = verifyPayment(user!, req.body.paymentId, req.body.decision, req.body.reason);
       const payment = getPaymentInvoiceId(req.body.paymentId);
       if (payment) {
-        await sendLifecycleWhatsApp('invoice_status', 'invoice', payment.invoiceId, `A payment receipt for your invoice was ${String(result.status).toLowerCase()}.`);
+        await sendLifecycleWhatsApp(
+          'invoice_status',
+          'invoice',
+          payment.invoiceId,
+          `A payment receipt for your invoice was ${String(result.status).toLowerCase()}. Invoice status: ${result.invoiceStatus || 'Pending'}.`,
+          'HI-SOTECH invoice payment update',
+        );
       }
       res.json(result);
     } catch (err) {
@@ -2001,8 +2252,8 @@ async function startServer() {
 
   app.post('/api/staff/resend-pin', async (req, res) => {
     const { user } = getSessionUser(req);
-    if (!user || user.role !== 'superadmin') {
-      res.status(user ? 403 : 401).json({ error: 'Only Super Admin can resend staff setup credentials.' });
+    if (!user || !['admin', 'superadmin'].includes(user.role)) {
+      res.status(user ? 403 : 401).json({ error: 'Only Admin can reset staff passwords.' });
       return;
     }
     try {
