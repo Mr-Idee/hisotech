@@ -1048,8 +1048,15 @@ async function startServer() {
         text: 'This is a test of HI-SOTECH email delivery. If you received it, outbound email is working.',
       });
       res.json({ ok: true });
-    } catch {
-      res.status(502).json({ error: 'The test email could not be accepted by SMTP. Check the private mail settings and server mail log.' });
+    } catch (error) {
+      const message = String((error as Error)?.message || '').toLowerCase();
+      const authenticationRejected = /authenticat|535|5\.7\.8/.test(message);
+      res.status(502).json({
+        error: authenticationRejected
+          ? 'SMTP authentication was rejected. Reset or verify the mailbox password in cPanel, update the private SMTP password, then test again.'
+          : 'The test email could not be accepted by SMTP. Check the private mail settings and server mail log.',
+        category: authenticationRejected ? 'authentication' : 'smtp_other',
+      });
     }
   });
 

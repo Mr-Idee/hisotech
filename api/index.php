@@ -1725,7 +1725,17 @@ try {
             hiso_json_response(['ok' => true]);
         } catch (Throwable $error) {
             hiso_log_mail_failure($error);
-            hiso_json_response(['error' => 'The test email could not be accepted by SMTP. Check the private mail settings and server mail log.'], 502);
+            $category = hiso_mail_failure_category($error);
+            if ($category === 'authentication') {
+                hiso_json_response([
+                    'error' => 'SMTP authentication was rejected. Reset or verify the mailbox password in cPanel, update MAIL_PASSWORD in the private .env.php, then test again.',
+                    'category' => $category,
+                ], 502);
+            }
+            hiso_json_response([
+                'error' => 'The test email could not be accepted by SMTP. Check the private mail settings and server mail log.',
+                'category' => $category,
+            ], 502);
         }
     }
 
