@@ -450,6 +450,37 @@ function hiso_b64url_decode(string $value): string|false {
     return base64_decode(strtr($value, '-_', '+/') . str_repeat('=', $padding), true);
 }
 
+function hiso_vapid_key_pair_is_valid(string $privateKey, string $publicKey): bool {
+    if (strlen($privateKey) !== 32 || strlen($publicKey) !== 65 || $publicKey[0] !== "\x04"
+        || !function_exists('openssl_pkey_get_private') || !function_exists('openssl_sign')
+        || !function_exists('openssl_verify')) {
+        return false;
+    }
+
+    $privateDer = hex2bin('30770201010420') . $privateKey
+        . hex2bin('a00a06082a8648ce3d030107a144034200') . $publicKey;
+    $publicDer = hex2bin('3059301306072a8648ce3d020106082a8648ce3d030107034200') . $publicKey;
+    $privatePem = "-----BEGIN EC PRIVATE KEY-----\n"
+        . chunk_split(base64_encode($privateDer), 64, "\n")
+        . "-----END EC PRIVATE KEY-----\n";
+    $publicPem = "-----BEGIN PUBLIC KEY-----\n"
+        . chunk_split(base64_encode($publicDer), 64, "\n")
+        . "-----END PUBLIC KEY-----\n";
+
+    try {
+        $key = @openssl_pkey_get_private($privatePem);
+        if ($key === false) return false;
+        $details = openssl_pkey_get_details($key);
+        if (!is_array($details) || ($details['type'] ?? null) !== OPENSSL_KEYTYPE_EC) return false;
+        $message = 'HI-SOTECH VAPID key-pair check';
+        $signature = '';
+        return openssl_sign($message, $signature, $key, OPENSSL_ALGO_SHA256)
+            && openssl_verify($message, $signature, $publicPem, OPENSSL_ALGO_SHA256) === 1;
+    } catch (Throwable) {
+        return false;
+    }
+}
+
 function hiso_save_whatsapp_recipient_consent(
     string $recipientType,
     string $recipientId,

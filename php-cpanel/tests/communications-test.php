@@ -15,6 +15,17 @@ function assert_throws(callable $callback, string $message): void {
 
 $publicKey = rtrim(strtr(base64_encode("\x04" . str_repeat("\x01", 64)), '+/', '-_'), '=');
 $authKey = rtrim(strtr(base64_encode(str_repeat("\x02", 16)), '+/', '-_'), '=');
+$vapidPrivate = hiso_b64url_decode('tWI00yOJl9BKVV1S9mRzyqQRaBWnyUdTyXEM1Ir_QRU');
+$vapidPublic = hiso_b64url_decode('BB8Y0EyeFwDVD4EytwwLVdfgLhutJ_xuXNXoXLA9IgGayP2KTOz93dGyTjRhKzHF_eKWsHHgMJ9FMq5AHDsLV8o');
+if ($vapidPrivate === false || $vapidPublic === false
+    || !hiso_vapid_key_pair_is_valid($vapidPrivate, $vapidPublic)) {
+    throw new RuntimeException('A matching VAPID key pair must pass configuration validation.');
+}
+$otherVapidPrivate = hiso_b64url_decode('zHlgzMOprdidH2vZZmnHo-14B-nnwVcpYRtburfE4nc');
+if ($otherVapidPrivate === false || hiso_vapid_key_pair_is_valid($otherVapidPrivate, $vapidPublic)) {
+    throw new RuntimeException('A mismatched VAPID key pair must be rejected.');
+}
+
 $subscription = hiso_push_subscription([
     'endpoint' => 'https://fcm.googleapis.com/fcm/send/offline-test',
     'p256dh' => $publicKey,
