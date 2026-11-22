@@ -19,6 +19,8 @@ return [
     'WHATSAPP_ACCESS_TOKEN' => '',
     'WHATSAPP_API_VERSION' => 'v21.0',
     'WHATSAPP_TEMPLATES_JSON' => '{}',
+    'WHATSAPP_WEBHOOK_VERIFY_TOKEN' => '',
+    'WHATSAPP_APP_SECRET' => '',
     'VAPID_SUBJECT' => 'mailto:admin@example.com',
     'VAPID_PUBLIC_KEY' => '',
     'VAPID_PRIVATE_KEY' => '',

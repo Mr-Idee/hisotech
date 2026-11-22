@@ -549,6 +549,52 @@ function hiso_hydrate_workspace(array $user): array {
 }
 
 try {
+    if ($route === 'whatsapp/webhook') {
+        global $CONFIG;
+        header('Cache-Control: no-store');
+        if ($method === 'GET') {
+            $mode = (string)($_GET['hub_mode'] ?? $_GET['hub.mode'] ?? '');
+            $verifyToken = (string)($CONFIG['WHATSAPP_WEBHOOK_VERIFY_TOKEN'] ?? '');
+            $providedToken = (string)($_GET['hub_verify_token'] ?? $_GET['hub.verify_token'] ?? '');
+            $challenge = (string)($_GET['hub_challenge'] ?? $_GET['hub.challenge'] ?? '');
+            if ($mode !== 'subscribe' || $verifyToken === '' || $providedToken === ''
+                || !hash_equals($verifyToken, $providedToken) || strlen($challenge) > 2048) {
+                http_response_code(403);
+                exit;
+            }
+            header('Content-Type: text/plain; charset=utf-8');
+            echo $challenge;
+            exit;
+        }
+        if ($method === 'POST') {
+            $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+            if ($contentLength > 2097152) {
+                http_response_code(413);
+                exit;
+            }
+            $body = file_get_contents('php://input', false, null, 0, 2097153);
+            if ($body === false || strlen($body) > 2097152
+                || !hiso_whatsapp_webhook_signature_is_valid(
+                    $body,
+                    (string)($_SERVER['HTTP_X_HUB_SIGNATURE_256'] ?? ''),
+                    (string)($CONFIG['WHATSAPP_APP_SECRET'] ?? '')
+                )) {
+                http_response_code(403);
+                exit;
+            }
+            $payload = json_decode($body, true);
+            if (json_last_error() !== JSON_ERROR_NONE || !is_array($payload)) {
+                http_response_code(400);
+                exit;
+            }
+            http_response_code(200);
+            exit;
+        }
+        header('Allow: GET, POST');
+        http_response_code(405);
+        exit;
+    }
+
     if ($method === 'GET' && $route === 'push/config') {
         global $CONFIG;
         $publicKey = trim((string)($CONFIG['VAPID_PUBLIC_KEY'] ?? ''));

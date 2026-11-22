@@ -309,3 +309,11 @@ function hiso_log_mail_failure(Throwable $error): void {
         error_log('[hiso-customer-login] delivery failed; ' . trim($entry));
     }
 }
+
+function hiso_whatsapp_webhook_signature_is_valid(string $body, string $signature, string $appSecret): bool {
+    if ($appSecret === '' || !preg_match('/^sha256=[a-f0-9]{64}$/i', $signature)) {
+        return false;
+    }
+    $provided = substr($signature, 7);
+    return hash_equals(hash_hmac('sha256', $body, $appSecret), strtolower($provided));
+}
