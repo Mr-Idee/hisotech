@@ -120,6 +120,10 @@ export function WorkspaceView({
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginBusy, setLoginBusy] = useState(false);
+  const [staffSetupMode, setStaffSetupMode] = useState(false);
+  const [staffSetupPin, setStaffSetupPin] = useState('');
+  const [staffSetupPassword, setStaffSetupPassword] = useState('');
+  const [staffSetupPasswordConfirm, setStaffSetupPasswordConfirm] = useState('');
   const [setupAvailable, setSetupAvailable] = useState(false);
   const [setupChecked, setSetupChecked] = useState(false);
   const [setupOpen, setSetupOpen] = useState(
@@ -200,8 +204,8 @@ export function WorkspaceView({
   const [staffTitle, setStaffTitle] = useState('Solar Field Technician');
   const [staffSkills, setStaffSkills] = useState('');
   const [staffStatus, setStaffStatus] = useState<StaffStatus>('Active');
-  const [staffPassword, setStaffPassword] = useState('');
-  const [showStaffPassword, setShowStaffPassword] = useState(false);
+  const [customerAccountCreatingId, setCustomerAccountCreatingId] = useState<string | null>(null);
+  const [customerAccountProvisionedQuoteIds, setCustomerAccountProvisionedQuoteIds] = useState<string[]>([]);
 
   // Custom Role modal (Super Admin)
   const [roleModal, setRoleModal] = useState(false);
@@ -317,6 +321,30 @@ export function WorkspaceView({
       await loadWorkspace();
     } catch (err) {
       setErrorMsg((err as Error).message);
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function handleStaffPasswordSetup(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setErrorMsg('');
+    if (staffSetupPassword !== staffSetupPasswordConfirm) {
+      setErrorMsg('The passwords do not match.');
+      return;
+    }
+    setLoginBusy(true);
+    try {
+      await api.setupStaffPassword(loginEmail, staffSetupPin, staffSetupPassword);
+      setStaffSetupMode(false);
+      setStaffSetupPin('');
+      setStaffSetupPassword('');
+      setStaffSetupPasswordConfirm('');
+      setLoginPassword('');
+      setErrorMsg('');
+      showToast('Password set. Sign in with your new password.');
+    } catch (error) {
+      setErrorMsg((error as Error).message);
     } finally {
       setLoginBusy(false);
     }
@@ -470,10 +498,12 @@ export function WorkspaceView({
           )}
 
           <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleLogin(loginEmail, loginPassword);
-            }}
+            onSubmit={staffSetupMode
+              ? handleStaffPasswordSetup
+              : (event) => {
+                event.preventDefault();
+                handleLogin(loginEmail, loginPassword);
+              }}
             className="mt-6 space-y-4 text-sm"
           >
             <label className="block">
@@ -487,34 +517,90 @@ export function WorkspaceView({
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
               />
             </label>
-            <label className="block">
-              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password</span>
-              <span className="relative mt-1 block">
-                <input
-                  type={showLoginPassword ? 'text' : 'password'}
-                  required
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  autoComplete="current-password"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100"
-                />
-                <button
-                  type="button"
-                  aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
-                  aria-pressed={showLoginPassword}
-                  onClick={() => setShowLoginPassword((visible) => !visible)}
-                  className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-slate-500 hover:text-[#D61F26]"
-                >
-                  {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </span>
-            </label>
+            {staffSetupMode ? (
+              <>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Four-digit setup PIN</span>
+                  <input
+                    type="text"
+                    required
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{4}"
+                    maxLength={4}
+                    value={staffSetupPin}
+                    onChange={(e) => setStaffSetupPin(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm tracking-[0.3em] dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">New password (at least 12 characters)</span>
+                  <input
+                    type="password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    value={staffSetupPassword}
+                    onChange={(e) => setStaffSetupPassword(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Confirm new password</span>
+                  <input
+                    type="password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    value={staffSetupPasswordConfirm}
+                    onChange={(e) => setStaffSetupPasswordConfirm(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+              </>
+            ) : (
+              <label className="block">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password</span>
+                <span className="relative mt-1 block">
+                  <input
+                    type={showLoginPassword ? 'text' : 'password'}
+                    required
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    autoComplete="current-password"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100"
+                  />
+                  <button
+                    type="button"
+                    aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showLoginPassword}
+                    onClick={() => setShowLoginPassword((visible) => !visible)}
+                    className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-slate-500 hover:text-[#D61F26]"
+                  >
+                    {showLoginPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </span>
+              </label>
+            )}
             <button
               type="submit"
               disabled={loginBusy}
               className="w-full rounded-lg bg-[#081E3E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#D61F26] dark:bg-[#D61F26]"
             >
-              {loginBusy ? 'Signing In...' : 'Sign In to Staff Workspace'}
+              {loginBusy ? 'Please wait...' : staffSetupMode ? 'Set Password' : 'Sign In to Staff Workspace'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setErrorMsg('');
+                setStaffSetupMode((mode) => !mode);
+                setLoginPassword('');
+              }}
+              className="w-full text-center text-xs font-semibold text-[#D61F26] underline underline-offset-2"
+            >
+              {staffSetupMode ? 'Return to staff sign in' : 'First time here? Set up password with PIN'}
             </button>
           </form>
 
@@ -1496,6 +1582,35 @@ export function WorkspaceView({
                           </button>
                         </>
                       )}
+                      {['admin', 'superadmin'].includes(user.role)
+                        && q.status === 'Approved'
+                        && data.enquiries.some((enquiry) => enquiry.id === q.enquiryId && enquiry.estimate)
+                        && (
+                          <button
+                            type="button"
+                            disabled={customerAccountCreatingId === q.id || customerAccountProvisionedQuoteIds.includes(q.id)}
+                            onClick={async () => {
+                              setErrorMsg('');
+                              setCustomerAccountCreatingId(q.id);
+                              try {
+                                const result = await api.createCustomerAccount(q.id);
+                                setCustomerAccountProvisionedQuoteIds((current) => [...current, q.id]);
+                                showToast(`Customer profile approved. Setup PIN emailed to ${result.email}.`);
+                              } catch (error) {
+                                setErrorMsg((error as Error).message);
+                              } finally {
+                                setCustomerAccountCreatingId(null);
+                              }
+                            }}
+                            className="rounded-lg border border-emerald-700 px-3 py-1.5 text-xs font-semibold text-emerald-800 disabled:opacity-60 dark:border-emerald-500 dark:text-emerald-300"
+                          >
+                            {customerAccountCreatingId === q.id
+                              ? 'Sending PIN...'
+                              : customerAccountProvisionedQuoteIds.includes(q.id)
+                                ? 'Setup PIN Emailed'
+                                : 'Approve Profile & Email PIN'}
+                          </button>
+                        )}
                       {hasPermission(user, 'manage_invoices') && q.status === 'Approved' && (
                         <button
                           type="button"
@@ -1622,7 +1737,6 @@ export function WorkspaceView({
                       setStaffTitle(data.roles.find((role) => role.id === 'technician')?.description || 'Solar Field Technician');
                       setStaffSkills('');
                       setStaffStatus('Active');
-                      setStaffPassword('');
                       setStaffModal(true);
                     }}
                     className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
@@ -1662,12 +1776,28 @@ export function WorkspaceView({
                             setStaffTitle(s.title);
                             setStaffSkills(s.skills);
                             setStaffStatus(s.status);
-                            setStaffPassword('');
                             setStaffModal(true);
                           }}
                           className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold dark:border-slate-700"
                         >
                           Edit
+                        </button>
+                      )}
+                      {user.role === 'superadmin' && s.mustSetPassword && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setErrorMsg('');
+                            try {
+                              await api.resendStaffSetupPin(s.id);
+                              showToast(`Setup PIN emailed to ${s.email}.`);
+                            } catch (error) {
+                              setErrorMsg((error as Error).message);
+                            }
+                          }}
+                          className="rounded-lg border border-[#D61F26] px-3 py-1 text-xs font-semibold text-[#D61F26]"
+                        >
+                          Resend Setup PIN
                         </button>
                       )}
                     </div>
@@ -2465,7 +2595,6 @@ export function WorkspaceView({
                   title: staffTitle,
                   skills: staffSkills,
                   status: staffStatus,
-                  password: staffPassword || undefined,
                 });
                 setStaffModal(false);
                 await loadWorkspace();
@@ -2553,28 +2682,9 @@ export function WorkspaceView({
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
               />
               {!editStaffId && (
-                <span className="relative block">
-                  <input
-                    type={showStaffPassword ? 'text' : 'password'}
-                    placeholder="Initial password (at least 12 characters)"
-                    minLength={12}
-                    maxLength={128}
-                    required
-                    value={staffPassword}
-                    onChange={(e) => setStaffPassword(e.target.value)}
-                    autoComplete="new-password"
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 pr-11 dark:border-slate-700 dark:bg-[#061327]"
-                  />
-                  <button
-                    type="button"
-                    aria-label={showStaffPassword ? 'Hide password' : 'Show password'}
-                    aria-pressed={showStaffPassword}
-                    onClick={() => setShowStaffPassword((visible) => !visible)}
-                    className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-slate-500 hover:text-[#D61F26]"
-                  >
-                    {showStaffPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </span>
+                <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-[#061327] dark:text-slate-300">
+                  A one-time four-digit PIN and first-time password setup instructions will be emailed to this staff member.
+                </p>
               )}
             </div>
             <div className="mt-5 flex justify-end gap-2">

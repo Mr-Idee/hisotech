@@ -178,6 +178,22 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  loginCustomer: (email: string, password: string) =>
+    request<{
+      profile: CustomerProfile;
+      equipment: CustomerEquipment[];
+      tickets: ServiceTicket[];
+    }>('/api/customer/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+
+  setupCustomerPassword: (email: string, pin: string, password: string) =>
+    request<{ ok: boolean }>('/api/customer/setup-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, pin, password }),
+    }),
+
   verifyCustomerLoginLink: (token: string) =>
     request<{
       profile: CustomerProfile;
@@ -313,6 +329,12 @@ export const api = {
     request<{ user: StaffMember }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ identifier, password }),
+    }),
+
+  setupStaffPassword: (identifier: string, pin: string, password: string) =>
+    request<{ ok: boolean }>('/api/auth/setup-password', {
+      method: 'POST',
+      body: JSON.stringify({ identifier, pin, password }),
     }),
 
   getFirstAdminSetupStatus: () =>
@@ -520,6 +542,18 @@ export const api = {
     request<{ id: string }>('/api/staff', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+
+  resendStaffSetupPin: (staffId: string) =>
+    request<{ ok: boolean }>('/api/staff/resend-pin', {
+      method: 'POST',
+      body: JSON.stringify({ staffId }),
+    }),
+
+  createCustomerAccount: (quoteId: string) =>
+    request<{ ok: boolean; email: string }>('/api/customers/provision', {
+      method: 'POST',
+      body: JSON.stringify({ quoteId }),
     }),
 
   saveRole: (payload: {

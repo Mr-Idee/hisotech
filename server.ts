@@ -18,6 +18,7 @@ import {
   checkAuthRateLimit,
   createPublicEnquiry,
   createCustomerLoginLink,
+  createCustomerAccountForApprovedQuote,
   createStaffEnquiry,
   createStoreOrder,
   decideQuotation,
@@ -43,6 +44,7 @@ import {
   getLifecycleNotificationTargets,
   getPaymentInvoiceId,
   getActiveStaffIds,
+  getActiveStaffEmailRecipients,
   getPushSubscriptions,
   getPushSubscribedCustomers,
   getVerifiedCustomerIds,
@@ -52,11 +54,16 @@ import {
   recordPayment,
   releaseInstallation,
   revokeCustomerLoginLink,
+  clearCustomerInitialPin,
   saveCustomerEquipment,
   saveCustomerProfile,
   saveQuotation,
   saveRoleDefinition,
   saveStaffMember,
+  reissueStaffSetupPin,
+  setupCustomerPassword,
+  setupStaffPassword,
+  authenticateCustomer,
   savePlatformSettings,
   submitCustomerTicket,
   verifyCustomerLoginLink,
@@ -295,6 +302,134 @@ async function sendLifecycleWhatsApp(
         channel: 'whatsapp', status: 'skipped', errorCode: 'no_active_operational_consent',
       });
     }
+  }
+}
+
+async function sendOperationalEmailToRoles(
+  eventKey: string,
+  roles: string[],
+  subject: string,
+  message: string,
+): Promise<void> {
+  const targets = getActiveStaffEmailRecipients(roles);
+  for (const target of targets) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(target.email)) {
+      logCommunicationDelivery({
+        eventKey, recipientType: 'staff', recipientId: target.id,
+        channel: 'email', status: 'skipped', errorCode: 'recipient_email_unavailable',
+      });
+      continue;
+    }
+    if (!process.env.SMTP_URL || !process.env.MAIL_FROM) {
+      logCommunicationDelivery({
+        eventKey, recipientType: 'staff', recipientId: target.id,
+        channel: 'email', status: 'not_configured', errorCode: 'smtp_credentials_missing',
+      });
+      continue;
+    }
+    try {
+      const transport = nodemailer.createTransport(process.env.SMTP_URL);
+      await transport.sendMail({ from: process.env.MAIL_FROM, to: target.email, subject, text: message });
+      logCommunicationDelivery({
+        eventKey, recipientType: 'staff', recipientId: target.id, channel: 'email', status: 'sent',
+      });
+    } catch {
+      logCommunicationDelivery({
+        eventKey, recipientType: 'staff', recipientId: target.id,
+        channel: 'email', status: 'failed', errorCode: 'smtp_delivery_failed',
+      });
+    }
+  }
+}
+
+async function sendAccountSetupEmail(
+  eventKey: 'customer_account_created' | 'staff_account_created',
+  recipientType: 'customer' | 'staff',
+  recipientId: string,
+  email: string,
+  name: string,
+  username: string,
+  pin: string,
+): Promise<boolean> {
+  if (!process.env.APP_URL || !process.env.SMTP_URL || !process.env.MAIL_FROM
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    logCommunicationDelivery({
+      eventKey, recipientType, recipientId, channel: 'email',
+      status: 'not_configured', errorCode: 'account_setup_mail_not_configured',
+    });
+    return false;
+  }
+  const destination = recipientType === 'customer' ? 'customer portal' : 'staff workspace';
+  const url = `${process.env.APP_URL.replace(/\/+$/, '')}/#${recipientType === 'customer' ? 'customer' : 'workspace'}`;
+  const text = [
+    `Hello ${name},`,
+    '',
+    `Your HI-SOTECH ${destination} account is ready.`,
+    `Username: ${username}`,
+    `One-time setup PIN: ${pin}`,
+    'The PIN expires in 24 hours and can only be used once.',
+    `Open ${url}, choose first-time password setup, enter the PIN, and create a password of at least 12 characters.`,
+    'If you did not expect this account, contact HI-SOTECH support.',
+  ].join('\n');
+  try {
+    const transport = nodemailer.createTransport(process.env.SMTP_URL);
+    await transport.sendMail({
+      from: process.env.MAIL_FROM,
+      to: email,
+      subject: 'Your HI-SOTECH account setup instructions',
+      text,
+    });
+    logCommunicationDelivery({ eventKey, recipientType, recipientId, channel: 'email', status: 'sent' });
+    return true;
+  } catch {
+    logCommunicationDelivery({
+      eventKey, recipientType, recipientId, channel: 'email',
+      status: 'failed', errorCode: 'smtp_delivery_failed',
+    });
+    return false;
+  }
+}
+
+async function sendAccountSetupWhatsApp(
+  eventKey: 'customer_account_created' | 'staff_account_created',
+  recipientType: 'customer' | 'staff',
+  accountId: string,
+  consentRecipientType: 'customer' | 'staff' | 'enquiry',
+  consentRecipientId: string,
+  phone: string,
+  name: string,
+  username: string,
+  pin: string,
+): Promise<void> {
+  let consent: ReturnType<typeof getWhatsAppConsentContact>;
+  try {
+    consent = getWhatsAppConsentContact(consentRecipientType, consentRecipientId, 'operational');
+  } catch {
+    logCommunicationDelivery({
+      eventKey, recipientType, recipientId: accountId, channel: 'whatsapp',
+      status: 'failed', errorCode: 'consent_lookup_failed',
+    });
+    return;
+  }
+  if (!consent || consent.phone !== phone) {
+    logCommunicationDelivery({
+      eventKey, recipientType, recipientId: accountId,
+      channel: 'whatsapp', status: 'skipped', errorCode: 'no_active_operational_consent',
+    });
+    return;
+  }
+  const message = `HI-SOTECH account setup for ${name}. Username: ${username}. One-time PIN: ${pin}. It expires in 24 hours. Open ${process.env.APP_URL || ''}/#${recipientType === 'customer' ? 'customer' : 'workspace'} to set your password.`;
+  try {
+    const config = getWhatsAppConfiguration(eventKey);
+    await sendWhatsAppTemplate(config, phone, message);
+    logCommunicationDelivery({ eventKey, recipientType, recipientId: accountId, channel: 'whatsapp', status: 'sent' });
+  } catch (error) {
+    const notConfigured = error instanceof WhatsAppConfigurationError;
+    logCommunicationDelivery({
+      eventKey, recipientType, recipientId: accountId, channel: 'whatsapp',
+      status: notConfigured ? 'not_configured' : 'failed',
+      errorCode: notConfigured ? 'template_or_credentials_missing' : 'provider_delivery_failed',
+    });
   }
 }
 
@@ -713,6 +848,56 @@ async function startServer() {
   });
 
   // --- Customer Portal API ---
+  app.post('/api/customer/setup-password', (req, res) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const pin = String(req.body?.pin || '');
+    const password = String(req.body?.password || '');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 190) {
+      res.status(422).json({ error: 'Enter the email address used for your account.' });
+      return;
+    }
+    const address = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkAuthRateLimit(`customer-pin-ip:${address}`, 10, 15 * 60)
+        || !checkAuthRateLimit(`customer-pin-email:${email}`, 5, 15 * 60)) {
+      res.status(429).json({ error: 'Too many setup attempts. Please try again later.' });
+      return;
+    }
+    try {
+      setupCustomerPassword(email, pin, password);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post('/api/customer/login', (req, res) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (email.length > 190 || password.length > 128) {
+      res.status(422).json({ error: 'Invalid email or password.' });
+      return;
+    }
+    const address = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkAuthRateLimit(`customer-login-ip:${address}`, 10, 15 * 60)
+        || !checkAuthRateLimit(`customer-login-email:${email}`, 5, 15 * 60)) {
+      res.status(429).json({ error: 'Too many sign-in attempts. Please try again later.' });
+      return;
+    }
+    const auth = authenticateCustomer(email, password);
+    if (!auth) {
+      res.status(401).json({ error: 'Invalid email or password.' });
+      return;
+    }
+    res.cookie(CUSTOMER_COOKIE_NAME, auth.sessionToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 7 * 86400 * 1000,
+    });
+    const { sessionToken: _sessionToken, ...portal } = auth;
+    res.json(portal);
+  });
+
   app.post('/api/customer/login-link', async (req, res) => {
     if (!process.env.APP_URL || !process.env.MAIL_FROM || !process.env.SMTP_URL) {
       res.status(503).json({ error: 'Customer email sign-in is not configured yet.' });
@@ -874,6 +1059,11 @@ async function startServer() {
     try {
       const ticket = submitCustomerTicket(session.profile.id, req.body);
       await sendLifecycleWhatsApp('ticket_status', 'ticket', ticket.ticketCode, `Service ticket ${ticket.ticketCode} was received.`);
+      await sendOperationalEmailToRoles(
+        'ticket_status', ['admin', 'superadmin'],
+        `HI-SOTECH service ticket received: ${ticket.ticketCode}`,
+        `Service ticket ${ticket.ticketCode} was received. Review it in the Staff Workspace.`,
+      );
       res.status(201).json(ticket);
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
@@ -881,6 +1071,28 @@ async function startServer() {
   });
 
   // --- Staff Auth API ---
+  app.post('/api/auth/setup-password', (req, res) => {
+    const identifier = String(req.body?.identifier || '').trim().toLowerCase();
+    const pin = String(req.body?.pin || '');
+    const password = String(req.body?.password || '');
+    if (!identifier || identifier.length > 190) {
+      res.status(422).json({ error: 'Enter your staff email or username.' });
+      return;
+    }
+    const address = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkAuthRateLimit(`staff-pin-ip:${address}`, 10, 15 * 60)
+        || !checkAuthRateLimit(`staff-pin-identifier:${identifier}`, 5, 15 * 60)) {
+      res.status(429).json({ error: 'Too many setup attempts. Please try again later.' });
+      return;
+    }
+    try {
+      setupStaffPassword(identifier, pin, password);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/api/auth/login', (req, res) => {
     const { identifier, password } = req.body ?? {};
     const normalizedIdentifier = String(identifier || '').trim().toLowerCase();
@@ -1397,6 +1609,37 @@ async function startServer() {
     res.status(201).json(enquiry);
   });
 
+  app.post('/api/customers/provision', async (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user || !['admin', 'superadmin'].includes(user.role)) {
+      res.status(user ? 403 : 401).json({ error: 'Only Admin can approve a customer profile and create its account.' });
+      return;
+    }
+    const quoteId = typeof req.body?.quoteId === 'string' ? req.body.quoteId.trim() : '';
+    if (!quoteId || quoteId.length > 80) {
+      res.status(422).json({ error: 'A valid approved quotation is required.' });
+      return;
+    }
+    try {
+      const account = createCustomerAccountForApprovedQuote(user, quoteId);
+      const sent = await sendAccountSetupEmail(
+        'customer_account_created', 'customer', account.id, account.email, account.name, account.email, account.pin,
+      );
+      if (!sent) {
+        clearCustomerInitialPin(account.id);
+        res.status(503).json({ error: 'The account is pending, but the setup email could not be delivered. Retry from the approved quotation.' });
+        return;
+      }
+      await sendAccountSetupWhatsApp(
+        'customer_account_created', 'customer', account.id, 'enquiry', account.enquiryId,
+        account.phone, account.name, account.email, account.pin,
+      );
+      res.status(201).json({ ok: true, email: account.email });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/api/catalog', (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_storefront')) {
@@ -1421,14 +1664,23 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  app.post('/api/quotes', (req, res) => {
+  app.post('/api/quotes', async (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'draft_quotes')) {
       res.status(403).json({ error: 'Quotation drafting permission required.' });
       return;
     }
     try {
-      res.json(saveQuotation(user!, req.body));
+      const saved = saveQuotation(user!, req.body);
+      if (req.body?.submitForApproval) {
+        await sendOperationalEmailToRoles(
+          'quote_status',
+          ['director', 'superadmin'],
+          `HI-SOTECH quotation awaiting Director approval: ${saved.quoteCode}`,
+          `Quotation ${saved.quoteCode} is ready for Director approval.\nCustomer: ${String(req.body.customerName || '')}\nScope: ${String(req.body.scope || '')}\nReview: ${process.env.APP_URL || ''}/#workspace?tab=quotes`
+        );
+      }
+      res.json(saved);
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
     }
@@ -1508,6 +1760,12 @@ async function startServer() {
     }
     try {
       const result = decideQuotation(user!, req.body.quoteId, req.body.decision);
+      await sendOperationalEmailToRoles(
+        'quote_status',
+        ['admin', 'superadmin'],
+        `HI-SOTECH quotation decision: ${String(result.status)}`,
+        `Quotation decision: ${String(result.status)}.\nQuotation ID: ${String(req.body.quoteId)}\nReview: ${process.env.APP_URL || ''}/#workspace?tab=quotes`
+      );
       res.json(result);
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
@@ -1530,13 +1788,26 @@ async function startServer() {
     }
   });
 
-  app.post('/api/payments', (req, res) => {
+  app.post('/api/payments', async (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_invoices')) {
       res.status(403).json({ error: 'Payment logging permission required.' });
       return;
     }
-    res.status(201).json(recordPayment(user!, req.body));
+    const payment = recordPayment(user!, req.body);
+    await sendLifecycleWhatsApp(
+      'invoice_status',
+      'invoice',
+      req.body.invoiceId,
+      `Payment receipt ${payment.paymentCode} was logged.\nAmount: ₦${Number(req.body.amountNgn || 0).toLocaleString('en-NG')}\nStatus: Pending verification\nReview: ${process.env.APP_URL || ''}/#workspace?tab=finance`
+    );
+    await sendOperationalEmailToRoles(
+      'invoice_status',
+      ['director', 'superadmin'],
+      `HI-SOTECH payment receipt awaiting verification: ${payment.paymentCode}`,
+      `Payment receipt ${payment.paymentCode} was logged.\nAmount: ₦${Number(req.body.amountNgn || 0).toLocaleString('en-NG')}\nStatus: Pending verification\nReview: ${process.env.APP_URL || ''}/#workspace?tab=finance`
+    );
+    res.status(201).json(payment);
   });
 
   app.post('/api/payments/verify', async (req, res) => {
@@ -1655,6 +1926,11 @@ async function startServer() {
     try {
       updateServiceTicket(user!, req.body);
       await sendLifecycleWhatsApp('ticket_status', 'ticket', String(req.body?.ticketId || ''), `Service ticket status changed to ${String(req.body?.status || 'updated')}.`);
+      await sendOperationalEmailToRoles(
+        'ticket_status', ['admin', 'superadmin'],
+        'HI-SOTECH service ticket updated',
+        `Service ticket status changed to ${String(req.body?.status || 'updated')}.`,
+      );
       res.json({ ok: true });
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
@@ -1692,7 +1968,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/staff', (req, res) => {
+  app.post('/api/staff', async (req, res) => {
     const { user } = getSessionUser(req);
     if (!hasPermission(user, 'manage_staff')) {
       res.status(403).json({ error: 'Staff management permission required.' });
@@ -1703,12 +1979,50 @@ async function startServer() {
       return;
     }
     try {
-      res.json(saveStaffMember(user!, req.body));
+      const saved = saveStaffMember(user!, req.body);
+      if ('pin' in saved) {
+        const sent = await sendAccountSetupEmail(
+          'staff_account_created', 'staff', saved.id, saved.email, saved.name, saved.username, saved.pin,
+        );
+        if (!sent) {
+          res.status(503).json({ error: 'The staff account was created, but its setup email could not be delivered. Use Resend Setup PIN to retry.' });
+          return;
+        }
+        await sendAccountSetupWhatsApp(
+          'staff_account_created', 'staff', saved.id, 'staff', saved.id,
+          String(req.body?.phone || ''), saved.name, saved.username, saved.pin,
+        );
+      }
+      res.json({ id: saved.id });
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
     }
   });
 
+  app.post('/api/staff/resend-pin', async (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user || user.role !== 'superadmin') {
+      res.status(user ? 403 : 401).json({ error: 'Only Super Admin can resend staff setup credentials.' });
+      return;
+    }
+    try {
+      const account = reissueStaffSetupPin(user, String(req.body?.staffId || ''));
+      const sent = await sendAccountSetupEmail(
+        'staff_account_created', 'staff', account.id, account.email, account.name, account.username, account.pin,
+      );
+      if (!sent) {
+        res.status(503).json({ error: 'The staff setup email could not be delivered. Check SMTP configuration and retry.' });
+        return;
+      }
+      await sendAccountSetupWhatsApp(
+        'staff_account_created', 'staff', account.id, 'staff', account.id,
+        account.phone, account.name, account.username, account.pin,
+      );
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
   app.post('/api/notifications/read', (req, res) => {
     const { user } = getSessionUser(req);
     if (!user) {

@@ -32,7 +32,8 @@ function hiso_current_customer(): ?array {
         return null;
     }
     $stmt = hiso_pdo()->prepare(
-        'SELECT id, name, email, phone, location, company, ref_code, created_at FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL LIMIT 1'
+        'SELECT id, name, email, phone, location, company, ref_code, created_at FROM customer_profiles ' .
+        'WHERE id = ? AND email_verified_at IS NOT NULL AND must_set_password = 0 LIMIT 1'
     );
     $stmt->execute([$customerId]);
     return $stmt->fetch() ?: null;
@@ -129,6 +130,143 @@ function hiso_customer_auth_rate_limit(string $scope, int $limit, int $windowSec
     $pdo->prepare('INSERT INTO customer_auth_rate_limits (id, key_hash, created_at) VALUES (?, ?, ?)')
         ->execute([hiso_uuid(), $keyHash, $now->format('Y-m-d H:i:s')]);
     return true;
+}
+
+function hiso_create_customer_account_from_approved_quote(array $actor, string $quoteId): array {
+    if (!in_array($actor['role'] ?? '', ['admin', 'superadmin'], true)) {
+        throw new RuntimeException('Only Admin can approve a customer profile and create its account.');
+    }
+    $pdo = hiso_pdo();
+    $stmt = $pdo->prepare(
+        'SELECT e.id, e.customer_name, e.email, e.phone, e.location, e.ref_code FROM quotations q ' .
+        'JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? AND q.status = "Approved" ' .
+        'AND e.estimate_json IS NOT NULL LIMIT 1'
+    );
+    $stmt->execute([$quoteId]);
+    $enquiry = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$enquiry) {
+        throw new RuntimeException('Only Director-approved estimator quotations can be used to create customer accounts.');
+    }
+    $email = strtolower(trim((string)$enquiry['email']));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190) {
+        throw new RuntimeException('A valid customer email address is required before account creation.');
+    }
+
+    $existingStmt = $pdo->prepare(
+        'SELECT id, password_hash, email_verified_at FROM customer_profiles WHERE LOWER(email) = ? LIMIT 1'
+    );
+    $existingStmt->execute([$email]);
+    $existing = $existingStmt->fetch(PDO::FETCH_ASSOC);
+    if ($existing && (!empty($existing['password_hash']) || !empty($existing['email_verified_at']))) {
+        throw new RuntimeException('A customer account already exists for this email address.');
+    }
+    $pin = (string)random_int(1000, 9999);
+    $pinHash = password_hash($pin, PASSWORD_DEFAULT);
+    if (!is_string($pinHash)) {
+        throw new RuntimeException('Customer account setup could not be secured.');
+    }
+    $expires = gmdate('Y-m-d H:i:s', time() + 86400);
+    if ($existing) {
+        $id = (string)$existing['id'];
+        $pdo->prepare(
+            'UPDATE customer_profiles SET name=?, phone=?, location=?, ref_code=?, initial_pin_hash=?, ' .
+            'pin_expires_at=?, must_set_password=1 WHERE id=?'
+        )->execute([
+            $enquiry['customer_name'], $enquiry['phone'], $enquiry['location'],
+            $enquiry['ref_code'], $pinHash, $expires, $id,
+        ]);
+    } else {
+        $id = hiso_uuid();
+        $pdo->prepare(
+            'INSERT INTO customer_profiles (id, name, email, phone, location, company, ref_code, initial_pin_hash, pin_expires_at, must_set_password) ' .
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)'
+        )->execute([
+            $id, $enquiry['customer_name'], $email, $enquiry['phone'],
+            $enquiry['location'], '', $enquiry['ref_code'], $pinHash, $expires,
+        ]);
+    }
+    hiso_audit($actor, 'CREATE_CUSTOMER_ACCOUNT', 'Customer', $id, 'Approved customer profile and created portal account from quotation ' . $quoteId . '.');
+    return [
+        'id' => $id,
+        'enquiryId' => (string)$enquiry['id'],
+        'name' => (string)$enquiry['customer_name'],
+        'email' => $email,
+        'phone' => (string)$enquiry['phone'],
+        'pin' => $pin,
+    ];
+}
+
+function hiso_clear_customer_initial_pin(string $customerId): void {
+    hiso_pdo()->prepare(
+        'UPDATE customer_profiles SET initial_pin_hash=NULL, pin_expires_at=NULL WHERE id=? AND must_set_password=1'
+    )->execute([$customerId]);
+}
+
+function hiso_setup_customer_password(string $email, string $pin, string $password): void {
+    if (!preg_match('/^\d{4}$/', $pin) || strlen($password) < 12 || strlen($password) > 128) {
+        throw new InvalidArgumentException('Enter the four-digit PIN and a password between 12 and 128 characters.');
+    }
+    $pdo = hiso_pdo();
+    $stmt = $pdo->prepare(
+        'SELECT id, initial_pin_hash FROM customer_profiles WHERE LOWER(email)=? AND must_set_password=1 ' .
+        'AND pin_expires_at > UTC_TIMESTAMP() LIMIT 1'
+    );
+    $stmt->execute([strtolower(trim($email))]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$account || !is_string($account['initial_pin_hash']) || !password_verify($pin, $account['initial_pin_hash'])) {
+        throw new InvalidArgumentException('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
+    }
+    $update = $pdo->prepare(
+        'UPDATE customer_profiles SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, ' .
+        'must_set_password=0, email_verified_at=COALESCE(email_verified_at, UTC_TIMESTAMP()) ' .
+        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP()'
+    );
+    $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash']]);
+    if ($update->rowCount() !== 1) {
+        throw new InvalidArgumentException('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
+    }
+}
+
+function hiso_customer_password_login(string $email, string $password): ?array {
+    $stmt = hiso_pdo()->prepare(
+        'SELECT id, password_hash FROM customer_profiles WHERE LOWER(email)=? AND email_verified_at IS NOT NULL ' .
+        'AND must_set_password=0 LIMIT 1'
+    );
+    $stmt->execute([strtolower(trim($email))]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$account || !is_string($account['password_hash']) || !password_verify($password, $account['password_hash'])) {
+        return null;
+    }
+    hiso_start_session();
+    session_regenerate_id(true);
+    $_SESSION['customer_id'] = $account['id'];
+    $customer = hiso_current_customer();
+    return $customer ? hiso_customer_portal_data($customer) : null;
+}
+
+function hiso_setup_staff_password(string $identifier, string $pin, string $password): void {
+    if (!preg_match('/^\d{4}$/', $pin) || strlen($password) < 12 || strlen($password) > 128) {
+        throw new InvalidArgumentException('Enter the four-digit PIN and a password between 12 and 128 characters.');
+    }
+    $pdo = hiso_pdo();
+    $identifier = strtolower(trim($identifier));
+    $stmt = $pdo->prepare(
+        'SELECT id, initial_pin_hash FROM users WHERE (LOWER(email)=? OR LOWER(username)=?) ' .
+        'AND status="Active" AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP() LIMIT 1'
+    );
+    $stmt->execute([$identifier, $identifier]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$account || !is_string($account['initial_pin_hash']) || !password_verify($pin, $account['initial_pin_hash'])) {
+        throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+    }
+    $update = $pdo->prepare(
+        'UPDATE users SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 ' .
+        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP()'
+    );
+    $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash']]);
+    if ($update->rowCount() !== 1) {
+        throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+    }
 }
 
 function hiso_user_permissions(string $role): array {

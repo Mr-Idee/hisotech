@@ -61,6 +61,10 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
+export function closeDatabase(): void {
+  db.close();
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS roles (
   id TEXT PRIMARY KEY,
@@ -78,6 +82,9 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   phone TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
+  initial_pin_hash TEXT,
+  pin_expires_at TEXT,
+  must_set_password INTEGER NOT NULL DEFAULT 0,
   role TEXT NOT NULL,
   title TEXT NOT NULL,
   skills TEXT NOT NULL DEFAULT '',
@@ -227,6 +234,10 @@ CREATE TABLE IF NOT EXISTS customer_profiles (
   company TEXT NOT NULL DEFAULT '',
   ref_code TEXT NOT NULL DEFAULT '',
   email_verified_at TEXT,
+  password_hash TEXT,
+  initial_pin_hash TEXT,
+  pin_expires_at TEXT,
+  must_set_password INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -412,6 +423,13 @@ ensureColumn('catalog_items', 'grade', "grade TEXT NOT NULL DEFAULT 'Standard'")
 ensureColumn('catalog_items', 'watts', 'watts INTEGER');
 ensureColumn('catalog_items', 'description', "description TEXT NOT NULL DEFAULT ''");
 ensureColumn('customer_profiles', 'email_verified_at', 'email_verified_at TEXT');
+ensureColumn('customer_profiles', 'password_hash', 'password_hash TEXT');
+ensureColumn('customer_profiles', 'initial_pin_hash', 'initial_pin_hash TEXT');
+ensureColumn('customer_profiles', 'pin_expires_at', 'pin_expires_at TEXT');
+ensureColumn('customer_profiles', 'must_set_password', 'must_set_password INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'initial_pin_hash', 'initial_pin_hash TEXT');
+ensureColumn('users', 'pin_expires_at', 'pin_expires_at TEXT');
+ensureColumn('users', 'must_set_password', 'must_set_password INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'username', 'username TEXT');
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users(username) WHERE username IS NOT NULL AND username <> ''");
 
@@ -419,6 +437,10 @@ function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
   const derived = crypto.scryptSync(password, salt, 64);
   return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`;
+}
+
+function makeInitialPin(): string {
+  return String(crypto.randomInt(1000, 10000));
 }
 
 function verifyPassword(password: string, storedHash: string): boolean {
@@ -604,6 +626,7 @@ function hydrateStaffRow(row: Record<string, unknown>, rolesMap: Map<string, Rol
     skills: String(row.skills),
     status: row.status as StaffStatus,
     createdAt: String(row.created_at),
+    mustSetPassword: Number(row.must_set_password) === 1,
   };
 }
 
@@ -773,6 +796,7 @@ export function authenticateUser(identifier: string, password: string): { token:
     .prepare("SELECT * FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND status = 'Active' LIMIT 1")
     .get(identifier.trim().toLowerCase(), identifier.trim().toLowerCase()) as Record<string, unknown> | undefined;
   if (!row) return null;
+  if (Number(row.must_set_password) === 1) return null;
   const storedHash = String(row.password_hash);
   if (!verifyPassword(password, storedHash)) return null;
   if (!storedHash.startsWith('scrypt$')) {
@@ -1287,7 +1311,7 @@ function customerPortalData(customerId: string): {
   tickets: ServiceTicket[];
 } {
   const row = db
-    .prepare('SELECT * FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL LIMIT 1')
+    .prepare('SELECT * FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL AND must_set_password = 0 LIMIT 1')
     .get(customerId) as Record<string, unknown> | undefined;
   if (!row) throw new Error('Verified customer profile not found.');
   const profile: CustomerProfile = {
@@ -1579,17 +1603,25 @@ export function getLifecycleNotificationTargets(
     const enquiry = db.prepare('SELECT id, customer_name AS name, email, phone FROM enquiries WHERE id = ? LIMIT 1')
       .get(entityId) as { id: string; name: string; email: string; phone: string } | undefined;
     if (enquiry) addTarget('enquiry', enquiry);
-    const staff = db.prepare("SELECT id, name, email, phone FROM users WHERE status = 'Active'")
+    const staff = db.prepare("SELECT id, name, email, phone FROM users WHERE status = 'Active' AND role IN ('admin','director','superadmin')")
       .all() as { id: string; name: string; email: string; phone: string }[];
     for (const person of staff) addTarget('staff', person);
   } else if (entity === 'ticket') {
     const row = db.prepare(
-      'SELECT c.id, c.name, c.email, c.phone FROM service_tickets t JOIN customer_profiles c ON c.id = t.customer_id ' +
+      'SELECT c.id, c.name, c.email, c.phone, t.assigned_tech_id FROM service_tickets t JOIN customer_profiles c ON c.id = t.customer_id ' +
       'WHERE t.id = ? OR t.ticket_code = ? LIMIT 1'
-    ).get(entityId, entityId) as { id: string; name: string; email: string; phone: string } | undefined;
-    if (row) addTarget('customer', row);
+    ).get(entityId, entityId) as { id: string; name: string; email: string; phone: string; assigned_tech_id: string | null } | undefined;
+    if (row) {
+      addTarget('customer', row);
+      if (row.assigned_tech_id) {
+        const technician = db.prepare("SELECT id, name, email, phone FROM users WHERE id=? AND status='Active' LIMIT 1")
+          .get(row.assigned_tech_id) as { id: string; name: string; email: string; phone: string } | undefined;
+        if (technician) addTarget('staff', technician);
+      }
+    }
   } else {
     let enquiryId: string | undefined;
+    let assignedEngineerId: string | null = null;
     if (entity === 'quote') {
       enquiryId = (db.prepare('SELECT enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1')
         .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
@@ -1597,8 +1629,10 @@ export function getLifecycleNotificationTargets(
       enquiryId = (db.prepare('SELECT enquiry_id FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1')
         .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
     } else {
-      enquiryId = (db.prepare('SELECT enquiry_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1')
-        .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
+      const installation = db.prepare('SELECT enquiry_id, assigned_engineer_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1')
+        .get(entityId, entityId) as { enquiry_id: string; assigned_engineer_id: string | null } | undefined;
+      enquiryId = installation?.enquiry_id;
+      assignedEngineerId = installation?.assigned_engineer_id ?? null;
     }
     if (enquiryId) {
       const enquiry = db.prepare('SELECT id, customer_name AS name, email, phone FROM enquiries WHERE id = ? LIMIT 1')
@@ -1611,6 +1645,11 @@ export function getLifecycleNotificationTargets(
         if (customer) addTarget('customer', customer);
         else addTarget('enquiry', enquiry);
       }
+    }
+    if (assignedEngineerId) {
+      const engineer = db.prepare("SELECT id, name, email, phone FROM users WHERE id=? AND status='Active' LIMIT 1")
+        .get(assignedEngineerId) as { id: string; name: string; email: string; phone: string } | undefined;
+      if (engineer) addTarget('staff', engineer);
     }
   }
   return targets;
@@ -1718,6 +1757,16 @@ export function getActiveStaffIds(userIds: string[]): string[] {
   return rows.map((row) => row.id);
 }
 
+export function getActiveStaffEmailRecipients(roles: string[]): {
+  id: string; name: string; email: string; role: string;
+}[] {
+  if (!roles.length) return [];
+  const placeholders = roles.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT id, name, email, role FROM users WHERE status='Active' AND role IN (${placeholders}) ORDER BY name`
+  ).all(...roles) as { id: string; name: string; email: string; role: string }[];
+}
+
 export function getVerifiedCustomerIds(customerIds: string[]): string[] {
   if (!customerIds.length) return [];
   const placeholders = customerIds.map(() => '?').join(',');
@@ -1773,31 +1822,140 @@ export function createCustomerLoginLink(payload: {
   recordRequest.run(crypto.randomUUID(), emailKey, nowIso);
   recordRequest.run(crypto.randomUUID(), addressKey, nowIso);
 
-  let row = db.prepare('SELECT * FROM customer_profiles WHERE LOWER(email) = ? LIMIT 1').get(email) as Record<string, unknown> | undefined;
-  const createdAt = nowIso;
-  if (!row) {
-    if (!name) return { token: null, email: null };
-    const id = crypto.randomUUID();
-    db.prepare(
-      'INSERT INTO customer_profiles (id, name, email, phone, location, company, ref_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(
-      id,
-      name,
-      email,
-      phone,
-      location,
-      company,
-      refCode,
-      createdAt
-    );
-    row = db.prepare('SELECT * FROM customer_profiles WHERE id = ?').get(id) as Record<string, unknown>;
-  }
+  const row = db.prepare(
+    'SELECT * FROM customer_profiles WHERE LOWER(email) = ? AND email_verified_at IS NOT NULL AND must_set_password = 0 LIMIT 1'
+  ).get(email) as Record<string, unknown> | undefined;
+  if (!row) return { token: null, email: null };
   const token = crypto.randomBytes(32).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   db.prepare('DELETE FROM customer_login_tokens WHERE customer_id = ?').run(String(row.id));
   db.prepare('INSERT INTO customer_login_tokens (token_hash, customer_id, expires_at) VALUES (?, ?, ?)')
     .run(tokenHash, String(row.id), new Date(Date.now() + 15 * 60 * 1000).toISOString());
   return { token, email };
+}
+
+export function createCustomerAccountForApprovedQuote(
+  actor: StaffMember,
+  quoteId: string,
+): { id: string; enquiryId: string; name: string; email: string; phone: string; pin: string } {
+  if (!['admin', 'superadmin'].includes(actor.role)) {
+    throw new Error('Only Admin can approve a customer profile and create its account.');
+  }
+  const enquiry = db.prepare(
+    "SELECT e.id, e.customer_name, e.email, e.phone, e.location, e.ref_code FROM quotations q " +
+    "JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? AND q.status = 'Approved' " +
+    "AND e.estimate_json IS NOT NULL LIMIT 1"
+  ).get(quoteId) as {
+    id: string; customer_name: string; email: string; phone: string; location: string; ref_code: string;
+  } | undefined;
+  if (!enquiry) throw new Error('Only Director-approved estimator quotations can be used to create customer accounts.');
+  const email = enquiry.email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 190) {
+    throw new Error('A valid customer email address is required before account creation.');
+  }
+
+  const pin = makeInitialPin();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const existing = db.prepare('SELECT id, password_hash, email_verified_at FROM customer_profiles WHERE LOWER(email) = ? LIMIT 1')
+    .get(email) as { id: string; password_hash: string | null; email_verified_at: string | null } | undefined;
+  let id: string;
+  if (existing && (existing.password_hash || existing.email_verified_at)) {
+    throw new Error('A customer account already exists for this email address.');
+  }
+  if (existing) {
+    id = existing.id;
+    db.prepare(
+      'UPDATE customer_profiles SET name=?, phone=?, location=?, ref_code=?, initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?'
+    ).run(enquiry.customer_name, enquiry.phone, enquiry.location, enquiry.ref_code, hashPassword(pin), expiresAt, id);
+  } else {
+    id = crypto.randomUUID();
+    db.prepare(
+      "INSERT INTO customer_profiles (id, name, email, phone, location, company, ref_code, email_verified_at, password_hash, initial_pin_hash, pin_expires_at, must_set_password, created_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 1, ?)"
+    ).run(id, enquiry.customer_name, email, enquiry.phone, enquiry.location, '', enquiry.ref_code, hashPassword(pin), expiresAt, new Date().toISOString());
+  }
+  writeAudit(actor, 'CREATE_CUSTOMER_ACCOUNT', 'Customer', id, `Approved customer profile and created portal account from quotation ${quoteId}.`);
+  return { id, enquiryId: enquiry.id, name: enquiry.customer_name, email, phone: enquiry.phone, pin };
+}
+
+export function clearCustomerInitialPin(customerId: string): void {
+  db.prepare('UPDATE customer_profiles SET initial_pin_hash = NULL, pin_expires_at = NULL WHERE id = ? AND must_set_password = 1')
+    .run(customerId);
+}
+
+export function authenticateCustomer(emailValue: string, password: string): {
+  sessionToken: string;
+  profile: CustomerProfile;
+  equipment: CustomerEquipment[];
+  tickets: ServiceTicket[];
+} | null {
+  const email = emailValue.trim().toLowerCase();
+  const row = db.prepare(
+    'SELECT id, password_hash FROM customer_profiles WHERE LOWER(email) = ? AND email_verified_at IS NOT NULL AND must_set_password = 0 LIMIT 1'
+  ).get(email) as { id: string; password_hash: string | null } | undefined;
+  if (!row?.password_hash || !verifyPassword(password, row.password_hash)) return null;
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  const sessionHash = crypto.createHash('sha256').update(sessionToken).digest('hex');
+  db.prepare('INSERT INTO customer_sessions (token_hash, customer_id, expires_at) VALUES (?, ?, ?)')
+    .run(sessionHash, row.id, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+  return { sessionToken, ...customerPortalData(row.id) };
+}
+
+export function setupCustomerPassword(emailValue: string, pin: string, password: string): void {
+  if (!/^\d{4}$/.test(pin) || password.length < 12 || password.length > 128) {
+    throw new Error('Enter the four-digit PIN and a password between 12 and 128 characters.');
+  }
+  const email = emailValue.trim().toLowerCase();
+  const row = db.prepare(
+    'SELECT id, initial_pin_hash, pin_expires_at FROM customer_profiles WHERE LOWER(email) = ? AND must_set_password = 1 LIMIT 1'
+  ).get(email) as { id: string; initial_pin_hash: string | null; pin_expires_at: string | null } | undefined;
+  if (!row?.initial_pin_hash || !row.pin_expires_at || row.pin_expires_at <= new Date().toISOString()
+      || !verifyPassword(pin, row.initial_pin_hash)) {
+    throw new Error('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
+  }
+  const now = new Date().toISOString();
+  const result = db.prepare(
+    'UPDATE customer_profiles SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0, email_verified_at=? ' +
+    'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ?'
+  ).run(hashPassword(password), now, row.id, row.initial_pin_hash, now);
+  if (result.changes !== 1) throw new Error('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
+}
+
+export function setupStaffPassword(identifierValue: string, pin: string, password: string): void {
+  if (!/^\d{4}$/.test(pin) || password.length < 12 || password.length > 128) {
+    throw new Error('Enter the four-digit PIN and a password between 12 and 128 characters.');
+  }
+  const identifier = identifierValue.trim().toLowerCase();
+  const row = db.prepare(
+    "SELECT id, initial_pin_hash, pin_expires_at FROM users WHERE (LOWER(email)=? OR LOWER(username)=?) " +
+    "AND status='Active' AND must_set_password=1 LIMIT 1"
+  ).get(identifier, identifier) as { id: string; initial_pin_hash: string | null; pin_expires_at: string | null } | undefined;
+  if (!row?.initial_pin_hash || !row.pin_expires_at || row.pin_expires_at <= new Date().toISOString()
+      || !verifyPassword(pin, row.initial_pin_hash)) {
+    throw new Error('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+  }
+  const now = new Date().toISOString();
+  const result = db.prepare(
+    'UPDATE users SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 ' +
+    'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ?'
+  ).run(hashPassword(password), row.id, row.initial_pin_hash, now);
+  if (result.changes !== 1) throw new Error('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+}
+
+export function reissueStaffSetupPin(actor: StaffMember, staffId: string): {
+  id: string; name: string; email: string; phone: string; username: string; pin: string;
+} {
+  if (actor.role !== 'superadmin') throw new Error('Only Super Admin can resend staff setup credentials.');
+  const staff = db.prepare(
+    'SELECT id, name, email, phone, username FROM users WHERE id=? AND status="Active" AND must_set_password=1 LIMIT 1'
+  ).get(staffId) as { id: string; name: string; email: string; phone: string; username: string } | undefined;
+  if (!staff) throw new Error('An active staff account awaiting password setup was not found.');
+  const pin = makeInitialPin();
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=? WHERE id=? AND must_set_password=1')
+    .run(hashPassword(pin), expiresAt, staff.id);
+  writeAudit(actor, 'RESEND_STAFF_SETUP', 'Staff', staff.id, 'Resent staff first-sign-in setup instructions.');
+  return { ...staff, pin };
 }
 
 export function checkAuthRateLimit(scope: string, limit: number, windowSeconds: number): boolean {
@@ -1830,7 +1988,8 @@ export function verifyCustomerLoginLink(token: string): {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const now = new Date().toISOString();
   const link = db.prepare(
-    'SELECT customer_id FROM customer_login_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? LIMIT 1'
+    'SELECT t.customer_id FROM customer_login_tokens t JOIN customer_profiles c ON c.id = t.customer_id ' +
+    'WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > ? AND c.must_set_password = 0 LIMIT 1'
   ).get(tokenHash, now) as { customer_id: string } | undefined;
   if (!link) throw new Error('This sign-in link is invalid or has expired.');
   const consumed = db.prepare('UPDATE customer_login_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?')
@@ -1850,7 +2009,8 @@ export function getCustomerBySessionToken(token: string | undefined) {
   if (!token) return null;
   const sessionHash = crypto.createHash('sha256').update(token).digest('hex');
   const session = db.prepare(
-    'SELECT customer_id FROM customer_sessions WHERE token_hash = ? AND expires_at > ? LIMIT 1'
+    'SELECT s.customer_id FROM customer_sessions s JOIN customer_profiles c ON c.id = s.customer_id ' +
+    'WHERE s.token_hash = ? AND s.expires_at > ? AND c.email_verified_at IS NOT NULL AND c.must_set_password = 0 LIMIT 1'
   ).get(sessionHash, new Date().toISOString()) as { customer_id: string } | undefined;
   if (!session) return null;
   return customerPortalData(session.customer_id);
@@ -2662,10 +2822,17 @@ export function saveRoleDefinition(
 export function saveStaffMember(
   actor: StaffMember,
   body: { id?: string; name: string; username: string; email: string; phone: string; role: UserRole; title: string; skills: string; status: StaffStatus; password?: string }
-) {
+): { id: string } | { id: string; name: string; username: string; email: string; phone: string; pin: string } {
   const username = body.username.trim().toLowerCase();
   if ((!body.id && !username) || (username && !/^[a-z0-9._-]{3,50}$/.test(username))) {
     throw new Error('Username must be 3–50 characters using letters, numbers, dots, underscores, or hyphens.');
+  }
+  const email = body.email.trim().toLowerCase();
+  if (!body.name.trim() || body.name.trim().length > 120
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 190
+      || body.phone.trim().length > 40 || body.title.trim().length > 120
+      || body.skills.trim().length > 4000) {
+    throw new Error('Valid staff name, email, phone, title, and skills are required.');
   }
   const usernameOwner = username
     ? db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(username) as { id: string } | undefined
@@ -2712,14 +2879,26 @@ export function saveStaffMember(
   }
 
   const id = crypto.randomUUID();
-  if (!body.password || body.password.trim().length < 12) {
-    throw new Error('A staff password of at least 12 characters is required.');
-  }
+  const pin = makeInitialPin();
   db.prepare(
-    "INSERT INTO users (id, name, username, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', ?)"
-  ).run(id, body.name.trim(), username, body.email.trim().toLowerCase(), body.phone.trim(), hashPassword(body.password.trim()), body.role, body.title.trim(), body.skills.trim(), new Date().toISOString());
+    "INSERT INTO users (id, name, username, email, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status, created_at) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'Active', ?)"
+  ).run(
+    id,
+    body.name.trim(),
+    username,
+    email,
+    body.phone.trim(),
+    hashPassword(crypto.randomBytes(32).toString('hex')),
+    hashPassword(pin),
+    new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    body.role,
+    body.title.trim(),
+    body.skills.trim(),
+    new Date().toISOString(),
+  );
   writeAudit(actor, 'CREATE_STAFF', 'Staff', id, `Created staff account for ${body.name} (${body.role})`);
-  return { id };
+  return { id, name: body.name.trim(), email, phone: body.phone.trim(), username, pin };
 }
 
 export function markNotificationsRead(userId: string): void {

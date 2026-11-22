@@ -514,11 +514,13 @@ function hiso_hydrate_workspace(array $user): array {
         return $mapped;
     }, $rolesRaw);
 
-    $staffRaw = $pdo->query('SELECT id, name, username, email, phone, role, title, skills, status, created_at AS createdAt FROM users ORDER BY created_at ASC')->fetchAll();
+    $staffRaw = $pdo->query('SELECT id, name, username, email, phone, role, title, skills, status, must_set_password, created_at AS createdAt FROM users ORDER BY created_at ASC')->fetchAll();
     $staff = array_map(function($s) use ($rolesMap) {
         $r = $rolesMap[$s['role']] ?? null;
         $s['roleName'] = $r ? $r['name'] : $s['role'];
         $s['permissions'] = $r ? $r['permissions'] : [];
+        $s['mustSetPassword'] = (bool)$s['must_set_password'];
+        unset($s['must_set_password']);
         return $s;
     }, $staffRaw);
 
@@ -1254,6 +1256,46 @@ try {
     }
 
     // --- Customer Portal Endpoints ---
+    if ($method === 'POST' && $route === 'customer/setup-password') {
+        $body = hiso_json_body();
+        $email = strtolower(trim((string)($body['email'] ?? '')));
+        $pin = (string)($body['pin'] ?? '');
+        $password = (string)($body['password'] ?? '');
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190) {
+            hiso_json_response(['error' => 'Enter the email address used for your account.'], 422);
+        }
+        $remote = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        if (!hiso_customer_auth_rate_limit('customer-pin-ip:' . $remote, 10, 900)
+            || !hiso_customer_auth_rate_limit('customer-pin-email:' . $email, 5, 900)) {
+            hiso_json_response(['error' => 'Too many setup attempts. Please try again later.'], 429);
+        }
+        try {
+            hiso_setup_customer_password($email, $pin, $password);
+            hiso_json_response(['ok' => true]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
+    if ($method === 'POST' && $route === 'customer/login') {
+        $body = hiso_json_body();
+        $email = strtolower(trim((string)($body['email'] ?? '')));
+        $password = (string)($body['password'] ?? '');
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190 || strlen($password) > 128) {
+            hiso_json_response(['error' => 'Invalid email or password.'], 422);
+        }
+        $remote = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        if (!hiso_customer_auth_rate_limit('customer-login-ip:' . $remote, 10, 900)
+            || !hiso_customer_auth_rate_limit('customer-login-email:' . $email, 5, 900)) {
+            hiso_json_response(['error' => 'Too many sign-in attempts. Please try again later.'], 429);
+        }
+        $portal = hiso_customer_password_login($email, $password);
+        if (!$portal) {
+            hiso_json_response(['error' => 'Invalid email or password.'], 401);
+        }
+        hiso_json_response($portal);
+    }
+
     if ($method === 'POST' && $route === 'customer/login-link') {
         global $CONFIG;
         $body = hiso_json_body();
@@ -1282,16 +1324,9 @@ try {
         }
 
         $pdo = hiso_pdo();
-        $lookup = $pdo->prepare('SELECT id FROM customer_profiles WHERE LOWER(email) = ? LIMIT 1');
+        $lookup = $pdo->prepare('SELECT id FROM customer_profiles WHERE LOWER(email) = ? AND email_verified_at IS NOT NULL AND must_set_password = 0 LIMIT 1');
         $lookup->execute([$email]);
         $customerId = $lookup->fetchColumn();
-        if (!$customerId && $name !== '') {
-            $customerId = hiso_uuid();
-            $pdo->prepare('INSERT INTO customer_profiles (id, name, email, phone, location, company, ref_code) VALUES (?, ?, ?, ?, ?, ?, ?)')->execute([
-                $customerId, $name, $email, $phone, $location,
-                trim((string)($body['company'] ?? '')), trim((string)($body['refCode'] ?? '')),
-            ]);
-        }
         if ($customerId) {
             $token = bin2hex(random_bytes(32));
             $tokenHash = hash('sha256', $token);
@@ -1326,7 +1361,10 @@ try {
         $pdo = hiso_pdo();
         $pdo->beginTransaction();
         try {
-            $stmt = $pdo->prepare('SELECT customer_id FROM customer_login_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > UTC_TIMESTAMP() LIMIT 1');
+            $stmt = $pdo->prepare(
+                'SELECT t.customer_id FROM customer_login_tokens t JOIN customer_profiles c ON c.id=t.customer_id ' .
+                'WHERE t.token_hash = ? AND t.used_at IS NULL AND t.expires_at > UTC_TIMESTAMP() AND c.must_set_password=0 LIMIT 1'
+            );
             $stmt->execute([hash('sha256', $token)]);
             $customerId = $stmt->fetchColumn();
             if (!$customerId) {
@@ -1532,6 +1570,12 @@ try {
         ]);
         hiso_notify_roles(['admin', 'superadmin', 'director'], 'New ' . $category . ': ' . $code, $customer['name'] . ' — ' . $subject, 'tickets', $code);
         hiso_send_lifecycle_whatsapp('ticket_status', 'ticket', $code, 'Service ticket ' . $code . ' was received.');
+        hiso_send_lifecycle_email_to_roles(
+            'ticket_status',
+            ['admin', 'superadmin'],
+            'HI-SOTECH service ticket received: ' . $code,
+            'Service ticket ' . $code . ' was received. Review it in the Staff Workspace.'
+        );
         hiso_audit(['name' => $customer['name'], 'role' => 'customer'], 'CREATE_TICKET', 'ServiceTicket', $code, 'Customer filed ' . $category);
         $tStmt = $pdo->prepare('SELECT * FROM service_tickets WHERE customer_id = ? ORDER BY created_at DESC');
         $tStmt->execute([$customer['id']]);
@@ -1603,6 +1647,27 @@ try {
         hiso_json_response(['user' => $user], 201);
     }
 
+    if ($method === 'POST' && $route === 'auth/setup-password') {
+        $body = hiso_json_body();
+        $identifier = strtolower(trim((string)($body['identifier'] ?? '')));
+        $pin = (string)($body['pin'] ?? '');
+        $password = (string)($body['password'] ?? '');
+        if ($identifier === '' || strlen($identifier) > 190) {
+            hiso_json_response(['error' => 'Enter your staff email or username.'], 422);
+        }
+        $clientAddress = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        if (!hiso_customer_auth_rate_limit('staff-pin-ip:' . $clientAddress, 10, 900)
+            || !hiso_customer_auth_rate_limit('staff-pin-identifier:' . $identifier, 5, 900)) {
+            hiso_json_response(['error' => 'Too many setup attempts. Please try again later.'], 429);
+        }
+        try {
+            hiso_setup_staff_password($identifier, $pin, $password);
+            hiso_json_response(['ok' => true]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
     if ($method === 'POST' && $route === 'auth/login') {
         $body = hiso_json_body();
         $identifier = strtolower(trim((string)($body['identifier'] ?? '')));
@@ -1618,7 +1683,7 @@ try {
         $stmt = hiso_pdo()->prepare('SELECT * FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND status = "Active" LIMIT 1');
         $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch();
-        if (!$user || !password_verify($password, $user['password_hash'])) {
+        if (!$user || (int)($user['must_set_password'] ?? 0) === 1 || !password_verify($password, $user['password_hash'])) {
             hiso_json_response(['error' => 'Invalid email or password.'], 401);
         }
         hiso_start_session();
@@ -2012,6 +2077,46 @@ try {
         hiso_json_response(['id' => $id, 'refCode' => $ref], 201);
     }
 
+    if ($method === 'POST' && $route === 'customers/provision') {
+        $user = hiso_require_roles(['admin', 'superadmin']);
+        $body = hiso_json_body();
+        $quoteId = is_string($body['quoteId'] ?? null) ? trim($body['quoteId']) : '';
+        if ($quoteId === '' || strlen($quoteId) > 80) {
+            hiso_json_response(['error' => 'A valid approved quotation is required.'], 422);
+        }
+        try {
+            $account = hiso_create_customer_account_from_approved_quote($user, $quoteId);
+            if (!hiso_send_account_setup_email(
+                'customer_account_created',
+                'customer',
+                $account['id'],
+                $account['email'],
+                $account['name'],
+                $account['email'],
+                $account['pin']
+            )) {
+                hiso_clear_customer_initial_pin($account['id']);
+                hiso_json_response([
+                    'error' => 'The account is pending, but the setup email could not be delivered. Retry from the approved quotation.',
+                ], 503);
+            }
+            hiso_send_account_setup_whatsapp(
+                'customer_account_created',
+                'customer',
+                $account['id'],
+                'enquiry',
+                $account['enquiryId'],
+                $account['phone'],
+                $account['name'],
+                $account['email'],
+                $account['pin']
+            );
+            hiso_json_response(['ok' => true, 'email' => $account['email']], 201);
+        } catch (RuntimeException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
     if ($method === 'POST' && $route === 'catalog') {
         $user = hiso_require_permission('manage_storefront');
         $body = hiso_json_body();
@@ -2108,6 +2213,12 @@ try {
         }
         if ($status === 'Pending MD') {
             hiso_notify_roles(['director', 'superadmin'], 'Quotation awaiting approval: ' . $code, $body['customerName'] . ' submitted for Director review.', 'quotes', $code);
+            hiso_send_lifecycle_email_to_roles(
+                'quote_status',
+                ['director', 'superadmin'],
+                'HI-SOTECH quotation awaiting Director approval: ' . $code,
+                "Quotation {$code} is ready for Director approval.\nCustomer: " . $body['customerName'] . "\nScope: " . $body['scope'] . "\nReview: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#workspace?tab=quotes'
+            );
         }
         hiso_audit($user, 'SAVE_QUOTE', 'Quotation', $code, 'Saved quotation (' . $status . ')');
         hiso_json_response(['id' => $savedId, 'quoteCode' => $code]);
@@ -2133,6 +2244,12 @@ try {
         }
         $pdo->prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = NOW() WHERE id = ?')->execute([$decision, $user['name'], $quoteId]);
         hiso_notify_roles(['admin'], 'Quotation ' . $decision, $user['name'] . ' marked quotation ' . $decision . '.', 'quotes', $quoteId);
+        hiso_send_lifecycle_email_to_roles(
+            'quote_status',
+            ['admin', 'superadmin'],
+            'HI-SOTECH quotation decision: ' . $decision,
+            "Quotation decision: {$decision}.\nQuotation ID: {$quoteId}\nReview: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#workspace?tab=quotes'
+        );
         hiso_audit($user, 'DECIDE_QUOTE', 'Quotation', $quoteId, 'Quotation ' . $decision);
         hiso_json_response(['status' => $decision]);
     }
@@ -2173,6 +2290,18 @@ try {
             ->execute([$payId, $payCode, $body['invoiceId'], (float)$body['amountNgn'], $body['paymentDate'] ?? date('Y-m-d'), $body['method'], $body['reference'], $body['evidenceNote'], $user['name']]);
         hiso_notify_roles(['director', 'superadmin'], 'Receipt pending verification: ' . $payCode, 'Amount ₦' . number_format((float)$body['amountNgn']) . ' awaiting confirmation.', 'finance', $payCode);
         hiso_audit($user, 'LOG_PAYMENT', 'Payment', $payCode, 'Logged payment receipt pending verification.');
+        hiso_send_lifecycle_whatsapp(
+            'invoice_status',
+            'invoice',
+            (string)$body['invoiceId'],
+            "Payment receipt {$payCode} was logged.\nAmount: ₦" . number_format((float)$body['amountNgn']) . "\nStatus: Pending verification\nReview: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#workspace?tab=finance'
+        );
+        hiso_send_lifecycle_email_to_roles(
+            'invoice_status',
+            ['director', 'superadmin'],
+            'HI-SOTECH payment receipt awaiting verification: ' . $payCode,
+            "Payment receipt {$payCode} was logged.\nAmount: ₦" . number_format((float)$body['amountNgn']) . "\nStatus: Pending verification\nReview: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#workspace?tab=finance'
+        );
         hiso_json_response(['id' => $payId, 'paymentCode' => $payCode], 201);
     }
 
@@ -2372,6 +2501,12 @@ try {
             ->execute([$body['status'], $techId, $techName, trim((string)($body['resolutionNote'] ?? $t['resolution_note'])), $body['ticketId']]);
         hiso_audit($user, 'UPDATE_TICKET', 'ServiceTicket', $t['ticket_code'], 'Marked ' . $body['status']);
         hiso_send_lifecycle_whatsapp('ticket_status', 'ticket', (string)$body['ticketId'], 'Service ticket ' . $t['ticket_code'] . ' status changed to ' . (string)$body['status'] . '.');
+        hiso_send_lifecycle_email_to_roles(
+            'ticket_status',
+            ['admin', 'superadmin'],
+            'HI-SOTECH service ticket updated: ' . $t['ticket_code'],
+            'Service ticket ' . $t['ticket_code'] . ' status changed to ' . (string)$body['status'] . '.'
+        );
         hiso_json_response(['ok' => true]);
     }
 
@@ -2425,7 +2560,8 @@ try {
         $skills = trim((string)($body['skills'] ?? ''));
         $status = (string)($body['status'] ?? 'Active');
         $password = trim((string)($body['password'] ?? ''));
-        $id = $body['id'] ?? null;
+        $idValue = $body['id'] ?? null;
+        $id = is_string($idValue) && trim($idValue) !== '' ? trim($idValue) : null;
         if ($name === '' || strlen($name) > 120
             || (!$id && !preg_match('/^[a-z0-9._-]{3,50}$/', $username))
             || ($username !== '' && !preg_match('/^[a-z0-9._-]{3,50}$/', $username))
@@ -2442,6 +2578,7 @@ try {
         if (!$id && $user['role'] !== 'superadmin') {
             hiso_json_response(['error' => 'Only Super Admin can create staff accounts.'], 403);
         }
+        $creating = !$id;
         if ($id) {
             $existingStmt = $pdo->prepare('SELECT role, username FROM users WHERE id = ? LIMIT 1');
             $existingStmt->execute([$id]);
@@ -2490,16 +2627,74 @@ try {
                     ->execute([password_hash($password, PASSWORD_DEFAULT), $id]);
             }
         } else {
-            if (strlen($password) < 12 || strlen($password) > 128) {
-                hiso_json_response(['error' => 'A staff password between 12 and 128 characters is required.'], 422);
-            }
             $id = hiso_uuid();
-            $hash = password_hash($password, PASSWORD_DEFAULT);
-            $pdo->prepare('INSERT INTO users (id, name, username, email, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "Active")')
-                ->execute([$id, $name, $usernameValue, $email, $phone, $hash, $role, $title, $skills]);
+            $pin = (string)random_int(1000, 9999);
+            $pinHash = password_hash($pin, PASSWORD_DEFAULT);
+            $expires = gmdate('Y-m-d H:i:s', time() + 86400);
+            $unusablePasswordHash = password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT);
+            $pdo->prepare(
+                'INSERT INTO users (id, name, username, email, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status) ' .
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, "Active")'
+            )->execute([$id, $name, $usernameValue, $email, $phone, $unusablePasswordHash, $pinHash, $expires, $role, $title, $skills]);
         }
-        hiso_audit($user, 'SAVE_STAFF', 'Staff', (string)$id, 'Updated staff account ' . $name);
+        hiso_audit($user, $creating ? 'CREATE_STAFF' : 'UPDATE_STAFF', 'Staff', (string)$id, 'Saved staff account ' . $name);
+        if ($creating) {
+            if (!hiso_send_account_setup_email('staff_account_created', 'staff', (string)$id, $email, $name, $usernameValue, $pin)) {
+                hiso_json_response([
+                    'error' => 'The staff account was created, but its setup email could not be delivered. Use Resend Setup PIN to retry.',
+                ], 503);
+            }
+            hiso_send_account_setup_whatsapp(
+                'staff_account_created',
+                'staff',
+                (string)$id,
+                'staff',
+                (string)$id,
+                $phone,
+                $name,
+                (string)$usernameValue,
+                $pin
+            );
+        }
         hiso_json_response(['id' => $id]);
+    }
+
+    if ($method === 'POST' && $route === 'staff/resend-pin') {
+        $user = hiso_require_roles(['superadmin']);
+        $body = hiso_json_body();
+        $staffId = is_string($body['staffId'] ?? null) ? trim($body['staffId']) : '';
+        if ($staffId === '' || strlen($staffId) > 80) {
+            hiso_json_response(['error' => 'A valid staff account is required.'], 422);
+        }
+        $pdo = hiso_pdo();
+        $stmt = $pdo->prepare('SELECT id, name, email, phone, username FROM users WHERE id=? AND status="Active" AND must_set_password=1 LIMIT 1');
+        $stmt->execute([$staffId]);
+        $account = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$account) hiso_json_response(['error' => 'An active staff account awaiting password setup was not found.'], 404);
+        $pin = (string)random_int(1000, 9999);
+        $pinHash = password_hash($pin, PASSWORD_DEFAULT);
+        $expires = gmdate('Y-m-d H:i:s', time() + 86400);
+        $pdo->prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=? WHERE id=? AND must_set_password=1')
+            ->execute([$pinHash, $expires, $account['id']]);
+        hiso_audit($user, 'RESEND_STAFF_SETUP', 'Staff', (string)$account['id'], 'Resent staff first-sign-in setup instructions.');
+        if (!hiso_send_account_setup_email(
+            'staff_account_created', 'staff', (string)$account['id'], (string)$account['email'],
+            (string)$account['name'], (string)$account['username'], $pin
+        )) {
+            hiso_json_response(['error' => 'The staff setup email could not be delivered. Check SMTP configuration and retry.'], 503);
+        }
+        hiso_send_account_setup_whatsapp(
+            'staff_account_created',
+            'staff',
+            (string)$account['id'],
+            'staff',
+            (string)$account['id'],
+            (string)$account['phone'],
+            (string)$account['name'],
+            (string)$account['username'],
+            $pin
+        );
+        hiso_json_response(['ok' => true]);
     }
 
     if ($method === 'POST' && $route === 'notifications/read') {

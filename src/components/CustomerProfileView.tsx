@@ -16,13 +16,13 @@ export function CustomerProfileView() {
   const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [sessionBusy, setSessionBusy] = useState(true);
 
-  // Login / Register state
+  // Sign-in and first-use password setup state
   const [authEmail, setAuthEmail] = useState('');
-  const [authName, setAuthName] = useState('');
-  const [authPhone, setAuthPhone] = useState('');
-  const [authLocation, setAuthLocation] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authPin, setAuthPin] = useState('');
+  const [authPasswordConfirm, setAuthPasswordConfirm] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'setup' | 'link'>('login');
   const [authBusy, setAuthBusy] = useState(false);
-  const [linkSent, setLinkSent] = useState(false);
 
   // Profile Edit state
   const [profName, setProfName] = useState('');
@@ -79,7 +79,6 @@ export function CustomerProfileView() {
     setSessionBusy(false);
     setError(message);
     setNotice('');
-    setLinkSent(false);
   }
 
   useEffect(() => listenForCustomerLogout(() => {
@@ -126,14 +125,7 @@ export function CustomerProfileView() {
     setNotice('');
     setAuthBusy(true);
     try {
-      const res = await api.requestCustomerLoginLink({
-        email: authEmail,
-        name: authName,
-        phone: authPhone,
-        location: authLocation,
-      });
-      setLinkSent(true);
-      setNotice(res.message);
+      syncState(await api.loginCustomer(authEmail, authPassword));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -141,6 +133,28 @@ export function CustomerProfileView() {
     }
   }
 
+  async function handlePasswordSetup(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setNotice('');
+    if (authPassword !== authPasswordConfirm) {
+      setError('The passwords do not match.');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await api.setupCustomerPassword(authEmail, authPin, authPassword);
+      setAuthMode('login');
+      setAuthPin('');
+      setAuthPassword('');
+      setAuthPasswordConfirm('');
+      setNotice('Password created. You can now sign in to your customer portal.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
     if (!profile) return;
@@ -164,6 +178,21 @@ export function CustomerProfileView() {
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleLoginLink(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setNotice('');
+    setAuthBusy(true);
+    try {
+      const result = await api.requestCustomerLoginLink({ email: authEmail });
+      setNotice(result.message);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -253,11 +282,10 @@ export function CustomerProfileView() {
         <div className="rounded-xl border border-slate-200 bg-white p-8 dark:border-slate-800 dark:bg-[#0B1D39]">
           <p className="text-xs font-semibold tracking-wider text-[#D61F26]">CUSTOMER CARE &amp; EQUIPMENT PORTAL</p>
           <h1 className="mt-1 text-2xl font-bold text-[#081E3E] dark:text-white">
-            Sign In or Register Your Solar Site Profile
+            Customer Portal Sign In
           </h1>
           <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-            Sign in with a one-time link sent to your email. New customers can enter their name and site details to
-            create a profile; your email must be verified before any customer information is shown.
+            Customer portal accounts are created by HI-SOTECH Admin after quotation approval. First-time users set a password with the one-time PIN sent to their email.
           </p>
 
           {sessionBusy && (
@@ -274,9 +302,12 @@ export function CustomerProfileView() {
             </p>
           )}
 
-          <form onSubmit={handleAuth} className="mt-6 space-y-4 text-sm">
+          <form
+            onSubmit={authMode === 'login' ? handleAuth : authMode === 'setup' ? handlePasswordSetup : handleLoginLink}
+            className="mt-6 space-y-4 text-sm"
+          >
             <label className="block">
-              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Customer Email *</span>
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Customer Email</span>
               <input
                 type="email"
                 required
@@ -287,52 +318,114 @@ export function CustomerProfileView() {
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
               />
             </label>
-
-            <div className="grid gap-3 sm:grid-cols-3">
+            {authMode === 'setup' ? (
+              <>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Four-digit setup PIN</span>
+                  <input
+                    type="text"
+                    required
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    pattern="[0-9]{4}"
+                    maxLength={4}
+                    value={authPin}
+                    onChange={(e) => setAuthPin(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm tracking-[0.3em] dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">New password (at least 12 characters)</span>
+                  <input
+                    type="password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Confirm new password</span>
+                  <input
+                    type="password"
+                    required
+                    minLength={12}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    value={authPasswordConfirm}
+                    onChange={(e) => setAuthPasswordConfirm(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                  />
+                </label>
+              </>
+            ) : authMode === 'login' ? (
               <label className="block">
-                <span className="text-xs font-medium text-slate-500">Full Name (for new customers)</span>
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password</span>
                 <input
-                  type="text"
-                  value={authName}
-                  maxLength={120}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  placeholder="Optional for existing customers"
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                  type="password"
+                  required
+                  maxLength={128}
+                  autoComplete="current-password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
                 />
               </label>
-              <label className="block">
-                <span className="text-xs font-medium text-slate-500">Phone</span>
-                <input
-                  type="tel"
-                  value={authPhone}
-                  maxLength={40}
-                  onChange={(e) => setAuthPhone(e.target.value)}
-                  placeholder="+234..."
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]"
-                />
-              </label>
-              <label className="block">
-                <span className="text-xs font-medium text-slate-500">Site Location</span>
-                <input
-                  type="text"
-                  value={authLocation}
-                  maxLength={190}
-                  onChange={(e) => setAuthLocation(e.target.value)}
-                  placeholder="e.g. Maitama, Abuja"
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]"
-                />
-              </label>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-              <button
-                type="submit"
-                disabled={authBusy || sessionBusy}
-                className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#D61F26]"
-              >
-                <UserCheck className="h-4 w-4" />
-                  {authBusy ? 'Sending sign-in link…' : linkSent ? 'Send another sign-in link' : 'Email me a sign-in link'}
-              </button>
+            ) : null}
+            <button
+              type="submit"
+              disabled={authBusy || sessionBusy}
+              className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#D61F26]"
+            >
+              <UserCheck className="h-4 w-4" />
+              {authBusy ? 'Please wait...' : authMode === 'setup' ? 'Create Password' : authMode === 'link' ? 'Email Sign-In Link' : 'Sign In'}
+            </button>
+            <div className="flex flex-wrap gap-4">
+              {authMode === 'login' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError('');
+                      setNotice('');
+                      setAuthMode('setup');
+                      setAuthPassword('');
+                    }}
+                    className="text-xs font-semibold text-[#D61F26] underline underline-offset-2"
+                  >
+                    First time? Set up password with PIN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError('');
+                      setNotice('');
+                      setAuthMode('link');
+                    }}
+                    className="text-xs font-semibold text-[#D61F26] underline underline-offset-2"
+                  >
+                    Use a one-time email link
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError('');
+                    setNotice('');
+                    setAuthMode('login');
+                    setAuthPassword('');
+                    setAuthPin('');
+                    setAuthPasswordConfirm('');
+                  }}
+                  className="text-xs font-semibold text-[#D61F26] underline underline-offset-2"
+                >
+                  Return to sign in
+                </button>
+              )}
             </div>
           </form>
         </div>

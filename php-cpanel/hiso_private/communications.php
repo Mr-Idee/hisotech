@@ -20,6 +20,115 @@ function hiso_marketing_contacts(string $channel): array {
     return $contacts;
 }
 
+function hiso_send_lifecycle_email_to_roles(string $eventKey, array $roles, string $subject, string $message): void {
+    $roles = array_values(array_unique(array_filter($roles, static fn($role) =>
+        is_string($role) && in_array($role, ['admin', 'director', 'superadmin'], true)
+    )));
+    if (!$roles) return;
+    $stmt = hiso_pdo()->prepare(
+        'SELECT id, email FROM users WHERE status="Active" AND role IN (' .
+        implode(',', array_fill(0, count($roles), '?')) . ') ORDER BY name'
+    );
+    $stmt->execute($roles);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $recipient) {
+        $id = (string)$recipient['id'];
+        $email = trim((string)$recipient['email']);
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            hiso_communications_log($eventKey, 'staff', $id, 'email', 'skipped', 'recipient_email_unavailable');
+            continue;
+        }
+        try {
+            hiso_send_mail($email, $subject, $message);
+            hiso_communications_log($eventKey, 'staff', $id, 'email', 'sent');
+        } catch (Throwable $error) {
+            hiso_log_mail_failure($error);
+            hiso_communications_log($eventKey, 'staff', $id, 'email', 'failed', hiso_mail_failure_category($error));
+        }
+    }
+}
+
+function hiso_send_account_setup_email(
+    string $eventKey,
+    string $recipientType,
+    string $recipientId,
+    string $email,
+    string $name,
+    string $username,
+    string $pin
+): bool {
+    global $CONFIG;
+    $appUrl = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/');
+    $parts = parse_url($appUrl);
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$parts || empty($parts['host'])
+        || !in_array($parts['scheme'] ?? '', ['https', 'http'], true)
+        || !preg_match('/^\d{4}$/', $pin)) {
+        hiso_communications_log($eventKey, $recipientType, $recipientId, 'email', 'not_configured', 'account_setup_mail_not_configured');
+        return false;
+    }
+    $destination = $recipientType === 'customer' ? 'customer portal' : 'staff workspace';
+    $link = $appUrl . ($recipientType === 'customer' ? '/#customer' : '/#workspace');
+    $message = "Hello {$name},\n\n"
+        . "Your HI-SOTECH {$destination} account is ready.\n"
+        . "Username: {$username}\n"
+        . "One-time setup PIN: {$pin}\n"
+        . "The PIN expires in 24 hours and can only be used once.\n"
+        . "Open {$link}, choose first-time password setup, enter the PIN, and create a password of at least 12 characters.\n"
+        . "If you did not expect this account, contact HI-SOTECH support.";
+    try {
+        hiso_send_mail($email, 'Your HI-SOTECH account setup instructions', $message);
+        hiso_communications_log($eventKey, $recipientType, $recipientId, 'email', 'sent');
+        return true;
+    } catch (Throwable $error) {
+        hiso_log_mail_failure($error);
+        hiso_communications_log($eventKey, $recipientType, $recipientId, 'email', 'failed', hiso_mail_failure_category($error));
+        return false;
+    }
+}
+
+function hiso_send_account_setup_whatsapp(
+    string $eventKey,
+    string $recipientType,
+    string $accountId,
+    string $consentType,
+    string $consentId,
+    string $phone,
+    string $name,
+    string $username,
+    string $pin
+): void {
+    try {
+        $contact = hiso_whatsapp_consent_contact($consentType, $consentId, 'operational');
+    } catch (Throwable $error) {
+        hiso_communications_log($eventKey, $recipientType, $accountId, 'whatsapp', 'failed', 'consent_lookup_failed');
+        return;
+    }
+    if (!$contact || (string)$contact['phone'] !== $phone) {
+        hiso_communications_log($eventKey, $recipientType, $accountId, 'whatsapp', 'skipped', 'no_active_operational_consent');
+        return;
+    }
+    global $CONFIG;
+    $destination = $recipientType === 'customer' ? 'customer' : 'staff';
+    $link = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/') . ($recipientType === 'customer' ? '/#customer' : '/#workspace');
+    $message = "HI-SOTECH {$destination} account setup for {$name}. Username: {$username}. One-time PIN: {$pin}. It expires in 24 hours. Open {$link} to set your password.";
+    try {
+        $config = hiso_whatsapp_template_config($eventKey);
+        hiso_whatsapp_send_template($config, $phone, $message);
+        hiso_communications_log($eventKey, $recipientType, $accountId, 'whatsapp', 'sent');
+    } catch (Throwable $error) {
+        $configured = str_contains(strtolower($error->getMessage()), 'not configured')
+            || str_contains(strtolower($error->getMessage()), 'configuration')
+            || str_contains(strtolower($error->getMessage()), 'template header');
+        hiso_communications_log(
+            $eventKey,
+            $recipientType,
+            $accountId,
+            'whatsapp',
+            $configured ? 'not_configured' : 'failed',
+            $configured ? 'template_or_credentials_missing' : 'provider_delivery_failed'
+        );
+    }
+}
+
 function hiso_whatsapp_send(string $phone, string $message): void {
     global $CONFIG;
     $phone = trim($phone);
@@ -431,7 +540,7 @@ function hiso_send_lifecycle_whatsapp(
         if ($enquiry) {
             $targets[] = $enquiry + ['recipient_type' => 'enquiry'];
         }
-        $staff = $pdo->query('SELECT id, name, email, phone FROM users WHERE status = "Active" ORDER BY name')
+        $staff = $pdo->query('SELECT id, name, email, phone FROM users WHERE status = "Active" AND role IN ("admin","director","superadmin") ORDER BY name')
             ->fetchAll(PDO::FETCH_ASSOC);
         foreach ($staff as $member) {
             $targets[] = $member + ['recipient_type' => 'staff'];
@@ -439,6 +548,7 @@ function hiso_send_lifecycle_whatsapp(
     } else {
         $enquiryId = null;
         $customerId = null;
+        $assignedStaffId = null;
         if ($entityType === 'quote') {
             $stmt = $pdo->prepare('SELECT enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1');
             $stmt->execute([$entityId, $entityId]);
@@ -448,13 +558,17 @@ function hiso_send_lifecycle_whatsapp(
             $stmt->execute([$entityId, $entityId]);
             $enquiryId = $stmt->fetchColumn() ?: null;
         } elseif ($entityType === 'installation') {
-            $stmt = $pdo->prepare('SELECT enquiry_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1');
+            $stmt = $pdo->prepare('SELECT enquiry_id, assigned_engineer_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1');
             $stmt->execute([$entityId, $entityId]);
-            $enquiryId = $stmt->fetchColumn() ?: null;
+            $installation = $stmt->fetch(PDO::FETCH_ASSOC);
+            $enquiryId = $installation['enquiry_id'] ?? null;
+            $assignedStaffId = $installation['assigned_engineer_id'] ?? null;
         } elseif ($entityType === 'ticket') {
-            $stmt = $pdo->prepare('SELECT customer_id FROM service_tickets WHERE id = ? OR ticket_code = ? LIMIT 1');
+            $stmt = $pdo->prepare('SELECT customer_id, assigned_tech_id FROM service_tickets WHERE id = ? OR ticket_code = ? LIMIT 1');
             $stmt->execute([$entityId, $entityId]);
-            $customerId = $stmt->fetchColumn() ?: null;
+            $ticket = $stmt->fetch(PDO::FETCH_ASSOC);
+            $customerId = $ticket['customer_id'] ?? null;
+            $assignedStaffId = $ticket['assigned_tech_id'] ?? null;
         }
         if ($enquiryId) {
             $stmt = $pdo->prepare('SELECT id, customer_name AS name, email, phone FROM enquiries WHERE id = ? LIMIT 1');
@@ -481,6 +595,14 @@ function hiso_send_lifecycle_whatsapp(
             $customer = $stmt->fetch(PDO::FETCH_ASSOC);
             if ($customer) {
                 $targets[] = $customer + ['recipient_type' => 'customer'];
+            }
+        }
+        if ($assignedStaffId) {
+            $stmt = $pdo->prepare('SELECT id, name, email, phone FROM users WHERE id = ? AND status = "Active" LIMIT 1');
+            $stmt->execute([$assignedStaffId]);
+            $staffMember = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($staffMember) {
+                $targets[] = $staffMember + ['recipient_type' => 'staff'];
             }
         }
     }

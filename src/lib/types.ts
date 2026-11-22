@@ -39,6 +39,7 @@ export interface StaffMember {
   skills: string;
   status: StaffStatus;
   createdAt: string;
+  mustSetPassword?: boolean;
 }
 
 export type PowerMode = 'Hybrid' | 'Off-grid' | 'Grid-backup';
