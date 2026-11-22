@@ -535,8 +535,11 @@ export const api = {
 
   markNotificationsRead: () => request<{ ok: boolean }>('/api/notifications/read', { method: 'POST' }),
 
-  sendTestEmail: () =>
-    request<{ ok: boolean }>('/api/communications/test-email', { method: 'POST' }),
+  sendTestEmail: (recipientEmail?: string) =>
+    request<{ ok: boolean }>('/api/communications/test-email', {
+      method: 'POST',
+      body: JSON.stringify({ recipientEmail: recipientEmail || '' }),
+    }),
 };
 
 export async function compressImageFile(file: File): Promise<{ blob: Blob; name: string }> {

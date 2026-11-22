@@ -1707,8 +1707,12 @@ try {
 
     if ($method === 'POST' && $route === 'communications/test-email') {
         $user = hiso_require_permission('manage_communications');
+        if (($user['role'] ?? '') !== 'superadmin') {
+            hiso_json_response(['error' => 'Only Super Admin can send test emails.'], 403);
+        }
         hiso_require_communications_rate_limit($user, 'smtp-test', 2);
-        $email = trim((string)($user['email'] ?? ''));
+        $body = hiso_json_body();
+        $email = trim((string)($body['recipientEmail'] ?? '')) ?: trim((string)($user['email'] ?? ''));
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             hiso_json_response(['error' => 'The signed-in staff email address is invalid.'], 422);
         }

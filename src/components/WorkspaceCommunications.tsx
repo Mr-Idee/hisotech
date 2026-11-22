@@ -38,6 +38,7 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [testEmailRecipient, setTestEmailRecipient] = useState('ietentuk@gmail.com');
 
   useEffect(() => {
     api.getCommunicationContacts().then((contacts) => {
@@ -121,17 +122,29 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
           Marketing is sent only to verified customers with current, recorded channel consent.
         </p>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void submit(async () => {
-            await api.sendTestEmail();
-            return 'SMTP accepted a test email for your signed-in staff address. Check that mailbox before enabling customer sign-in.';
-          })}
-          className="mt-3 rounded-lg border border-[#081E3E] px-4 py-2 text-xs font-semibold text-[#081E3E] disabled:opacity-60 dark:border-slate-600 dark:text-white"
-        >
-          {busy ? 'Sending test...' : 'Send test email to my staff address'}
-        </button>
+        <div className="mt-3 flex max-w-xl flex-wrap items-end gap-2">
+          <label className="min-w-[260px] flex-1 text-xs">
+            <span className="font-semibold">Test recipient email</span>
+            <input
+              type="email"
+              value={testEmailRecipient}
+              onChange={(event) => setTestEmailRecipient(event.target.value)}
+              placeholder="ietentuk@gmail.com"
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void submit(async () => {
+              await api.sendTestEmail(testEmailRecipient);
+              return `SMTP accepted a test email for ${testEmailRecipient.trim()}. Check that mailbox and spam folder.`;
+            })}
+            className="rounded-lg border border-[#081E3E] px-4 py-2 text-xs font-semibold text-[#081E3E] disabled:opacity-60 dark:border-slate-600 dark:text-white"
+          >
+            {busy ? 'Sending test...' : 'Send test email'}
+          </button>
+        </div>
       </header>
 
       {notice && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">{notice}</p>}

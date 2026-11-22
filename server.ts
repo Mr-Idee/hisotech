@@ -1020,6 +1020,10 @@ async function startServer() {
 
   app.post('/api/communications/test-email', async (req, res) => {
     const { user } = getSessionUser(req);
+    if (!user || user.role !== 'superadmin') {
+      res.status(user ? 403 : 401).json({ error: user ? 'Only Super Admin can send test emails.' : 'Authentication required.' });
+      return;
+    }
     if (!hasPermission(user, 'manage_communications')) {
       res.status(user ? 403 : 401).json({ error: user ? 'Communications permission required.' : 'Authentication required.' });
       return;
@@ -1028,8 +1032,10 @@ async function startServer() {
       res.status(429).json({ error: 'Test email limit reached. Try again later.' });
       return;
     }
+    const recipientEmail = String(req.body?.recipientEmail || '').trim();
+    const targetEmail = recipientEmail || user.email;
     if (!process.env.SMTP_URL || !process.env.MAIL_FROM
-        || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user!.email)) {
+        || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
       res.status(503).json({ error: 'SMTP settings or the signed-in user email are not configured.' });
       return;
     }
@@ -1037,7 +1043,7 @@ async function startServer() {
       const transport = nodemailer.createTransport(process.env.SMTP_URL);
       await transport.sendMail({
         from: process.env.MAIL_FROM,
-        to: user!.email,
+        to: targetEmail,
         subject: 'HI-SOTECH email delivery test',
         text: 'This is a test of HI-SOTECH email delivery. If you received it, outbound email is working.',
       });
