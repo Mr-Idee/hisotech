@@ -221,15 +221,7 @@ export function buildQuoteLinesFromEstimate(
   settings?: EstimatorSettings
 ): LineItem[] {
   const hardwareAndServices = catalog.filter((c) => c.itemType !== 'appliance');
-  if (!estimate || estimate.connectedLoadWatts === 0) {
-    return hardwareAndServices.slice(0, 4).map((item) => ({
-      sku: item.sku,
-      description: item.name,
-      unit: item.unit,
-      qty: 1,
-      unitPriceNgn: item.priceNgn,
-    }));
-  }
+  if (!estimate || estimate.connectedLoadWatts === 0) return [];
 
   const grade = estimate.equipmentGrade?.trim().toLowerCase() || 'standard';
   const inverterCategory = settings?.inverterCategory ?? 'Inverters';
@@ -280,8 +272,24 @@ export function buildQuoteLinesFromEstimate(
   const selectedPanel = requiredArrayWatts > 0
     ? chooseRepeatedCapacityLine(panelCandidates, requiredArrayWatts, (item) => item.watts ?? 0, 2)
     : undefined;
-  if (selectedPanel) lines.push(selectedPanel);
-  if (chosenInverter) lines.push(chosenInverter);
+  if (requiredArrayWatts > 0) {
+    lines.push(selectedPanel ?? {
+      sku: 'TBD-SOLAR-ARRAY',
+      description: `Solar array (${requiredArrayWatts} W) — To Be Determined`,
+      unit: 'lot',
+      qty: 1,
+      unitPriceNgn: 0,
+      isTbd: true,
+    });
+  }
+  lines.push(chosenInverter ?? {
+    sku: 'TBD-INVERTER',
+    description: `Inverter (${estimate.inverterMinKw} kW minimum) — To Be Determined`,
+    unit: 'lot',
+    qty: 1,
+    unitPriceNgn: 0,
+    isTbd: true,
+  });
 
   const batteryCandidates = filterGrade(
     hardwareAndServices.filter((item) =>
@@ -293,58 +301,22 @@ export function buildQuoteLinesFromEstimate(
   const selectedBattery = estimate.batteryTargetKwh > 0
     ? chooseRepeatedCapacityLine(batteryCandidates, estimate.batteryTargetKwh, (item) => item.capacityKw ?? 0)
     : undefined;
-  if (selectedBattery) lines.push(selectedBattery);
-
-  const coreCategories = new Set([panelCategory, inverterCategory, batteryCategory]);
-  const accessories = settings
-    ? hardwareAndServices.filter((item) => item.itemType === 'equipment'
-      && settings.accessorySkus.includes(item.sku) && !coreCategories.has(item.category))
-    : [...new Set(
-        hardwareAndServices
-          .filter((item) => item.itemType === 'equipment' && !coreCategories.has(item.category))
-          .map((item) => item.category)
-      )].flatMap((category) =>
-        filterGrade(hardwareAndServices.filter((item) => item.itemType === 'equipment' && item.category === category))
-      );
-  for (const accessory of accessories) {
-    lines.push({
-      sku: accessory.sku,
-      description: accessory.name,
-      unit: accessory.unit,
+  if (estimate.batteryTargetKwh > 0) {
+    lines.push(selectedBattery ?? {
+      sku: 'TBD-BATTERY',
+      description: `Battery (${estimate.batteryTargetKwh} kWh) — To Be Determined`,
+      unit: 'lot',
       qty: 1,
-      unitPriceNgn: accessory.priceNgn,
+      unitPriceNgn: 0,
+      isTbd: true,
     });
   }
 
-  const services = hardwareAndServices.filter((item) => item.itemType === 'service');
-  const installations = settings
-    ? services.filter((item) => settings.installationSkus.includes(item.sku))
-    : filterGrade(services.filter((item) =>
-        /install|commission|survey/i.test(`${item.category} ${item.name} ${item.sku}`)
-      )).slice(0, 1);
-  for (const installation of installations) {
-    lines.push({
-      sku: installation.sku,
-      description: installation.name,
-      unit: installation.unit,
-      qty: 1,
-      unitPriceNgn: installation.priceNgn,
-    });
-  }
-  const logistics = settings
-    ? services.filter((item) => settings.logisticsSkus.includes(item.sku))
-    : filterGrade(
-        services.filter((item) => /logistic|delivery|transport/i.test(`${item.category} ${item.name} ${item.sku}`))
-      );
-  for (const item of logistics) {
-    lines.push({
-      sku: item.sku,
-      description: item.name,
-      unit: item.unit,
-      qty: 1,
-      unitPriceNgn: item.priceNgn,
-    });
-  }
+  lines.push(
+    { sku: 'TBD-ACCESSORIES', description: 'Accessories — To Be Determined', unit: 'lot', qty: 1, unitPriceNgn: 0, isTbd: true },
+    { sku: 'TBD-INSTALLATION', description: 'Installation — To Be Determined', unit: 'lot', qty: 1, unitPriceNgn: 0, isTbd: true },
+    { sku: 'TBD-LOGISTICS', description: 'Logistics — To Be Determined', unit: 'lot', qty: 1, unitPriceNgn: 0, isTbd: true }
+  );
 
   return lines;
 }
@@ -381,14 +353,14 @@ export function computeEstimateCostFromCatalog(
     panel: settings?.panelCategory ?? 'Solar Panels',
     battery: settings?.batteryCategory ?? 'Battery Storage',
   };
-  const selectedSkus = new Set(lines.map((line) => line.sku));
+  const selectedSkus = new Set(lines.filter((line) => !line.isTbd).map((line) => line.sku));
   const undetermined = requirements.filter((requirement) => {
     const category = componentCategories[requirement.key];
     return !catalog.some((item) =>
       item.category === category && selectedSkus.has(item.sku)
     );
   });
-  const totals = calculateDocumentTotals(lines, 0, taxPercent);
+  const totals = calculateDocumentTotals(lines.filter((line) => !line.isTbd), 0, taxPercent);
   return {
     lines,
     subtotal: totals.subtotal,

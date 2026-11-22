@@ -203,11 +203,6 @@ export default function App() {
       ) : (
         <WorkspaceView
           onOpenDocument={(type, id) => setDocView({ type, id, canEmail: true })}
-          onOpenStore={() => handleNavigate('store')}
-          onTrackRef={(refCode) => {
-            setTrackRef(refCode);
-            handleNavigate('track');
-          }}
           onCatalogChange={saveAndSetCatalog}
           onHomepageChange={setHomepage}
           onSettingsChange={(settings: PlatformSettings) => {

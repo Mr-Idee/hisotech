@@ -9,6 +9,16 @@ export function isValidE164(value: unknown): value is string {
   return typeof value === 'string' && /^\+[1-9]\d{7,14}$/.test(value);
 }
 
+export function createWhatsAppLink(phone: string, message: string): string | null {
+  const rawDigits = phone.trim().replace(/\D/g, '');
+  const digits = rawDigits.startsWith('00') ? rawDigits.slice(2) : rawDigits;
+  const normalized = digits.startsWith('0') ? `234${digits.slice(1)}` : digits;
+  if (normalized.length < 8 || normalized.length > 15 || normalized.startsWith('0') || !message.trim()) {
+    return null;
+  }
+  return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
+}
+
 export function validateMessage(value: unknown): string | null {
   if (typeof value !== 'string' || value.trim().length === 0) return 'Message is required.';
   if ([...value].length > 4096 || new TextEncoder().encode(value).length > 16384) {

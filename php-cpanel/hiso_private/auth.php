@@ -88,17 +88,28 @@ function hiso_customer_portal_data(array $customer): array {
             'whatsappMarketingConsent' => $consents['whatsapp'],
             'whatsappUpdatesConsent' => hiso_customer_whatsapp_updates_consent((string)$customer['id'], (string)$customer['phone']),
         ],
-        'equipment' => array_map(fn($e) => [
-            'id' => $e['id'],
-            'customerId' => $e['customer_id'],
-            'equipmentType' => $e['equipment_type'],
-            'brandModel' => $e['brand_model'],
-            'serialNumber' => $e['serial_number'],
-            'capacityKw' => $e['capacity_kw'],
-            'installDate' => $e['install_date'],
-            'notes' => $e['notes'],
-            'createdAt' => $e['created_at'],
-        ], $equipmentStmt->fetchAll()),
+        'equipment' => array_map(function ($e) use ($pdo) {
+            $photoStmt = $pdo->prepare('SELECT id, original_name, created_at FROM customer_equipment_photos WHERE equipment_id = ? AND customer_id = ? ORDER BY created_at DESC');
+            $photoStmt->execute([$e['id'], $e['customer_id']]);
+            $photos = array_map(static fn($photo) => [
+                'id' => $photo['id'],
+                'fileUrl' => '/api/customer-equipment-photo/' . rawurlencode($photo['id']),
+                'originalName' => $photo['original_name'],
+                'createdAt' => $photo['created_at'],
+            ], $photoStmt->fetchAll());
+            return [
+                'id' => $e['id'],
+                'customerId' => $e['customer_id'],
+                'equipmentType' => $e['equipment_type'],
+                'brandModel' => $e['brand_model'],
+                'serialNumber' => $e['serial_number'],
+                'capacityKw' => $e['capacity_kw'],
+                'installDate' => $e['install_date'],
+                'notes' => $e['notes'],
+                'createdAt' => $e['created_at'],
+                'photos' => $photos,
+            ];
+        }, $equipmentStmt->fetchAll()),
         'tickets' => array_map('hiso_hydrate_ticket', $ticketStmt->fetchAll()),
     ];
 }

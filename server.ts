@@ -25,6 +25,7 @@ import {
   destroySession,
   destroyCustomerSession,
   getCustomerBySessionToken,
+  getCustomerEquipmentPhoto,
   getPhotoFile,
   getPublicCatalog,
   getPublicEstimatorSettings,
@@ -838,6 +839,24 @@ async function startServer() {
     }
   });
 
+  app.get('/api/customer-equipment-photo/:photoId', (req, res) => {
+    const token = parseCookies(req.headers.cookie)[CUSTOMER_COOKIE_NAME];
+    const session = getCustomerBySessionToken(token);
+    if (!session) {
+      res.status(401).send('Sign in required.');
+      return;
+    }
+    const file = getCustomerEquipmentPhoto(req.params.photoId, session.profile.id);
+    if (!file) {
+      res.status(404).send('Not found.');
+      return;
+    }
+    res.setHeader('Content-Type', file.mimeType);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(file.filePath);
+  });
+
   app.post('/api/customer/tickets', async (req, res) => {
     const token = parseCookies(req.headers.cookie)[CUSTOMER_COOKIE_NAME];
     const session = getCustomerBySessionToken(token);
@@ -997,6 +1016,35 @@ async function startServer() {
       pushCustomers: getPushSubscribedCustomers(),
       myWhatsappConsents: getStaffWhatsAppConsents(user!.id),
     });
+  });
+
+  app.post('/api/communications/test-email', async (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!hasPermission(user, 'manage_communications')) {
+      res.status(user ? 403 : 401).json({ error: user ? 'Communications permission required.' : 'Authentication required.' });
+      return;
+    }
+    if (!allowCommunicationsAction(user!.id, 'smtp-test', 2)) {
+      res.status(429).json({ error: 'Test email limit reached. Try again later.' });
+      return;
+    }
+    if (!process.env.SMTP_URL || !process.env.MAIL_FROM
+        || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user!.email)) {
+      res.status(503).json({ error: 'SMTP settings or the signed-in user email are not configured.' });
+      return;
+    }
+    try {
+      const transport = nodemailer.createTransport(process.env.SMTP_URL);
+      await transport.sendMail({
+        from: process.env.MAIL_FROM,
+        to: user!.email,
+        subject: 'HI-SOTECH email delivery test',
+        text: 'This is a test of HI-SOTECH email delivery. If you received it, outbound email is working.',
+      });
+      res.json({ ok: true });
+    } catch {
+      res.status(502).json({ error: 'The test email could not be accepted by SMTP. Check the private mail settings and server mail log.' });
+    }
   });
 
   app.post('/api/communications/whatsapp', async (req, res) => {
@@ -1447,7 +1495,6 @@ async function startServer() {
     }
     try {
       const result = decideQuotation(user!, req.body.quoteId, req.body.decision);
-      await sendLifecycleWhatsApp('quote_status', 'quote', req.body.quoteId, `Quotation ${req.body.quoteId} status: ${result.status}.`);
       res.json(result);
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });

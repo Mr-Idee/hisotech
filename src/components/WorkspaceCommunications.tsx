@@ -121,6 +121,17 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
           Marketing is sent only to verified customers with current, recorded channel consent.
         </p>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void submit(async () => {
+            await api.sendTestEmail();
+            return 'SMTP accepted a test email for your signed-in staff address. Check that mailbox before enabling customer sign-in.';
+          })}
+          className="mt-3 rounded-lg border border-[#081E3E] px-4 py-2 text-xs font-semibold text-[#081E3E] disabled:opacity-60 dark:border-slate-600 dark:text-white"
+        >
+          {busy ? 'Sending test...' : 'Send test email to my staff address'}
+        </button>
       </header>
 
       {notice && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">{notice}</p>}

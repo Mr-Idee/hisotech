@@ -117,6 +117,7 @@ export interface LineItem {
   unit: string;
   qty: number;
   unitPriceNgn: number;
+  isTbd?: boolean;
 }
 
 export interface QuotationRevision {
@@ -263,6 +264,14 @@ export interface CustomerEquipment {
   capacityKw: string;
   installDate: string;
   notes: string;
+  createdAt: string;
+  photos: CustomerEquipmentPhoto[];
+}
+
+export interface CustomerEquipmentPhoto {
+  id: string;
+  fileUrl: string;
+  originalName: string;
   createdAt: string;
 }
 

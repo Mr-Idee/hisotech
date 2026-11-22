@@ -29,8 +29,8 @@ export const DEFAULT_HOMEPAGE_CONTENT: HomepageContent = {
     enabled: true,
   },
   about: {
-    heading: 'Nigeria’s trusted partner for transparent solar engineering since 2016.',
-    body: 'Founded in 2016 and registered under Nigeria’s Corporate Affairs Commission (CAC), HI-SOTECH Solar Inverter Co. Ltd operates in strict compliance with the Nigerian Electricity Regulatory Commission (NERC). We bridge precision engineering, COREN/SPVI-certified field execution, and ongoing youth technician training across Abuja, Lagos, Plateau, Rivers, Bayelsa, Ekiti, and Akwa Ibom.',
+    heading: 'Nigeria’s trusted partner for transparent solar engineering since 2010.',
+    body: 'Founded in 2010 and registered in 2016 with Nigeria’s Corporate Affairs Commission (CAC), HI-SOTECH Solar Inverter Co. Ltd operates in strict compliance with the Nigerian Electricity Regulatory Commission (NERC). We bridge precision engineering, COREN/SPVI-certified field execution, and ongoing youth technician training across Abuja, Lagos, Plateau, Rivers, Bayelsa, Ekiti, and Akwa Ibom.',
     enabled: true,
   },
   services: {

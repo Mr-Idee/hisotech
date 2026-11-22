@@ -81,12 +81,13 @@ export const api = {
     phone: string;
     location: string;
     needSummary: string;
-    appliances: ApplianceItem[];
-    estimate: SolarEstimateResult;
+    source: 'homepage' | 'estimator';
+    appliances?: ApplianceItem[];
+    estimate?: SolarEstimateResult;
     whatsappUpdatesConsent?: boolean;
     whatsappMarketingConsent?: boolean;
   }) =>
-    request<{ id: string; refCode: string }>('/api/public/enquiries', {
+    request<{ id: string; refCode: string; quoteId?: string | null; quoteCode?: string | null }>('/api/public/enquiries', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -278,11 +279,22 @@ export const api = {
     capacityKw: string;
     installDate: string;
     notes: string;
+    photos?: { name: string; dataUrl: string }[];
   }) =>
     request<{ equipment: CustomerEquipment[] }>('/api/customer/equipment', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  uploadCustomerEquipmentPhotos: (equipmentId: string, photos: { blob: Blob; name: string }[]) => {
+    const formData = new FormData();
+    formData.append('equipmentId', equipmentId);
+    photos.forEach((photo) => formData.append('photos[]', photo.blob, photo.name));
+    return request<{ equipment: CustomerEquipment[] }>('/api/customer/equipment-photos', {
+      method: 'POST',
+      body: formData,
+    });
+  },
 
   submitCustomerTicket: (payload: {
     equipmentId?: string | null;
@@ -396,7 +408,7 @@ export const api = {
     items: LineItem[];
     submitForApproval: boolean;
   }) =>
-    request<{ quoteCode: string }>('/api/quotes', {
+    request<{ id: string; quoteCode: string }>('/api/quotes', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -522,6 +534,9 @@ export const api = {
     }),
 
   markNotificationsRead: () => request<{ ok: boolean }>('/api/notifications/read', { method: 'POST' }),
+
+  sendTestEmail: () =>
+    request<{ ok: boolean }>('/api/communications/test-email', { method: 'POST' }),
 };
 
 export async function compressImageFile(file: File): Promise<{ blob: Blob; name: string }> {

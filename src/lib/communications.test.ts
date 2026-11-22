@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   detectNewsletterMime,
+  createWhatsAppLink,
   isValidE164,
   validateMessage,
   validateNewsletterAttachment,
@@ -19,6 +20,15 @@ test('message validation enforces non-empty content and the provider length limi
   assert.match(validateMessage('  ') || '', /required/);
   assert.match(validateMessage('x'.repeat(4097)) || '', /4096/);
   assert.equal(validateMessage('Hello'), null);
+});
+
+test('WhatsApp click-to-chat links normalize Nigerian numbers and encode the draft', () => {
+  const local = createWhatsAppLink('0801 234 5678', 'Hello & welcome');
+  assert.ok(local);
+  assert.equal(new URL(local).pathname, '/2348012345678');
+  assert.equal(new URL(local).searchParams.get('text'), 'Hello & welcome');
+  assert.equal(new URL(createWhatsAppLink('+44 20 1234 5678', 'Hello') || '').pathname, '/442012345678');
+  assert.equal(createWhatsAppLink('not a number', 'Hello'), null);
 });
 
 test('newsletter attachments validate file signatures instead of trusting the claimed MIME', () => {

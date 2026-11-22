@@ -93,6 +93,7 @@ export function EstimatorView({
   const [syncBusy, setSyncBusy] = useState(false);
   const [error, setError] = useState('');
   const [submittedRef, setSubmittedRef] = useState('');
+  const [submittedQuoteCode, setSubmittedQuoteCode] = useState('');
   const [offlineSavedBanner, setOfflineSavedBanner] = useState('');
   const [offlineQueue, setOfflineQueue] = useState<PendingOfflineEstimate[]>(() => readOfflineQueue());
 
@@ -176,6 +177,7 @@ export function EstimatorView({
     setError('');
     const remaining: PendingOfflineEstimate[] = [];
     let lastUploadedRef = '';
+    let lastQuoteCode = '';
 
     for (const item of itemsToUpload) {
       try {
@@ -185,12 +187,14 @@ export function EstimatorView({
           phone: item.phone,
           location: item.location,
           needSummary: item.needSummary,
+          source: 'estimator',
           appliances: item.appliances,
           estimate: item.estimate,
           whatsappUpdatesConsent: item.whatsappUpdatesConsent,
           whatsappMarketingConsent: item.whatsappMarketingConsent,
         });
         lastUploadedRef = res.refCode;
+        lastQuoteCode = res.quoteCode || '';
       } catch {
         remaining.push(item);
       }
@@ -199,6 +203,7 @@ export function EstimatorView({
     persistQueue(remaining);
     if (lastUploadedRef && remaining.length === 0) {
       setSubmittedRef(lastUploadedRef);
+      setSubmittedQuoteCode(lastQuoteCode);
       setOfflineSavedBanner('');
     }
     setSyncBusy(false);
@@ -276,6 +281,7 @@ export function EstimatorView({
     e.preventDefault();
     setError('');
     setOfflineSavedBanner('');
+    setSubmittedQuoteCode('');
     if (!customerName.trim() || !phone.trim() || !location.trim()) {
       setError('Customer name, phone number, and site location are required.');
       return;
@@ -299,12 +305,14 @@ export function EstimatorView({
         phone,
         location,
         needSummary: enquiryNeedSummary,
+        source: 'estimator',
         appliances,
         estimate: finalEstimate,
         whatsappUpdatesConsent,
         whatsappMarketingConsent,
       });
       setSubmittedRef(res.refCode);
+      setSubmittedQuoteCode(res.quoteCode || '');
     } catch {
       // Network failure fallback -> save locally to offline queue cleanly
       saveEstimateOffline();
@@ -658,7 +666,7 @@ export function EstimatorView({
                         <span className="font-mono-num text-red-300">{line.qty}×</span> {line.description}
                       </span>
                       <span className="font-mono-num shrink-0 font-semibold">
-                        {formatNgn(line.qty * line.unitPriceNgn)}
+                        {line.isTbd ? 'To Be Determined' : formatNgn(line.qty * line.unitPriceNgn)}
                       </span>
                     </div>
                   ))}
@@ -673,7 +681,7 @@ export function EstimatorView({
                   ))}
                   {costBreakdown.total !== undefined && (
                     <div className="flex items-center justify-between gap-2 border-t border-white/15 pt-2 text-slate-300">
-                      <span>Subtotal + 7.5% VAT</span>
+                      <span>Core equipment estimate + 7.5% VAT</span>
                       <span className="font-mono-num shrink-0">{formatNgn(costBreakdown.tax)} VAT</span>
                     </div>
                   )}
@@ -696,7 +704,7 @@ export function EstimatorView({
                 </p>
               )}
               <p className="mt-4 border-t border-white/15 pt-3 text-xs text-slate-300">
-                Prices are subject to change upon inspection - this is just an estimate
+                Only the inverter, battery, and solar array are priced here. Accessories, installation, and logistics are To Be Determined; prices are subject to inspection.
               </p>
             </div>
           </div>
@@ -722,6 +730,11 @@ export function EstimatorView({
                   Your tracking code is{' '}
                   <strong className="font-mono-num text-base">{submittedRef}</strong>.
                 </p>
+                {submittedQuoteCode && (
+                  <p className="mt-1 text-sm text-emerald-900 dark:text-emerald-100">
+                    Draft quotation <strong className="font-mono-num">{submittedQuoteCode}</strong> was created and is awaiting staff review.
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={() => onTrackRef(submittedRef)}

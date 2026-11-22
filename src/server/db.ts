@@ -4,10 +4,13 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   ALL_PERMISSIONS,
+  buildQuoteLinesFromEstimate,
   calculateDocumentTotals,
   calculateInvoiceBalance,
+  calculateSolarEstimate,
   calculateStoreOrderTotals,
   canUpdateStaffStatusOrRole,
+  computeEstimateCostFromCatalog,
   hasPermission,
   ROLE_DEFAULT_PERMISSIONS,
   validateInstallationRelease,
@@ -18,6 +21,7 @@ import { canAcknowledgeInstallation } from '../lib/access-control';
 import type {
   AuditLogRecord,
   BankDetails,
+  ApplianceItem,
   CatalogItem,
   CatalogItemType,
   CustomerEquipment,
@@ -43,6 +47,7 @@ import type {
   TicketCategory,
   TicketStatus,
   UserRole,
+  SolarEstimateResult,
   WorkspaceBootstrap,
 } from '../lib/types';
 
@@ -253,6 +258,16 @@ CREATE TABLE IF NOT EXISTS customer_equipment (
   capacity_kw TEXT NOT NULL DEFAULT '',
   install_date TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS customer_equipment_photos (
+  id TEXT PRIMARY KEY,
+  equipment_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  original_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'image/jpeg',
   created_at TEXT NOT NULL
 );
 
@@ -795,11 +810,55 @@ export function createPublicEnquiry(payload: {
   location: string;
   channel?: string;
   needSummary: string;
-  appliances?: unknown[];
-  estimate?: unknown;
+  source?: 'homepage' | 'estimator';
+  appliances?: ApplianceItem[];
+  estimate?: SolarEstimateResult;
   whatsappUpdatesConsent?: boolean;
   whatsappMarketingConsent?: boolean;
-}): { id: string; refCode: string } {
+}): { id: string; refCode: string; quoteId?: string; quoteCode?: string } {
+  const requestedSource = payload.source
+    ?? (payload.estimate && payload.estimate.connectedLoadWatts > 0 ? 'estimator' : 'homepage');
+  if (!['homepage', 'estimator'].includes(requestedSource)) {
+    throw new Error('Enquiry source is invalid.');
+  }
+  let appliances: ApplianceItem[] = [];
+  let estimate: SolarEstimateResult | null = null;
+  if (requestedSource === 'estimator') {
+    if (!Array.isArray(payload.appliances) || payload.appliances.length === 0 || payload.appliances.length > 100) {
+      throw new Error('An estimator enquiry must include between 1 and 100 appliance items.');
+    }
+    if (!payload.estimate || typeof payload.estimate !== 'object') {
+      throw new Error('An estimator enquiry must include a valid load estimate.');
+    }
+    appliances = payload.appliances.map((item) => {
+      if (!item || typeof item.name !== 'string' || item.name.trim().length === 0
+          || item.name.length > 120 || !Number.isFinite(item.qty) || item.qty < 0 || item.qty > 1000
+          || !Number.isFinite(item.watts) || item.watts < 0 || item.watts > 100000
+          || !Number.isFinite(item.hours) || item.hours < 0 || item.hours > 24) {
+        throw new Error('Estimator appliance details are invalid.');
+      }
+      return {
+        id: typeof item.id === 'string' ? item.id.slice(0, 80) : crypto.randomUUID(),
+        name: item.name.trim(),
+        qty: item.qty,
+        watts: item.watts,
+        hours: item.hours,
+        catalogSku: typeof item.catalogSku === 'string' ? item.catalogSku.slice(0, 80) : undefined,
+      };
+    });
+    if (!appliances.some((item) => item.qty > 0 && item.watts > 0 && item.hours > 0)) {
+      throw new Error('Add at least one appliance with a positive quantity, wattage, and usage time.');
+    }
+    estimate = calculateSolarEstimate(appliances, {
+      peakSunHours: payload.estimate.peakSunHours,
+      backupShare: payload.estimate.powerMode === 'Off-grid' ? 1 : 0.65,
+      powerMode: payload.estimate.powerMode,
+      equipmentGrade: payload.estimate.equipmentGrade,
+      autonomyHours: payload.estimate.autonomyHours,
+      usableDepthPercent: payload.estimate.usableDepthPercent,
+    });
+    if (estimate.connectedLoadWatts <= 0) throw new Error('The estimator could not calculate a positive connected load.');
+  }
   if ((payload.whatsappUpdatesConsent || payload.whatsappMarketingConsent)
       && !/^\+[1-9]\d{7,14}$/.test(payload.phone.trim())) {
     throw new Error('WhatsApp consent requires a valid E.164 phone number.');
@@ -807,21 +866,68 @@ export function createPublicEnquiry(payload: {
   const id = crypto.randomUUID();
   const refCode = nextCode('enquiries', 'ref_code', 'HISO');
   const now = new Date().toISOString();
-  db.prepare(
-    "INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New', 'admin-idee', ?)"
-  ).run(
-    id,
-    refCode,
-    payload.customerName.trim(),
-    (payload.email || '').trim(),
-    payload.phone.trim(),
-    payload.location.trim(),
-    (payload.channel || 'Website · Load Estimator').trim(),
-    payload.needSummary.trim(),
-    JSON.stringify(payload.appliances ?? []),
-    payload.estimate ? JSON.stringify(payload.estimate) : null,
-    now
-  );
+  let quoteId: string | undefined;
+  let quoteCode: string | undefined;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(
+      "INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admin-idee', ?)"
+    ).run(
+      id,
+      refCode,
+      payload.customerName.trim(),
+      (payload.email || '').trim(),
+      payload.phone.trim(),
+      payload.location.trim(),
+      requestedSource === 'estimator' ? 'Website · Load Estimator' : 'Website · Home Enquiry',
+      payload.needSummary.trim(),
+      JSON.stringify(appliances),
+      estimate ? JSON.stringify(estimate) : null,
+      requestedSource === 'estimator' ? 'Quoted' : 'New',
+      now
+    );
+    if (estimate) {
+      const catalog = getPublicCatalog();
+      const settings = getPlatformSettings().estimator;
+      const cost = computeEstimateCostFromCatalog(estimate, catalog, 7.5, settings);
+      estimate.estimatedTotalNgn = cost.total;
+      db.prepare('UPDATE enquiries SET estimate_json = ? WHERE id = ?').run(JSON.stringify(estimate), id);
+      const lines = buildQuoteLinesFromEstimate(estimate, catalog, settings);
+      quoteId = crypto.randomUUID();
+      quoteCode = nextCode('quotations', 'quote_code', 'QUO');
+      const validUntil = isoDateOffset(7);
+      const scope = `Turnkey solar system design and supply for ${payload.location.trim()}.`;
+      const note = 'Core equipment estimate only. Accessories, installation, and logistics require director pricing before approval.';
+      const revisions = [{
+        revisionNo: 1,
+        changedBy: 'Estimator',
+        note: 'Draft quotation generated from the submitted load estimate.',
+        createdAt: now,
+        totalNgn: calculateDocumentTotals(lines, 0, 7.5).total,
+      }];
+      db.prepare(
+        'INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by, approved_at, items_json, revisions_json, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 7.5, ?, ?, NULL, NULL, ?, ?, ?)'
+      ).run(
+        quoteId,
+        quoteCode,
+        id,
+        payload.customerName.trim(),
+        'Draft',
+        scope,
+        '50% deposit on acceptance, 50% prior to commissioning.',
+        note,
+        isoDateOffset(0),
+        validUntil,
+        JSON.stringify(lines),
+        JSON.stringify(revisions),
+        now
+      );
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
   if (payload.whatsappUpdatesConsent || payload.whatsappMarketingConsent) {
     if (payload.whatsappUpdatesConsent) {
       recordWhatsAppRecipientConsent('enquiry', id, 'operational', payload.phone.trim(), true, 'public_enquiry_form');
@@ -832,7 +938,7 @@ export function createPublicEnquiry(payload: {
   }
   notifyRoleMembers(['superadmin', 'director', 'admin'], `New solar enquiry ${refCode}`, `${payload.customerName} (${payload.location}) submitted an enquiry.`, 'enquiries', id);
   writeAudit({ name: payload.customerName, role: 'customer' }, 'CREATE_ENQUIRY', 'Enquiry', refCode, 'Submitted enquiry via website / estimator.');
-  return { id, refCode };
+  return { id, refCode, quoteId, quoteCode };
 }
 
 function hydrateStoreOrderRow(r: Record<string, unknown>): StoreOrderRecord {
@@ -1129,17 +1235,27 @@ export function acceptInvoiceByCustomer(invoiceId: string, customerEmail: string
 
 // --- Customer Portal Operations ---
 function getCustomerEquipmentList(customerId: string): CustomerEquipment[] {
-  return (db.prepare('SELECT * FROM customer_equipment WHERE customer_id = ? ORDER BY created_at DESC').all(customerId) as Record<string, unknown>[]).map((r) => ({
-    id: String(r.id),
-    customerId: String(r.customer_id),
-    equipmentType: String(r.equipment_type),
-    brandModel: String(r.brand_model),
-    serialNumber: String(r.serial_number),
-    capacityKw: String(r.capacity_kw),
-    installDate: String(r.install_date),
-    notes: String(r.notes),
-    createdAt: String(r.created_at),
-  }));
+  return (db.prepare('SELECT * FROM customer_equipment WHERE customer_id = ? ORDER BY created_at DESC').all(customerId) as Record<string, unknown>[]).map((r) => {
+    const equipmentId = String(r.id);
+    const photos = (db.prepare('SELECT * FROM customer_equipment_photos WHERE equipment_id = ? AND customer_id = ? ORDER BY created_at DESC').all(equipmentId, customerId) as Record<string, unknown>[]).map((photo) => ({
+      id: String(photo.id),
+      fileUrl: `/api/customer-equipment-photo/${encodeURIComponent(String(photo.id))}`,
+      originalName: String(photo.original_name),
+      createdAt: String(photo.created_at),
+    }));
+    return {
+      id: equipmentId,
+      customerId: String(r.customer_id),
+      equipmentType: String(r.equipment_type),
+      brandModel: String(r.brand_model),
+      serialNumber: String(r.serial_number),
+      capacityKw: String(r.capacity_kw),
+      installDate: String(r.install_date),
+      notes: String(r.notes),
+      createdAt: String(r.created_at),
+      photos,
+    };
+  });
 }
 
 function hydrateTicketRow(r: Record<string, unknown>): ServiceTicket {
@@ -1746,6 +1862,17 @@ export function destroyCustomerSession(token: string | undefined): void {
   db.prepare('DELETE FROM customer_sessions WHERE token_hash = ?').run(sessionHash);
 }
 
+export function getCustomerEquipmentPhoto(photoId: string, customerId: string): { filePath: string; mimeType: string } | null {
+  if (!/^[a-f0-9-]{36}$/i.test(photoId)) return null;
+  const row = db.prepare(
+    'SELECT filename, mime_type FROM customer_equipment_photos WHERE id = ? AND customer_id = ? LIMIT 1'
+  ).get(photoId, customerId) as { filename: string; mime_type: string } | undefined;
+  if (!row) return null;
+  const filePath = path.join(UPLOAD_DIR, row.filename);
+  if (!fs.existsSync(filePath)) return null;
+  return { filePath, mimeType: row.mime_type };
+}
+
 export function saveCustomerProfile(payload: {
   customerId: string;
   name: string;
@@ -1793,6 +1920,7 @@ export function saveCustomerEquipment(customerId: string, payload: {
   capacityKw: string;
   installDate: string;
   notes: string;
+  photos?: { name: string; dataUrl: string }[];
 }): CustomerEquipment[] {
   const customer = db.prepare('SELECT id FROM customer_profiles WHERE id = ? AND email_verified_at IS NOT NULL').get(customerId);
   if (!customer) throw new Error('Verified customer profile not found.');
@@ -1802,9 +1930,31 @@ export function saveCustomerEquipment(customerId: string, payload: {
       'UPDATE customer_equipment SET equipment_type=?, brand_model=?, serial_number=?, capacity_kw=?, install_date=?, notes=? WHERE id=? AND customer_id=?'
     ).run(payload.equipmentType, payload.brandModel, payload.serialNumber, payload.capacityKw, payload.installDate, payload.notes, payload.id, customerId);
   } else {
+    const equipmentId = crypto.randomUUID();
     db.prepare(
       'INSERT INTO customer_equipment (id, customer_id, equipment_type, brand_model, serial_number, capacity_kw, install_date, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(crypto.randomUUID(), customerId, payload.equipmentType, payload.brandModel, payload.serialNumber, payload.capacityKw, payload.installDate, payload.notes, now);
+    ).run(equipmentId, customerId, payload.equipmentType, payload.brandModel, payload.serialNumber, payload.capacityKw, payload.installDate, payload.notes, now);
+    if (Array.isArray(payload.photos)) {
+      if (payload.photos.length > 4) throw new Error('At most 4 equipment photos may be added at once.');
+      for (const photo of payload.photos) {
+        if (!photo || typeof photo.name !== 'string' || typeof photo.dataUrl !== 'string'
+            || !/^data:image\/(jpeg|png|webp);base64,/i.test(photo.dataUrl)
+            || photo.dataUrl.length > 6 * 1024 * 1024) {
+          throw new Error('Equipment photo data is invalid.');
+        }
+        const base64 = photo.dataUrl.split(',', 2)[1];
+        const binary = Buffer.from(base64, 'base64');
+        if (binary.length < 100 || binary.length > 4 * 1024 * 1024) {
+          throw new Error('Each equipment photo must be between 100 bytes and 4MB.');
+        }
+        const id = crypto.randomUUID();
+        const filename = `${id}.jpg`;
+        fs.writeFileSync(path.join(UPLOAD_DIR, filename), binary);
+        db.prepare(
+          'INSERT INTO customer_equipment_photos (id, equipment_id, customer_id, filename, original_name, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(id, equipmentId, customerId, filename, photo.name.slice(0, 140).replace(/[\/\\\r\n]/g, '_'), 'image/jpeg', now);
+      }
+    }
   }
   return getCustomerEquipmentList(customerId);
 }
@@ -2194,7 +2344,9 @@ export function saveQuotation(
   const now = new Date().toISOString();
 
   let code: string;
+  let savedId: string;
   if (body.quoteId) {
+    savedId = body.quoteId;
     const existing = db.prepare('SELECT * FROM quotations WHERE id = ?').get(body.quoteId) as Record<string, unknown> | undefined;
     if (!existing) throw new Error('Quotation not found.');
     const revNo = Number(existing.revision_no) + 1;
@@ -2206,6 +2358,7 @@ export function saveQuotation(
     code = String(existing.quote_code);
   } else {
     const id = crypto.randomUUID();
+    savedId = id;
     code = nextCode('quotations', 'quote_code', 'QUO');
     const revs = [{ revisionNo: 1, changedBy: actor.name, note: 'Initial quotation', createdAt: now, totalNgn: totals.total }];
     db.prepare(
@@ -2217,12 +2370,19 @@ export function saveQuotation(
     notifyRoleMembers(['director', 'superadmin'], `Quotation awaiting approval: ${code}`, `${body.customerName} submitted for Director review.`, 'quotes', code);
   }
   writeAudit(actor, 'SAVE_QUOTE', 'Quotation', code, `Saved quotation (${status}).`);
-  return { quoteCode: code };
+  return { id: savedId, quoteCode: code };
 }
 
 export function decideQuotation(actor: StaffMember, quoteId: string, decision: 'Approved' | 'Rejected') {
   const quote = db.prepare('SELECT * FROM quotations WHERE id = ?').get(quoteId) as Record<string, unknown> | undefined;
   if (!quote) throw new Error('Quotation not found.');
+  if (!['Approved', 'Rejected'].includes(decision)) throw new Error('Quotation decision is invalid.');
+  if (decision === 'Approved') {
+    const items = JSON.parse(String(quote.items_json || '[]')) as LineItem[];
+    if (items.some((item) => item.isTbd)) {
+      throw new Error('Price all To Be Determined quotation lines before approving.');
+    }
+  }
   db.prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?').run(decision, actor.name, new Date().toISOString(), quoteId);
   notifyRoleMembers(['admin'], `Quotation ${decision}: ${quote.quote_code}`, `${actor.name} marked ${quote.quote_code} as ${decision}.`, 'quotes', String(quote.quote_code));
   writeAudit(actor, 'DECIDE_QUOTE', 'Quotation', String(quote.quote_code), `Marked quotation ${decision}.`);

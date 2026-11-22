@@ -1,6 +1,6 @@
-import { AlertCircle, CheckCircle2, Cpu, LogOut, Plus, UserCheck, Wrench } from 'lucide-react';
+import { AlertCircle, Camera, CheckCircle2, Cpu, LogOut, Plus, UserCheck, Wrench } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
 import { listenForCustomerLogout, notifyCustomerLogoutAcrossTabs } from '../lib/auth-sync';
 import type {
   CustomerEquipment,
@@ -41,6 +41,7 @@ export function CustomerProfileView() {
   const [eqKw, setEqKw] = useState('');
   const [eqDate, setEqDate] = useState(new Date().toISOString().slice(0, 10));
   const [eqNotes, setEqNotes] = useState('');
+  const [eqPhotos, setEqPhotos] = useState<{ name: string; dataUrl: string }[]>([]);
 
   // Service Request / Complaint state
   const [tktEqId, setTktEqId] = useState('');
@@ -205,12 +206,14 @@ export function CustomerProfileView() {
         capacityKw: eqKw,
         installDate: eqDate,
         notes: eqNotes,
+        photos: eqPhotos,
       });
       setEquipment(res.equipment);
       setEqBrand('');
       setEqSerial('');
       setEqKw('');
       setEqNotes('');
+      setEqPhotos([]);
       setNotice('Installed solar equipment registered to your profile.');
     } catch (err) {
       setError((err as Error).message);
@@ -501,6 +504,22 @@ export function CustomerProfileView() {
                       {eq.equipmentType} · SN: {eq.serialNumber || 'Unrecorded'} · Installed {eq.installDate}
                     </div>
                     {eq.notes && <p className="mt-1 text-slate-600 dark:text-slate-300">{eq.notes}</p>}
+                    {eq.photos?.length > 0 && (
+                      <div className="mt-2 grid grid-cols-4 gap-2">
+                        {eq.photos.map((photo) => (
+                          <a
+                            key={photo.id}
+                            href={photo.fileUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block aspect-square overflow-hidden rounded border border-slate-200 bg-slate-100 dark:border-slate-700"
+                            title={photo.originalName}
+                          >
+                            <img src={photo.fileUrl} alt={photo.originalName} className="h-full w-full object-cover" loading="lazy" />
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))
               )}
@@ -543,6 +562,29 @@ export function CustomerProfileView() {
                   className="font-mono-num w-full min-w-0 rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
                 />
               </div>
+              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 px-3 py-3 text-slate-600 hover:border-[#D61F26] hover:text-[#D61F26] dark:border-slate-700 dark:text-slate-300">
+                <Camera className="h-4 w-4" />
+                <span>{eqPhotos.length ? `${eqPhotos.length} equipment photo(s) ready` : 'Add equipment photos (JPEG, PNG, or WebP)'}</span>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  multiple
+                  className="sr-only"
+                  onChange={async (event) => {
+                    const files = Array.from(event.target.files || []).slice(0, 4);
+                    setError('');
+                    try {
+                      const selected = await Promise.all(files.map(async (file) => {
+                        const compressed = await compressImageFile(file);
+                        return { name: compressed.name, dataUrl: await imageBlobToDataUrl(compressed.blob) };
+                      }));
+                      setEqPhotos(selected);
+                    } catch (err) {
+                      setError((err as Error).message);
+                    }
+                  }}
+                />
+              </label>
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <input
                   type="date"

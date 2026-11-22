@@ -302,15 +302,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
         phone: contactPhone,
         location: contactLocation,
         needSummary: contactMessage || 'General solar consultation request',
-        appliances: [],
-        estimate: {
-          connectedLoadWatts: 0,
-          dailyEnergyKwh: 0,
-          inverterMinKw: 0,
-          batteryTargetKwh: 0,
-          recommendedPanels550w: 0,
-          recommendedBatteries5kwh: 0,
-        },
+        source: 'homepage',
         whatsappUpdatesConsent,
         whatsappMarketingConsent,
       });
@@ -336,7 +328,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
         <div className="mx-auto grid max-w-7xl items-stretch gap-10 px-4 py-12 sm:px-6 lg:grid-cols-12 lg:px-8 lg:py-20">
           <div className="flex flex-col justify-center lg:col-span-6">
             <p className="text-xs font-semibold tracking-widest text-red-300">
-              CAC REGISTERED SINCE 2016 · COREN · SPVI · NERC COMPLIANT
+              CAC REGISTERED SINCE 2016 · COREN · SPVI · NERC · NEMSA COMPLIANT
             </p>
             <h1 className="mt-4 max-w-xl text-balance text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">
               {homepage.hero.heading}
@@ -568,7 +560,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                   <p className="text-xs font-semibold text-[#D61F26]">Founder & Managing Director</p>
                   <h3 className="mt-1 text-lg font-bold text-[#081E3E] dark:text-white">Engr. Oseni Olalekan</h3>
                   <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                    COREN Registered · SPVI Certified · Leading HI-SOTECH Solar Inverter Co. Ltd since 2016
+                    Founded 2010 · Registered 2016 under Nigeria’s CAC · COREN · SPVI · NERC · NEMSA
                   </p>
                 </div>
               </div>

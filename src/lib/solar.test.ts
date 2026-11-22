@@ -155,7 +155,7 @@ test('quote sizing follows selected catalog grade and component capacities', () 
   assert.equal(lines.find((line) => line.sku === 'INV-5K-PREMIUM')?.unitPriceNgn, 1400000);
 });
 
-test('quote pricing uses configured Store categories and selected accessory and service SKUs', () => {
+test('estimate pricing includes only core equipment and marks accessories and services as TBD', () => {
   const configuredCatalog: CatalogItem[] = [
     { ...SAMPLE_CATALOG[0], category: 'PV Modules' },
     { ...SAMPLE_CATALOG[1], category: 'Hybrid Inverters' },
@@ -183,18 +183,20 @@ test('quote pricing uses configured Store categories and selected accessory and 
     'PV-550M',
     'INV-5K-HYB',
     'BAT-512L',
-    'BOS-KIT',
-    'INSTALL',
-    'DELIVERY',
+    'TBD-ACCESSORIES',
+    'TBD-INSTALLATION',
+    'TBD-LOGISTICS',
   ]);
-  assert.equal(lines.find((line) => line.sku === 'BOS-KIT')?.qty, 1);
+  assert.ok(lines.filter((line) => line.sku.startsWith('TBD-')).every((line) => line.isTbd));
+  assert.equal(lines.find((line) => line.sku === 'INSTALL')?.unitPriceNgn, undefined);
+  assert.equal(lines.find((line) => line.sku === 'DELIVERY')?.unitPriceNgn, undefined);
 });
 
 test('estimate pricing does not show a partial total when required catalog equipment is missing', () => {
   const estimate = calculateSolarEstimate([
     { id: 'load', name: 'Load', qty: 1, watts: 1000, hours: 5 },
   ]);
-  assert.equal(computeEstimateCostFromCatalog(estimate, []).lines.length, 0);
+  assert.equal(computeEstimateCostFromCatalog(estimate, []).lines.filter((line) => line.isTbd).length, 6);
   const missing = computeEstimateCostFromCatalog(estimate, SAMPLE_CATALOG.slice(0, 1));
   assert.equal(missing.total, undefined);
   assert.ok(missing.undetermined.some((item) => item.key === 'inverter'));

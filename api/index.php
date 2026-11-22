@@ -193,6 +193,167 @@ function hiso_load_platform_settings(?array $catalog = null): array {
     ];
 }
 
+function hiso_estimate_quote_lines(array $estimate, array $catalog, array $settings): array {
+    $rules = $settings['estimator'];
+    $grade = strtolower(trim((string)($estimate['equipmentGrade'] ?? 'Standard')));
+    $byCategory = static function (string $category, string $type) use ($catalog, $grade): array {
+        $items = array_values(array_filter($catalog, static fn($item) =>
+            ($item['itemType'] ?? '') === $type && ($item['category'] ?? '') === $category
+        ));
+        $matching = array_values(array_filter($items, static fn($item) =>
+            strtolower(trim((string)($item['grade'] ?? ''))) === $grade
+        ));
+        $ungraded = array_values(array_filter($items, static fn($item) => trim((string)($item['grade'] ?? '')) === ''));
+        return $matching ?: ($ungraded ?: $items);
+    };
+    $repeatCapacity = static function (array $items, float $required, string $capacityKey, int $minQty = 1): ?array {
+        $options = [];
+        foreach ($items as $item) {
+            $capacity = (float)($item[$capacityKey] ?? 0);
+            $price = (float)($item['priceNgn'] ?? 0);
+            if ($capacity <= 0 || $price <= 0) continue;
+            $qty = max($minQty, (int)ceil($required / $capacity));
+            if ($qty > (int)floor((float)($item['stockQty'] ?? 0))) continue;
+            $options[] = [
+                'item' => $item,
+                'qty' => $qty,
+                'total' => $qty * $price,
+                'oversupply' => $qty * $capacity - $required,
+            ];
+        }
+        usort($options, static fn($a, $b) =>
+            ($a['total'] <=> $b['total'])
+            ?: ($a['oversupply'] <=> $b['oversupply'])
+            ?: ($a['qty'] <=> $b['qty'])
+            ?: strcmp((string)$a['item']['sku'], (string)$b['item']['sku'])
+        );
+        if (!$options) return null;
+        $selected = $options[0];
+        $item = $selected['item'];
+        return [
+            'sku' => $item['sku'], 'description' => $item['name'], 'unit' => $item['unit'],
+            'qty' => $selected['qty'], 'unitPriceNgn' => (float)$item['priceNgn'],
+        ];
+    };
+    $lines = [];
+    $requiredArrayWatts = (float)($estimate['recommendedArrayWatts'] ?? ((float)($estimate['recommendedPanels550w'] ?? 0) * 550));
+    if ($requiredArrayWatts > 0) {
+        $panel = $repeatCapacity($byCategory((string)$rules['panelCategory'], 'equipment'), $requiredArrayWatts, 'watts', 2);
+        $lines[] = $panel ?? [
+            'sku' => 'TBD-SOLAR-ARRAY', 'description' => 'Solar array (' . $requiredArrayWatts . ' W) — To Be Determined',
+            'unit' => 'lot', 'qty' => 1, 'unitPriceNgn' => 0, 'isTbd' => true,
+        ];
+    }
+
+    $inverterNeed = (float)($estimate['inverterMinKw'] ?? 0);
+    $inverters = array_values(array_filter($byCategory((string)$rules['inverterCategory'], 'equipment'), static fn($item) =>
+        (float)($item['capacityKw'] ?? 0) >= $inverterNeed
+        && (float)($item['priceNgn'] ?? 0) > 0
+        && (float)($item['stockQty'] ?? 0) >= 1
+    ));
+    usort($inverters, static fn($a, $b) =>
+        ((float)$a['capacityKw'] <=> (float)$b['capacityKw'])
+        ?: ((float)$a['priceNgn'] <=> (float)$b['priceNgn'])
+        ?: strcmp((string)$a['sku'], (string)$b['sku'])
+    );
+    $inverter = $inverters ? [
+        'sku' => $inverters[0]['sku'], 'description' => $inverters[0]['name'], 'unit' => $inverters[0]['unit'],
+        'qty' => 1, 'unitPriceNgn' => (float)$inverters[0]['priceNgn'],
+    ] : $repeatCapacity(
+        array_values(array_filter($byCategory((string)$rules['inverterCategory'], 'equipment'), static fn($item) =>
+            in_array((string)$item['sku'], $rules['parallelInverterSkus'], true)
+        )),
+        $inverterNeed,
+        'capacityKw'
+    );
+    $lines[] = $inverter ?? [
+        'sku' => 'TBD-INVERTER', 'description' => 'Inverter (' . $inverterNeed . ' kW minimum) — To Be Determined',
+        'unit' => 'lot', 'qty' => 1, 'unitPriceNgn' => 0, 'isTbd' => true,
+    ];
+
+    $batteryNeed = (float)($estimate['batteryTargetKwh'] ?? 0);
+    if ($batteryNeed > 0) {
+        $battery = $repeatCapacity($byCategory((string)$rules['batteryCategory'], 'equipment'), $batteryNeed, 'capacityKw');
+        $lines[] = $battery ?? [
+            'sku' => 'TBD-BATTERY', 'description' => 'Battery (' . $batteryNeed . ' kWh) — To Be Determined',
+            'unit' => 'lot', 'qty' => 1, 'unitPriceNgn' => 0, 'isTbd' => true,
+        ];
+    }
+    foreach ([
+        ['TBD-ACCESSORIES', 'Accessories'],
+        ['TBD-INSTALLATION', 'Installation'],
+        ['TBD-LOGISTICS', 'Logistics'],
+    ] as [$sku, $label]) {
+        $lines[] = [
+            'sku' => $sku, 'description' => $label . ' — To Be Determined',
+            'unit' => 'lot', 'qty' => 1, 'unitPriceNgn' => 0, 'isTbd' => true,
+        ];
+    }
+    return $lines;
+}
+
+function hiso_calculate_solar_estimate(array $appliances, array $options): array {
+    if (!$appliances || count($appliances) > 100) {
+        throw new InvalidArgumentException('An estimator enquiry must include between 1 and 100 appliance items.');
+    }
+    $connectedLoad = 0.0;
+    $dailyWh = 0.0;
+    foreach ($appliances as $item) {
+        if (!is_array($item) || !is_string($item['name'] ?? null)
+            || trim($item['name']) === '' || strlen($item['name']) > 120
+            || !is_numeric($item['qty'] ?? null) || (float)$item['qty'] < 0 || (float)$item['qty'] > 1000
+            || !is_numeric($item['watts'] ?? null) || (float)$item['watts'] < 0 || (float)$item['watts'] > 100000
+            || !is_numeric($item['hours'] ?? null) || (float)$item['hours'] < 0 || (float)$item['hours'] > 24) {
+            throw new InvalidArgumentException('Estimator appliance details are invalid.');
+        }
+        $qty = (float)$item['qty'];
+        $watts = (float)$item['watts'];
+        $hours = (float)$item['hours'];
+        $connectedLoad += $qty * $watts;
+        $dailyWh += $qty * $watts * $hours;
+    }
+    if ($connectedLoad <= 0 || $dailyWh <= 0) {
+        throw new InvalidArgumentException('Add at least one appliance with a positive quantity, wattage, and usage time.');
+    }
+    $powerMode = $options['powerMode'] ?? 'Hybrid';
+    if (!in_array($powerMode, ['Hybrid', 'Off-grid', 'Grid-backup'], true)) {
+        throw new InvalidArgumentException('The selected solar power mode is invalid.');
+    }
+    $peakSunHours = max(2, min(8, is_numeric($options['peakSunHours'] ?? null) ? (float)$options['peakSunHours'] : 4.5));
+    $usableDepthPercent = max(50, min(95, is_numeric($options['usableDepthPercent'] ?? null) ? (float)$options['usableDepthPercent'] : 85));
+    $autonomyHours = max(2, min(48, is_numeric($options['autonomyHours'] ?? null) ? (float)$options['autonomyHours'] : ($powerMode === 'Off-grid' ? 16 : 10)));
+    $dailyKwh = round($dailyWh / 1000, 2);
+    $rawInverterKw = ($connectedLoad * 1.3) / 1000;
+    $sizes = [1.5, 3, 5, 8, 10, 15, 20, 30, 50, 80, 100, 120];
+    $inverterKw = 0.0;
+    foreach ($sizes as $size) {
+        if ($size >= $rawInverterKw) {
+            $inverterKw = $size;
+            break;
+        }
+    }
+    if ($inverterKw === 0.0) $inverterKw = ceil($rawInverterKw / 10) * 10;
+    $modeMultiplier = $powerMode === 'Off-grid' ? 1.0 : ($powerMode === 'Grid-backup' ? 0.55 : 0.65);
+    $batteryKwh = round(($dailyKwh * $modeMultiplier * max(0.75, $autonomyHours / 12)) / ($usableDepthPercent / 100), 1);
+    $arrayWatts = $dailyKwh === 0 || $powerMode === 'Grid-backup'
+        ? 0
+        : ceil(($dailyKwh * ($powerMode === 'Off-grid' ? 1.35 : 1.25) * 1000) / $peakSunHours);
+    return [
+        'connectedLoadWatts' => (int)round($connectedLoad),
+        'dailyEnergyKwh' => $dailyKwh,
+        'inverterMinKw' => $inverterKw,
+        'batteryTargetKwh' => $batteryKwh,
+        'recommendedPanels550w' => $arrayWatts === 0 ? 0 : max(2, (int)ceil($arrayWatts / 550)),
+        'recommendedBatteries5kwh' => $batteryKwh === 0 ? 0 : max(1, (int)ceil($batteryKwh / 5.12)),
+        'powerMode' => $powerMode,
+        'autonomyHours' => $autonomyHours,
+        'peakSunHours' => $peakSunHours,
+        'usableDepthPercent' => $usableDepthPercent,
+        'recommendedArrayWatts' => $arrayWatts,
+        'equipmentGrade' => substr(trim((string)($options['equipmentGrade'] ?? 'Standard')) ?: 'Standard', 0, 60),
+    ];
+}
+
 function hiso_can_manage_platform_settings(array $user): bool {
     $permissions = $user['permissions'] ?? [];
     return ($user['role'] ?? '') === 'superadmin'
@@ -712,10 +873,15 @@ try {
         $name = trim((string)($body['customerName'] ?? ''));
         $phone = trim((string)($body['phone'] ?? ''));
         $location = trim((string)($body['location'] ?? ''));
+        $estimateInput = is_array($body['estimate'] ?? null) ? $body['estimate'] : null;
+        $source = $body['source'] ?? (($estimateInput && (float)($estimateInput['connectedLoadWatts'] ?? 0) > 0) ? 'estimator' : 'homepage');
         $updatesConsent = $body['whatsappUpdatesConsent'] ?? false;
         $marketingConsent = $body['whatsappMarketingConsent'] ?? false;
         if ($name === '' || $phone === '' || $location === '') {
             hiso_json_response(['error' => 'Name, phone number, and site location are required.'], 422);
+        }
+        if (!in_array($source, ['homepage', 'estimator'], true)) {
+            hiso_json_response(['error' => 'Enquiry source is invalid.'], 422);
         }
         if (!is_bool($updatesConsent) || !is_bool($marketingConsent)) {
             hiso_json_response(['error' => 'WhatsApp consent choices are invalid.'], 422);
@@ -723,16 +889,68 @@ try {
         if (($updatesConsent || $marketingConsent) && !preg_match('/^\+[1-9][0-9]{7,14}$/', $phone)) {
             hiso_json_response(['error' => 'WhatsApp consent requires a valid E.164 phone number.'], 422);
         }
+        $estimate = null;
+        $appliances = [];
+        if ($source === 'estimator') {
+            $rawAppliances = $body['appliances'] ?? null;
+            if (!is_array($rawAppliances)) {
+                hiso_json_response(['error' => 'An estimator enquiry must include appliance items.'], 422);
+            }
+            try {
+                $estimate = hiso_calculate_solar_estimate($rawAppliances, $estimateInput ?? []);
+                $appliances = array_map(static fn($item) => [
+                    'id' => substr((string)($item['id'] ?? ''), 0, 80),
+                    'name' => trim((string)$item['name']),
+                    'qty' => (float)$item['qty'],
+                    'watts' => (float)$item['watts'],
+                    'hours' => (float)$item['hours'],
+                    'catalogSku' => isset($item['catalogSku']) ? substr((string)$item['catalogSku'], 0, 80) : null,
+                ], $rawAppliances);
+            } catch (InvalidArgumentException $error) {
+                hiso_json_response(['error' => $error->getMessage()], 422);
+            }
+        }
         $id = hiso_uuid();
         $ref = hiso_next_code('enquiries', 'ref_code', 'HISO');
-        $stmt = hiso_pdo()->prepare('INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "New", "admin-idee")');
-        $stmt->execute([
-            $id, $ref, $name, trim((string)($body['email'] ?? '')), $phone, $location,
-            trim((string)($body['channel'] ?? 'Website · Load Estimator')),
-            trim((string)($body['needSummary'] ?? 'Solar sizing enquiry')),
-            json_encode($body['appliances'] ?? []),
-            json_encode($body['estimate'] ?? null),
-        ]);
+        $pdo = hiso_pdo();
+        $quoteId = null;
+        $quoteCode = null;
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, appliances_json, estimate_json, status, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "admin-idee")');
+            $stmt->execute([
+                $id, $ref, $name, trim((string)($body['email'] ?? '')), $phone, $location,
+                $source === 'estimator' ? 'Website · Load Estimator' : 'Website · Home Enquiry',
+                trim((string)($body['needSummary'] ?? 'General solar consultation request')),
+                json_encode($appliances, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+                $estimate ? json_encode($estimate, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) : null,
+                $source === 'estimator' ? 'Quoted' : 'New',
+            ]);
+            if ($estimate) {
+                $catalog = hiso_hydrate_catalog();
+                $settings = hiso_load_platform_settings($catalog);
+                $lines = hiso_estimate_quote_lines($estimate, $catalog, $settings);
+                $quoteId = hiso_uuid();
+                $quoteCode = hiso_next_code('quotations', 'quote_code', 'QUO');
+                $quoteItems = json_encode($lines, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+                $now = gmdate('c');
+                $revisions = json_encode([[
+                    'revisionNo' => 1,
+                    'changedBy' => 'Estimator',
+                    'note' => 'Draft quotation generated from the submitted load estimate.',
+                    'createdAt' => $now,
+                    'totalNgn' => array_sum(array_map(static fn($line) => (float)$line['qty'] * (float)$line['unitPriceNgn'], $lines)),
+                ]], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+                $scope = 'Turnkey solar system design and supply for ' . $location . '.';
+                $note = 'Core equipment estimate only. Accessories, installation, and logistics require director pricing before approval.';
+                $pdo->prepare('INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, items_json, revisions_json) VALUES (?, ?, ?, ?, "Draft", 1, ?, ?, ?, 0, 7.5, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 7 DAY), ?, ?)')
+                    ->execute([$quoteId, $quoteCode, $id, $name, $scope, '50% deposit on acceptance, 50% prior to commissioning.', $note, $quoteItems, $revisions]);
+            }
+            $pdo->commit();
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
         if ($updatesConsent) {
             hiso_save_whatsapp_recipient_consent('enquiry', $id, 'operational', $phone, true, 'public_enquiry_form');
         }
@@ -742,7 +960,7 @@ try {
         hiso_notify_roles(['superadmin', 'director', 'admin'], 'New solar enquiry ' . $ref, $name . ' (' . $location . ') submitted an enquiry.', 'enquiries', $id);
         hiso_send_lifecycle_whatsapp('new_enquiry', 'enquiry', $id, 'New enquiry ' . $ref . ' received. Our team will follow up.');
         hiso_audit(['name' => $name, 'role' => 'customer'], 'CREATE_ENQUIRY', 'Enquiry', $ref, 'Public enquiry submitted.');
-        hiso_json_response(['refCode' => $ref, 'id' => $id], 201);
+        hiso_json_response(['refCode' => $ref, 'id' => $id, 'quoteId' => $quoteId, 'quoteCode' => $quoteCode], 201);
     }
 
     if ($method === 'POST' && $route === 'public/orders') {
@@ -1241,16 +1459,48 @@ try {
             $stmt = $pdo->prepare('UPDATE customer_equipment SET equipment_type=?, brand_model=?, serial_number=?, capacity_kw=?, install_date=?, notes=? WHERE id=? AND customer_id=?');
             $stmt->execute([$type, $brand, $serial, $capacity, $installDate, $notes, $body['id'], $customer['id']]);
         } else {
+            $equipmentId = hiso_uuid();
             $pdo->prepare('INSERT INTO customer_equipment (id, customer_id, equipment_type, brand_model, serial_number, capacity_kw, install_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                ->execute([hiso_uuid(), $customer['id'], $type, $brand, $serial, $capacity, $installDate, $notes]);
+                ->execute([$equipmentId, $customer['id'], $type, $brand, $serial, $capacity, $installDate, $notes]);
+            $photos = $body['photos'] ?? [];
+            if (!is_array($photos)) $photos = [];
+            if (count($photos) > 4) hiso_json_response(['error' => 'At most 4 equipment photos may be added at once.'], 422);
+            foreach ($photos as $photo) {
+                if (!is_array($photo) || !is_string($photo['dataUrl'] ?? null) || !is_string($photo['name'] ?? null)
+                    || strlen($photo['dataUrl']) > 6 * 1024 * 1024) {
+                    hiso_json_response(['error' => 'Equipment photo data is invalid.'], 422);
+                }
+                try {
+                    $stored = hiso_store_photo_data_url((string)$photo['dataUrl'], (string)$photo['name']);
+                } catch (Throwable $error) {
+                    hiso_json_response(['error' => $error->getMessage()], 422);
+                }
+                $pdo->prepare(
+                    'INSERT INTO customer_equipment_photos (id, equipment_id, customer_id, storage_filename, original_name, mime_type) VALUES (?, ?, ?, ?, ?, ?)'
+                )->execute([
+                    hiso_uuid(), $equipmentId, $customer['id'], $stored['storage_filename'],
+                    $stored['original_name'], $stored['mime_type'],
+                ]);
+            }
         }
         $eqStmt = $pdo->prepare('SELECT * FROM customer_equipment WHERE customer_id = ? ORDER BY created_at DESC');
         $eqStmt->execute([$customer['id']]);
-        hiso_json_response(['equipment' => array_map(fn($e) => [
-            'id' => $e['id'], 'customerId' => $e['customer_id'], 'equipmentType' => $e['equipment_type'],
-            'brandModel' => $e['brand_model'], 'serialNumber' => $e['serial_number'], 'capacityKw' => $e['capacity_kw'],
-            'installDate' => $e['install_date'], 'notes' => $e['notes'], 'createdAt' => $e['created_at'],
-        ], $eqStmt->fetchAll())]);
+        hiso_json_response(['equipment' => array_map(function ($e) use ($pdo, $customer) {
+            $photoStmt = $pdo->prepare('SELECT id, original_name, created_at FROM customer_equipment_photos WHERE equipment_id = ? AND customer_id = ? ORDER BY created_at DESC');
+            $photoStmt->execute([$e['id'], $customer['id']]);
+            $photos = array_map(static fn($photo) => [
+                'id' => $photo['id'],
+                'fileUrl' => '/api/customer-equipment-photo/' . rawurlencode($photo['id']),
+                'originalName' => $photo['original_name'],
+                'createdAt' => $photo['created_at'],
+            ], $photoStmt->fetchAll());
+            return [
+                'id' => $e['id'], 'customerId' => $e['customer_id'], 'equipmentType' => $e['equipment_type'],
+                'brandModel' => $e['brand_model'], 'serialNumber' => $e['serial_number'], 'capacityKw' => $e['capacity_kw'],
+                'installDate' => $e['install_date'], 'notes' => $e['notes'], 'createdAt' => $e['created_at'],
+                'photos' => $photos,
+            ];
+        }, $eqStmt->fetchAll())]);
     }
 
     if ($method === 'POST' && $route === 'customer/tickets') {
@@ -1453,6 +1703,26 @@ try {
             hiso_json_response(['error' => $error->getMessage()], 422);
         }
         hiso_json_response(['operational' => $body['operational'], 'marketing' => $body['marketing']]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/test-email') {
+        $user = hiso_require_permission('manage_communications');
+        hiso_require_communications_rate_limit($user, 'smtp-test', 2);
+        $email = trim((string)($user['email'] ?? ''));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            hiso_json_response(['error' => 'The signed-in staff email address is invalid.'], 422);
+        }
+        try {
+            hiso_send_mail(
+                $email,
+                'HI-SOTECH email delivery test',
+                'This is a test of HI-SOTECH email delivery. If you received it, outbound email is working.'
+            );
+            hiso_json_response(['ok' => true]);
+        } catch (Throwable $error) {
+            hiso_log_mail_failure($error);
+            hiso_json_response(['error' => 'The test email could not be accepted by SMTP. Check the private mail settings and server mail log.'], 502);
+        }
     }
 
     if ($method === 'GET' && $route === 'communications/contacts') {
@@ -1780,6 +2050,19 @@ try {
         $body = hiso_json_body();
         $pdo = hiso_pdo();
         $items = $body['items'] ?? [];
+        if (!is_array($items) || count($items) > 100) {
+            hiso_json_response(['error' => 'Quotation line items are invalid.'], 422);
+        }
+        foreach ($items as $item) {
+            if (!is_array($item) || !is_string($item['sku'] ?? null) || strlen($item['sku']) > 80
+                || !is_string($item['description'] ?? null) || trim($item['description']) === '' || strlen($item['description']) > 240
+                || !is_string($item['unit'] ?? null) || strlen($item['unit']) > 40
+                || !is_numeric($item['qty'] ?? null) || (float)$item['qty'] <= 0 || (float)$item['qty'] > 10000
+                || !is_numeric($item['unitPriceNgn'] ?? null) || (float)$item['unitPriceNgn'] < 0
+                || (isset($item['isTbd']) && !is_bool($item['isTbd']))) {
+                hiso_json_response(['error' => 'Quotation line item details are invalid.'], 422);
+            }
+        }
         $discount = (float)($body['discountNgn'] ?? 0);
         $tax = (float)($body['taxPercent'] ?? 0);
         $subtotal = 0.0;
@@ -1787,6 +2070,7 @@ try {
         $taxable = max(0, $subtotal - min($subtotal, max(0, $discount)));
         $total = round($taxable * (1 + max(0, $tax) / 100));
         $status = !empty($body['submitForApproval']) ? 'Pending MD' : 'Draft';
+        $savedId = isset($body['quoteId']) ? (string)$body['quoteId'] : '';
 
         if (!empty($body['quoteId'])) {
             $stmt = $pdo->prepare('SELECT * FROM quotations WHERE id = ? LIMIT 1');
@@ -1801,6 +2085,7 @@ try {
             $code = $existing['quote_code'];
         } else {
             $id = hiso_uuid();
+            $savedId = $id;
             $code = hiso_next_code('quotations', 'quote_code', 'QUO');
             $revs = [['revisionNo' => 1, 'changedBy' => $user['name'], 'note' => 'Initial quotation', 'createdAt' => gmdate('c'), 'totalNgn' => $total]];
             $pdo->prepare('INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, items_json, revisions_json) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, CURDATE(), ?, ?, ?)')
@@ -1811,17 +2096,30 @@ try {
             hiso_notify_roles(['director', 'superadmin'], 'Quotation awaiting approval: ' . $code, $body['customerName'] . ' submitted for Director review.', 'quotes', $code);
         }
         hiso_audit($user, 'SAVE_QUOTE', 'Quotation', $code, 'Saved quotation (' . $status . ')');
-        hiso_json_response(['quoteCode' => $code]);
+        hiso_json_response(['id' => $savedId, 'quoteCode' => $code]);
     }
 
     if ($method === 'POST' && $route === 'quotes/approve') {
         $user = hiso_require_permission('approve_quotes');
         $body = hiso_json_body();
-        $decision = ($body['decision'] ?? '') === 'Approved' ? 'Approved' : 'Rejected';
-        hiso_pdo()->prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = NOW() WHERE id = ?')->execute([$decision, $user['name'], $body['quoteId']]);
-        hiso_notify_roles(['admin'], 'Quotation ' . $decision, $user['name'] . ' marked quotation ' . $decision . '.', 'quotes', (string)$body['quoteId']);
-        hiso_send_lifecycle_whatsapp('quote_status', 'quote', (string)$body['quoteId'], 'Quotation ' . (string)$body['quoteId'] . ' status: ' . $decision . '.');
-        hiso_audit($user, 'DECIDE_QUOTE', 'Quotation', (string)$body['quoteId'], 'Quotation ' . $decision);
+        $decision = $body['decision'] ?? null;
+        $quoteId = is_string($body['quoteId'] ?? null) ? trim($body['quoteId']) : '';
+        if (!in_array($decision, ['Approved', 'Rejected'], true) || $quoteId === '' || strlen($quoteId) > 36) {
+            hiso_json_response(['error' => 'Quotation decision is invalid.'], 422);
+        }
+        $pdo = hiso_pdo();
+        $quoteStmt = $pdo->prepare('SELECT items_json FROM quotations WHERE id = ? LIMIT 1');
+        $quoteStmt->execute([$quoteId]);
+        $quote = $quoteStmt->fetch();
+        if (!$quote) hiso_json_response(['error' => 'Quotation not found.'], 404);
+        $quoteItems = json_decode((string)$quote['items_json'], true);
+        if ($decision === 'Approved' && is_array($quoteItems)
+            && array_filter($quoteItems, static fn($item) => !empty($item['isTbd']))) {
+            hiso_json_response(['error' => 'Price all To Be Determined quotation lines before approving.'], 422);
+        }
+        $pdo->prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = NOW() WHERE id = ?')->execute([$decision, $user['name'], $quoteId]);
+        hiso_notify_roles(['admin'], 'Quotation ' . $decision, $user['name'] . ' marked quotation ' . $decision . '.', 'quotes', $quoteId);
+        hiso_audit($user, 'DECIDE_QUOTE', 'Quotation', $quoteId, 'Quotation ' . $decision);
         hiso_json_response(['status' => $decision]);
     }
 
@@ -2195,6 +2493,33 @@ try {
         if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
         hiso_pdo()->prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?')->execute([$user['id']]);
         hiso_json_response(['ok' => true]);
+    }
+
+    if ($method === 'GET' && str_starts_with($route, 'customer-equipment-photo/')) {
+        $customer = hiso_require_customer();
+        $photoId = substr($route, strlen('customer-equipment-photo/'));
+        if (!preg_match('/^[A-Za-z0-9-]{36}$/', $photoId)) {
+            http_response_code(404);
+            exit('Not found');
+        }
+        $stmt = hiso_pdo()->prepare('SELECT storage_filename, mime_type FROM customer_equipment_photos WHERE id = ? AND customer_id = ? LIMIT 1');
+        $stmt->execute([$photoId, $customer['id']]);
+        $photo = $stmt->fetch();
+        if (!$photo) {
+            http_response_code(404);
+            exit('Not found');
+        }
+        $path = hiso_storage_dir('job_photos') . '/' . basename($photo['storage_filename']);
+        if (!is_file($path)) {
+            http_response_code(404);
+            exit('Missing file');
+        }
+        header('Content-Type: ' . $photo['mime_type']);
+        header('Content-Length: ' . (string)filesize($path));
+        header('Cache-Control: private, max-age=86400');
+        header('X-Content-Type-Options: nosniff');
+        readfile($path);
+        exit;
     }
 
     if ($method === 'GET' && str_starts_with($route, 'files/')) {

@@ -1,6 +1,5 @@
 import {
   Bell,
-  Calculator,
   CheckCircle2,
   ClipboardList,
   Eye,
@@ -31,11 +30,11 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
 import { listenForStaffLogout, notifyStaffLogoutAcrossTabs } from '../lib/auth-sync';
+import { createWhatsAppLink } from '../lib/communications';
 import {
   ALL_PERMISSIONS,
   buildQuoteLinesFromEstimate,
   calculateDocumentTotals,
-  computeEstimateCostFromCatalog,
   formatNgn,
   hasPermission,
   syncLineItemsWithCatalog,
@@ -58,7 +57,6 @@ import type {
 } from '../lib/types';
 import type { HomepageContent } from '../lib/homepage';
 import { PWAInstallButton } from './PWAInstallButton';
-import { EstimatorView } from './EstimatorView';
 import { WorkspaceFinance } from './WorkspaceFinance';
 import { WorkspaceInstallations } from './WorkspaceInstallations';
 import { WebsiteEditorView } from './WebsiteEditorView';
@@ -67,7 +65,6 @@ import { WorkspaceSettings } from './WorkspaceSettings';
 
 type WorkspaceTab =
   | 'overview'
-  | 'estimator'
   | 'enquiries'
   | 'tickets'
   | 'catalog'
@@ -85,15 +82,13 @@ type WorkspaceTab =
 
 interface WorkspaceViewProps {
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
-  onOpenStore: () => void;
-  onTrackRef: (refCode: string) => void;
   onCatalogChange?: (catalog: CatalogItem[]) => void;
   onHomepageChange?: (content: HomepageContent) => void;
   onSettingsChange?: (settings: PlatformSettings) => void;
 }
 
 const WORKSPACE_TABS: WorkspaceTab[] = [
-  'overview', 'estimator', 'enquiries', 'tickets', 'catalog', 'orders', 'quotes',
+  'overview', 'enquiries', 'tickets', 'catalog', 'orders', 'quotes',
   'invoices', 'finance', 'installations', 'staff', 'notifications', 'communications',
   'audit', 'settings', 'website',
 ];
@@ -106,8 +101,6 @@ function readWorkspaceTabFromHash(): WorkspaceTab | null {
 
 export function WorkspaceView({
   onOpenDocument,
-  onOpenStore,
-  onTrackRef,
   onCatalogChange,
   onHomepageChange,
   onSettingsChange,
@@ -186,6 +179,9 @@ export function WorkspaceView({
     new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
   );
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([]);
+  const [quoteWhatsAppModal, setQuoteWhatsAppModal] = useState(false);
+  const [quoteWhatsAppPhone, setQuoteWhatsAppPhone] = useState('');
+  const [quoteWhatsAppMessage, setQuoteWhatsAppMessage] = useState('');
 
   // Help Desk Ticket resolution modal
   const [editTicket, setEditTicket] = useState<ServiceTicket | null>(null);
@@ -257,7 +253,7 @@ export function WorkspaceView({
         ws.user.role === 'technician' &&
         !hasPermission(ws.user, 'manage_enquiries') &&
         !hasPermission(ws.user, 'manage_storefront');
-      if (isFieldOnly && !['installations', 'tickets', 'notifications', 'estimator'].includes(tab)) {
+      if (isFieldOnly && !['installations', 'tickets', 'notifications'].includes(tab)) {
         selectTab('installations', true);
       }
       onSettingsChange?.(ws.settings);
@@ -383,22 +379,6 @@ export function WorkspaceView({
   function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord) {
     if (!data) return;
     setErrorMsg('');
-    if (enq) {
-      const estimatePricing = computeEstimateCostFromCatalog(
-        enq.estimate,
-        data.catalog,
-        7.5,
-        data.settings.estimator
-      );
-      if (estimatePricing.undetermined.length > 0) {
-        const categories = estimatePricing.undetermined.map((item) => item.label).join(', ');
-        setErrorMsg(
-          `Quotation drafting is paused because the estimator cannot price: ${categories}. ` +
-          'Add suitable Store inventory or review the approved parallel-inverter models, then try again.'
-        );
-        return;
-      }
-    }
     if (existing) {
       setEditQuoteId(existing.id);
       setQuoteEnqId(existing.enquiryId);
@@ -516,7 +496,7 @@ export function WorkspaceView({
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   autoComplete="current-password"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 selection:bg-slate-300 selection:text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100 dark:selection:bg-amber-300 dark:selection:text-slate-950"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100"
                 />
                 <button
                   type="button"
@@ -713,7 +693,6 @@ export function WorkspaceView({
 
   const navLinks: { id: WorkspaceTab; label: string; icon: typeof LayoutDashboard; allowed: boolean }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard, allowed: true },
-    { id: 'estimator', label: 'Load Estimator', icon: Calculator, allowed: true },
     { id: 'enquiries', label: 'Enquiries', icon: ClipboardList, allowed: hasPermission(user, 'manage_enquiries') },
     {
       id: 'tickets',
@@ -853,7 +832,7 @@ export function WorkspaceView({
   );
 
   return (
-    <div className="mx-auto grid h-[calc(100dvh-65px)] min-h-[calc(100vh-65px)] max-w-7xl grid-cols-12 grid-rows-1 overflow-hidden">
+    <div className="mx-auto grid min-h-[calc(100dvh-65px)] max-w-7xl grid-cols-12 grid-rows-1 overflow-visible lg:h-[calc(100dvh-65px)] lg:overflow-hidden">
       {/* Sidebar */}
       <aside className={`hidden min-h-0 overflow-y-auto border-r border-slate-200 bg-[#081E3E] p-3 text-slate-200 dark:border-slate-800 lg:block ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
         {renderNavigationContents()}
@@ -880,15 +859,7 @@ export function WorkspaceView({
       )}
 
       {/* Main Content */}
-      <main ref={mainContentRef} className={`col-span-12 min-h-0 min-w-0 overflow-y-auto overscroll-contain p-4 sm:p-6 lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
-        {tab === 'estimator' && (
-          <EstimatorView
-            catalog={data.catalog}
-            settings={data.settings.estimator}
-            onOpenStore={onOpenStore}
-            onTrackRef={onTrackRef}
-          />
-        )}
+      <main ref={mainContentRef} className={`col-span-12 min-h-0 min-w-0 overflow-visible p-4 sm:p-6 lg:overflow-y-auto lg:overscroll-contain lg:p-8 ${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'}`}>
 
         {toastMsg && (
           <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-sm font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
@@ -1494,6 +1465,12 @@ export function WorkspaceView({
                             onClick={async () => {
                               await api.decideQuote(q.id, 'Approved');
                               await loadWorkspace();
+                              const staffRecipient = data.staff.find((member) =>
+                                member.role === 'admin' || member.role === 'superadmin'
+                              );
+                              setQuoteWhatsAppPhone(staffRecipient?.phone || '');
+                              setQuoteWhatsAppMessage(`HI-SOTECH quotation ${q.quoteCode} was APPROVED by the Director.\n\nCustomer: ${q.customerName}\nPlease continue with invoice and customer notification.\n\nOpen: ${window.location.origin}/#workspace?tab=quotes`);
+                              setQuoteWhatsAppModal(true);
                               showToast(`${q.quoteCode} approved.`);
                             }}
                             className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white"
@@ -1505,6 +1482,12 @@ export function WorkspaceView({
                             onClick={async () => {
                               await api.decideQuote(q.id, 'Rejected');
                               await loadWorkspace();
+                              const staffRecipient = data.staff.find((member) =>
+                                member.role === 'admin' || member.role === 'superadmin'
+                              );
+                              setQuoteWhatsAppPhone(staffRecipient?.phone || '');
+                              setQuoteWhatsAppMessage(`HI-SOTECH quotation ${q.quoteCode} was REJECTED by the Director.\n\nCustomer: ${q.customerName}\nPlease revise and resubmit.\n\nOpen: ${window.location.origin}/#workspace?tab=quotes`);
+                              setQuoteWhatsAppModal(true);
                               showToast(`${q.quoteCode} returned for revision.`);
                             }}
                             className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700"
@@ -1636,7 +1619,7 @@ export function WorkspaceView({
                       setStaffEmail('');
                       setStaffPhone('');
                       setStaffRole('technician');
-                      setStaffTitle('Solar Field Technician');
+                      setStaffTitle(data.roles.find((role) => role.id === 'technician')?.description || 'Solar Field Technician');
                       setStaffSkills('');
                       setStaffStatus('Active');
                       setStaffPassword('');
@@ -2236,11 +2219,66 @@ export function WorkspaceView({
                   setQuoteModal(false);
                   await loadWorkspace();
                   selectTab('quotes');
+                  const director = data.staff.find((member) => member.role === 'director' || member.role === 'superadmin');
+                  setQuoteWhatsAppPhone(director?.phone || '');
+                  setQuoteWhatsAppMessage(
+                    `HI-SOTECH quotation ${res.quoteCode} is ready for your approval.\n\nCustomer: ${quoteCustomer}\nScope: ${quoteScope}\nTotal: ${formatNgn(quoteTotals.total)}\n\nOpen: ${window.location.origin}/#document?type=quote&id=${encodeURIComponent(res.id || editQuoteId || '')}\n\nPlease review and approve in the Staff Workspace.`
+                  );
+                  setQuoteWhatsAppModal(true);
                   showToast(`Submitted ${res.quoteCode} for Director approval.`);
                 }}
                 className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white"
               >
                 Submit for Director Approval
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {quoteWhatsAppModal && (
+        <div role="dialog" aria-modal="true" aria-label="Preview director WhatsApp message" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <h3 className="text-lg font-bold text-[#081E3E] dark:text-white">Preview Director WhatsApp Message</h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Review the draft, then open WhatsApp and press Send. HI-SOTECH does not send automatically.
+            </p>
+            <label className="mt-4 block text-xs">
+              <span className="font-semibold">Director phone</span>
+              <input
+                type="tel"
+                value={quoteWhatsAppPhone}
+                onChange={(event) => setQuoteWhatsAppPhone(event.target.value)}
+                placeholder="0801 234 5678"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+            </label>
+            <label className="mt-3 block text-xs">
+              <span className="font-semibold">Message</span>
+              <textarea
+                value={quoteWhatsAppMessage}
+                onChange={(event) => setQuoteWhatsAppMessage(event.target.value)}
+                rows={8}
+                className="mt-1 w-full resize-y rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+              />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setQuoteWhatsAppModal(false)} className="rounded-lg border px-4 py-2 text-xs">
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const link = createWhatsAppLink(quoteWhatsAppPhone, quoteWhatsAppMessage);
+                  if (!link) {
+                    setErrorMsg('Enter a valid director phone number before opening WhatsApp.');
+                    return;
+                  }
+                  window.open(link, '_blank', 'noopener,noreferrer');
+                }}
+                className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-semibold text-white"
+              >
+                Open / Send in WhatsApp
               </button>
             </div>
           </div>
@@ -2483,7 +2521,11 @@ export function WorkspaceView({
               <div className="grid grid-cols-2 gap-3">
                 <select
                   value={staffRole}
-                  onChange={(e) => setStaffRole(e.target.value as UserRole)}
+                  onChange={(e) => {
+                    const selectedRole = data.roles.find((role) => role.id === e.target.value);
+                    setStaffRole(e.target.value as UserRole);
+                    setStaffTitle(selectedRole?.description || selectedRole?.name || '');
+                  }}
                   disabled={user.role !== 'superadmin'}
                   className="rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
                 >

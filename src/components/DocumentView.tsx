@@ -382,9 +382,9 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
                       </div>
                     </td>
                     <td className="font-mono-num py-3 pr-3 text-right">{item.qty}</td>
-                    <td className="font-mono-num py-3 pr-3 text-right">{formatNgn(item.unitPriceNgn)}</td>
+                    <td className="font-mono-num py-3 pr-3 text-right">{item.isTbd ? 'TBD' : formatNgn(item.unitPriceNgn)}</td>
                     <td className="font-mono-num py-3 text-right font-semibold text-slate-900">
-                      {formatNgn(item.qty * item.unitPriceNgn)}
+                      {item.isTbd ? 'To Be Determined' : formatNgn(item.qty * item.unitPriceNgn)}
                     </td>
                   </tr>
                 ))}
