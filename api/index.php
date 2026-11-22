@@ -557,11 +557,17 @@ try {
             $verifyToken = (string)($CONFIG['WHATSAPP_WEBHOOK_VERIFY_TOKEN'] ?? '');
             $providedToken = (string)($_GET['hub_verify_token'] ?? $_GET['hub.verify_token'] ?? '');
             $challenge = (string)($_GET['hub_challenge'] ?? $_GET['hub.challenge'] ?? '');
-            if ($mode !== 'subscribe' || $verifyToken === '' || $providedToken === ''
-                || !hash_equals($verifyToken, $providedToken) || strlen($challenge) > 2048) {
+            $failure = $mode !== 'subscribe' ? 'mode_mismatch'
+                : ($verifyToken === '' ? 'verify_token_not_configured'
+                    : ($providedToken === '' ? 'verify_token_missing'
+                        : (!hash_equals($verifyToken, $providedToken) ? 'verify_token_mismatch'
+                            : (strlen($challenge) > 2048 ? 'challenge_too_large' : ''))));
+            if ($failure !== '') {
+                hiso_log_whatsapp_webhook_verification($failure);
                 http_response_code(403);
                 exit;
             }
+            hiso_log_whatsapp_webhook_verification('verified');
             header('Content-Type: text/plain; charset=utf-8');
             echo $challenge;
             exit;

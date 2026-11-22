@@ -317,3 +317,22 @@ function hiso_whatsapp_webhook_signature_is_valid(string $body, string $signatur
     $provided = substr($signature, 7);
     return hash_equals(hash_hmac('sha256', $body, $appSecret), strtolower($provided));
 }
+
+function hiso_log_whatsapp_webhook_verification(string $reason): void {
+    $allowedReasons = [
+        'verified',
+        'mode_mismatch',
+        'verify_token_not_configured',
+        'verify_token_missing',
+        'verify_token_mismatch',
+        'challenge_too_large',
+    ];
+    if (!in_array($reason, $allowedReasons, true)) {
+        throw new InvalidArgumentException('Webhook verification log category is invalid.');
+    }
+    $entry = gmdate('c') . ' verification=' . $reason . "\n";
+    $logPath = hiso_storage_dir('logs') . '/whatsapp-webhook-errors.log';
+    if (file_put_contents($logPath, $entry, FILE_APPEND | LOCK_EX) === false) {
+        error_log('[hiso-whatsapp-webhook] verification=' . $reason);
+    }
+}
