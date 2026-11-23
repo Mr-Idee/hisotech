@@ -74,6 +74,9 @@ import {
   reissueStaffSetupPin,
   setupCustomerPassword,
   setupStaffPassword,
+  saveStaffAuthentication,
+  createStaffPasswordResetToken,
+  resetStaffPassword,
   authenticateCustomer,
   savePlatformSettings,
   submitCustomerTicket,
@@ -558,6 +561,9 @@ async function sendAccountSetupEmail(
   }
   const destination = recipientType === 'customer' ? 'customer portal' : 'staff workspace';
   const url = `${process.env.APP_URL.replace(/\/+$/, '')}/#${recipientType === 'customer' ? 'customer' : 'workspace'}`;
+  const instructions = recipientType === 'staff'
+    ? `Open ${url}, enter your username or email and this PIN at the staff sign-in form, then create a password of at least 12 characters.`
+    : `Open ${url}, enter your email and this PIN, then create a password of at least 12 characters.`;
   const text = [
     `Hello ${name},`,
     '',
@@ -565,7 +571,7 @@ async function sendAccountSetupEmail(
     `Username: ${username}`,
     `One-time setup PIN: ${pin}`,
     'The PIN expires in 24 hours and can only be used once.',
-    `Open ${url}, choose first-time password setup, enter the PIN, and create a password of at least 12 characters.`,
+    instructions,
     'If you did not expect this account, contact HI-SOTECH support.',
   ].join('\n');
   try {
@@ -617,7 +623,9 @@ async function sendAccountSetupWhatsApp(
     });
     return;
   }
-  const message = `HI-SOTECH account setup for ${name}. Username: ${username}. One-time PIN: ${pin}. It expires in 24 hours. Open ${process.env.APP_URL || ''}/#${recipientType === 'customer' ? 'customer' : 'workspace'} to set your password.`;
+  const message = recipientType === 'staff'
+    ? `HI-SOTECH staff account setup for ${name}. Username: ${username}. One-time PIN: ${pin}. It expires in 24 hours. Open ${process.env.APP_URL || ''}/#workspace, enter your username or email and this PIN, then create a password.`
+    : `HI-SOTECH account setup for ${name}. Username: ${username}. One-time PIN: ${pin}. It expires in 24 hours. Open ${process.env.APP_URL || ''}/#customer to set your password.`;
   try {
     const config = getWhatsAppConfiguration(eventKey);
     await sendWhatsAppTemplate(config, phone, message);
@@ -1308,6 +1316,67 @@ async function startServer() {
     }
   });
 
+  app.post('/api/auth/forgot-password', async (req, res) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 190) {
+      res.status(422).json({ error: 'Enter a valid staff email address.' });
+      return;
+    }
+    const address = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkAuthRateLimit(`staff-reset-ip:${address}`, 5, 15 * 60)
+        || !checkAuthRateLimit(`staff-reset-email:${email}`, 3, 60 * 60)) {
+      res.status(429).json({ error: 'Too many password reset requests. Please try again later.' });
+      return;
+    }
+    const reset = createStaffPasswordResetToken(email);
+    if (!reset) {
+      res.status(404).json({ error: 'Staff user does not exist or does not have a verified email address.' });
+      return;
+    }
+    try {
+      const base = process.env.APP_URL;
+      if (!base || !process.env.SMTP_URL || !process.env.MAIL_FROM) {
+        res.status(503).json({ error: 'Password reset email is not configured. Contact the system administrator.' });
+        return;
+      }
+      const resetUrl = new URL(base);
+      resetUrl.hash = `workspace?reset=${encodeURIComponent(reset.token)}`;
+      await nodemailer.createTransport(process.env.SMTP_URL).sendMail({
+        from: process.env.MAIL_FROM,
+        to: reset.email,
+        subject: 'Reset your HI-SOTECH staff password',
+        text: [
+          `Hello ${reset.name},`,
+          '',
+          'Use the secure link below to reset your staff workspace password. This link expires in 30 minutes and can only be used once.',
+          resetUrl.toString(),
+          '',
+          'If you did not request this reset, you can ignore this email.',
+        ].join('\n'),
+      });
+      res.json({ ok: true });
+    } catch {
+      res.status(502).json({ error: 'The password reset email could not be sent. Please try again later.' });
+    }
+  });
+
+  app.post('/api/auth/reset-password', (req, res) => {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const address = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkAuthRateLimit(`staff-reset-complete-ip:${address}`, 10, 15 * 60)
+        || !checkAuthRateLimit(`staff-reset-token:${token}`, 5, 15 * 60)) {
+      res.status(429).json({ error: 'Too many password reset attempts. Please try again later.' });
+      return;
+    }
+    try {
+      resetStaffPassword(token, password);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
   app.post('/api/auth/login', (req, res) => {
     const { identifier, password } = req.body ?? {};
     const normalizedIdentifier = String(identifier || '').trim().toLowerCase();
@@ -1327,6 +1396,10 @@ async function startServer() {
       res.status(401).json({ error: 'Invalid staff email or password.' });
       return;
     }
+    if ('setupRequired' in auth) {
+      res.json({ setupRequired: true });
+      return;
+    }
     res.cookie(COOKIE_NAME, auth.token, {
       httpOnly: true,
       sameSite: 'lax',
@@ -1334,6 +1407,27 @@ async function startServer() {
       maxAge: 7 * 86400 * 1000,
     });
     res.json({ user: auth.user });
+  });
+
+  app.post('/api/staff/authentication', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    const { currentCredential, authType, newCredential } = req.body ?? {};
+    if (typeof currentCredential !== 'string' || typeof newCredential !== 'string'
+        || !['password', 'pin'].includes(authType)) {
+      res.status(422).json({ error: 'Authentication type and credential fields are required.' });
+      return;
+    }
+    try {
+      const updated = saveStaffAuthentication(user.id, currentCredential, authType, newCredential);
+      writeAudit(updated, 'UPDATE_STAFF_AUTHENTICATION', 'Staff', updated.id, `Changed authentication type to ${authType}.`);
+      res.json({ user: updated });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
   });
 
   app.post('/api/auth/logout', (req, res) => {

@@ -1663,7 +1663,7 @@ try {
                 hiso_json_response(['error' => 'Initial setup has already been completed.'], 409);
             }
             $id = hiso_uuid();
-            $pdo->prepare('INSERT INTO users (id, name, username, email, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, ?, ?, "superadmin", "System Super Administrator", "", "Active")')
+            $pdo->prepare('INSERT INTO users (id, name, username, email, email_verified_at, phone, password_hash, role, title, skills, status) VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), ?, ?, "superadmin", "System Super Administrator", "", "Active")')
                 ->execute([$id, $name, $username, $email, $phone, password_hash($password, PASSWORD_DEFAULT)]);
             $pdo->exec('UPDATE app_setup SET completed_at = UTC_TIMESTAMP() WHERE id = 1');
             $pdo->commit();
@@ -1699,6 +1699,61 @@ try {
         }
     }
 
+    if ($method === 'POST' && $route === 'auth/forgot-password') {
+        global $CONFIG;
+        $body = hiso_json_body();
+        $email = strtolower(trim((string)($body['email'] ?? '')));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190) {
+            hiso_json_response(['error' => 'Enter a valid staff email address.'], 422);
+        }
+        $clientAddress = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        if (!hiso_customer_auth_rate_limit('staff-reset-ip:' . $clientAddress, 5, 900)
+            || !hiso_customer_auth_rate_limit('staff-reset-email:' . $email, 3, 3600)) {
+            hiso_json_response(['error' => 'Too many password reset requests. Please try again later.'], 429);
+        }
+        $account = hiso_create_staff_password_reset($email);
+        if (!$account) {
+            hiso_json_response(['error' => 'Staff user does not exist or does not have a verified email address.'], 404);
+        }
+        $appUrl = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/');
+        $parts = parse_url($appUrl);
+        if (!$parts || empty($parts['host']) || !in_array($parts['scheme'] ?? '', ['https', 'http'], true)) {
+            hiso_json_response(['error' => 'Password reset email is not configured. Contact the system administrator.'], 503);
+        }
+        $resetUrl = $appUrl . '/#workspace?reset=' . rawurlencode((string)$account['token']);
+        try {
+            hiso_send_mail(
+                (string)$account['email'],
+                'Reset your HI-SOTECH staff password',
+                "Hello {$account['name']},\n\n"
+                . "Use this secure link to reset your staff workspace password. It expires in 30 minutes and can only be used once.\n"
+                . $resetUrl . "\n\n"
+                . "If you did not request this reset, you can ignore this email."
+            );
+            hiso_json_response(['ok' => true]);
+        } catch (Throwable $error) {
+            hiso_log_mail_failure($error);
+            hiso_json_response(['error' => 'The password reset email could not be sent. Please try again later.'], 502);
+        }
+    }
+
+    if ($method === 'POST' && $route === 'auth/reset-password') {
+        $body = hiso_json_body();
+        $token = is_string($body['token'] ?? null) ? $body['token'] : '';
+        $password = is_string($body['password'] ?? null) ? $body['password'] : '';
+        $clientAddress = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+        if (!hiso_customer_auth_rate_limit('staff-reset-complete-ip:' . $clientAddress, 10, 900)
+            || !hiso_customer_auth_rate_limit('staff-reset-token:' . $token, 5, 900)) {
+            hiso_json_response(['error' => 'Too many password reset attempts. Please try again later.'], 429);
+        }
+        try {
+            hiso_reset_staff_password($token, $password);
+            hiso_json_response(['ok' => true]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
     if ($method === 'POST' && $route === 'auth/login') {
         $body = hiso_json_body();
         $identifier = strtolower(trim((string)($body['identifier'] ?? '')));
@@ -1714,7 +1769,16 @@ try {
         $stmt = hiso_pdo()->prepare('SELECT * FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND status = "Active" LIMIT 1');
         $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch();
-        if (!$user || (int)($user['must_set_password'] ?? 0) === 1 || !password_verify($password, $user['password_hash'])) {
+        if ($user && (int)($user['must_set_password'] ?? 0) === 1) {
+            if (preg_match('/^\d{4}$/', $password) && !empty($user['initial_pin_hash'])
+                && !empty($user['pin_expires_at']) && strtotime((string)$user['pin_expires_at']) > time()
+                && password_verify($password, (string)$user['initial_pin_hash'])) {
+                hiso_json_response(['setupRequired' => true]);
+            }
+            hiso_json_response(['error' => 'Invalid email or password.'], 401);
+        }
+        if (!$user || (($user['auth_type'] ?? 'password') === 'pin' && !preg_match('/^\d{6}$/', $password))
+            || !password_verify($password, (string)($user['password_hash'] ?? ''))) {
             hiso_json_response(['error' => 'Invalid email or password.'], 401);
         }
         hiso_start_session();
@@ -1758,6 +1822,21 @@ try {
         try {
             $updated = hiso_update_staff_profile($user, $body);
             hiso_audit($updated, 'UPDATE_OWN_STAFF_PROFILE', 'Staff', (string)$updated['id'], 'Updated own profile details.');
+            hiso_json_response(['user' => $updated]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
+    if ($method === 'POST' && $route === 'staff/authentication') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        if (!hiso_column_exists('users', 'auth_type')) {
+            hiso_json_response(['error' => 'Apply php-cpanel/migrations/011-staff-authentication.sql before changing authentication type.'], 503);
+        }
+        try {
+            $updated = hiso_save_staff_authentication($user, hiso_json_body());
+            hiso_audit($updated, 'UPDATE_STAFF_AUTHENTICATION', 'Staff', (string)$updated['id'], 'Updated own authentication type.');
             hiso_json_response(['user' => $updated]);
         } catch (InvalidArgumentException $error) {
             hiso_json_response(['error' => $error->getMessage()], 422);
@@ -2977,8 +3056,9 @@ try {
                     ->execute([$id]);
             }
             if ($password !== '') {
-                $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?')
+                $pdo->prepare("UPDATE users SET password_hash=?, auth_type='password' WHERE id=?")
                     ->execute([password_hash($password, PASSWORD_DEFAULT), $id]);
+                $pdo->prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?')->execute([$id]);
             }
         } else {
             $orderStmt = $pdo->prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1');
@@ -2996,8 +3076,8 @@ try {
             $expires = gmdate('Y-m-d H:i:s', time() + 86400);
             $unusablePasswordHash = password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT);
             $pdo->prepare(
-                'INSERT INTO users (id, name, username, email, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status) ' .
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, "Active")'
+                'INSERT INTO users (id, name, username, email, email_verified_at, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status) ' .
+                'VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), ?, ?, ?, ?, 1, ?, ?, ?, "Active")'
             )->execute([$id, $name, $usernameValue, $email, $phone, $unusablePasswordHash, $pinHash, $expires, $role, $title, $skills]);
         }
         hiso_audit($user, $creating ? 'CREATE_STAFF' : 'UPDATE_STAFF', 'Staff', (string)$id, 'Saved staff account ' . $name);

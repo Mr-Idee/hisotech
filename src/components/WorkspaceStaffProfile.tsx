@@ -14,6 +14,10 @@ export function WorkspaceStaffProfile({
   const [phone, setPhone] = useState(user.phone);
   const [photoDataUrl, setPhotoDataUrl] = useState('');
   const [removePhoto, setRemovePhoto] = useState(false);
+  const [authType, setAuthType] = useState<'password' | 'pin'>(user.authType ?? 'password');
+  const [currentCredential, setCurrentCredential] = useState('');
+  const [newCredential, setNewCredential] = useState('');
+  const [confirmCredential, setConfirmCredential] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -52,6 +56,30 @@ export function WorkspaceStaffProfile({
       setNotice('Your profile was updated.');
     } catch (reason) {
       setError((reason as Error).message || 'Your profile could not be updated.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAuthentication(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    if (newCredential !== confirmCredential) {
+      setError(authType === 'pin' ? 'The PIN entries do not match.' : 'The passwords do not match.');
+      setBusy(false);
+      return;
+    }
+    try {
+      const result = await api.saveStaffAuthentication({ currentCredential, authType, newCredential });
+      onSaved(result.user);
+      setCurrentCredential('');
+      setNewCredential('');
+      setConfirmCredential('');
+      setNotice(`Authentication type changed to ${authType === 'pin' ? 'PIN' : 'Password'}.`);
+    } catch (reason) {
+      setError((reason as Error).message || 'Authentication settings could not be updated.');
     } finally {
       setBusy(false);
     }
@@ -132,6 +160,59 @@ export function WorkspaceStaffProfile({
           className="inline-flex items-center gap-2 rounded-lg bg-[#081E3E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#D61F26] disabled:opacity-60">
           <Save className="h-4 w-4" />
           {busy ? 'Saving…' : 'Save profile'}
+        </button>
+      </form>
+
+      <form onSubmit={saveAuthentication} className="space-y-5 rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
+        <div>
+          <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Authentication type</h2>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Choose a password or a six-digit PIN for future sign-ins. Confirm your current credential before changing it.
+          </p>
+        </div>
+        <label className="block text-sm font-medium">
+          Sign in with
+          <select value={authType} onChange={(event) => setAuthType(event.target.value as 'password' | 'pin')}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-700 dark:bg-[#061327]">
+            <option value="password">Password</option>
+            <option value="pin">PIN (6 digits)</option>
+          </select>
+        </label>
+        <label className="block text-sm font-medium">
+          Current {user.authType === 'pin' ? 'PIN' : 'password'}
+          <input required type="password" value={currentCredential}
+            inputMode={user.authType === 'pin' ? 'numeric' : 'text'}
+            pattern={user.authType === 'pin' ? '[0-9]{6}' : undefined}
+            maxLength={user.authType === 'pin' ? 6 : 128}
+            autoComplete="current-password"
+            onChange={(event) => setCurrentCredential(event.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+        </label>
+        <label className="block text-sm font-medium">
+          {authType === 'pin' ? 'New six-digit PIN' : 'New password'}
+          <input required type="password" value={newCredential}
+            inputMode={authType === 'pin' ? 'numeric' : undefined}
+            pattern={authType === 'pin' ? '[0-9]{6}' : undefined}
+            minLength={authType === 'pin' ? 6 : 12}
+            maxLength={authType === 'pin' ? 6 : 128}
+            autoComplete="new-password"
+            onChange={(event) => setNewCredential(event.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+        </label>
+        <label className="block text-sm font-medium">
+          Confirm new {authType === 'pin' ? 'PIN' : 'password'}
+          <input required type="password" value={confirmCredential}
+            inputMode={authType === 'pin' ? 'numeric' : undefined}
+            pattern={authType === 'pin' ? '[0-9]{6}' : undefined}
+            minLength={authType === 'pin' ? 6 : 12}
+            maxLength={authType === 'pin' ? 6 : 128}
+            autoComplete="new-password"
+            onChange={(event) => setConfirmCredential(event.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+        </label>
+        <button type="submit" disabled={busy}
+          className="rounded-lg bg-[#081E3E] px-4 py-2 text-sm font-semibold text-white hover:bg-[#D61F26] disabled:opacity-60">
+          {busy ? 'Saving…' : 'Update authentication'}
         </button>
       </form>
     </div>

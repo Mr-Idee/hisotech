@@ -96,8 +96,10 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   username TEXT,
   email TEXT NOT NULL UNIQUE,
+  email_verified_at TEXT,
   phone TEXT NOT NULL DEFAULT '',
   password_hash TEXT NOT NULL,
+  auth_type TEXT NOT NULL DEFAULT 'password',
   initial_pin_hash TEXT,
   pin_expires_at TEXT,
   must_set_password INTEGER NOT NULL DEFAULT 0,
@@ -112,6 +114,13 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS staff_password_reset_tokens (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
@@ -488,6 +497,14 @@ ensureColumn('users', 'pin_expires_at', 'pin_expires_at TEXT');
 ensureColumn('users', 'must_set_password', 'must_set_password INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'profile_photo_filename', 'profile_photo_filename TEXT');
 ensureColumn('users', 'username', 'username TEXT');
+ensureColumn('users', 'auth_type', "auth_type TEXT NOT NULL DEFAULT 'password'");
+ensureColumn('users', 'email_verified_at', 'email_verified_at TEXT');
+const staffEmailVerificationMigration = 'staff-email-verification-backfill-v1';
+if (!db.prepare('SELECT id FROM app_migrations WHERE id = ?').get(staffEmailVerificationMigration)) {
+  const migratedAt = new Date().toISOString();
+  db.prepare('UPDATE users SET email_verified_at = ? WHERE email_verified_at IS NULL').run(migratedAt);
+  db.prepare('INSERT INTO app_migrations (id, applied_at) VALUES (?, ?)').run(staffEmailVerificationMigration, migratedAt);
+}
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users(username) WHERE username IS NOT NULL AND username <> ''");
 
 function hashPassword(password: string): string {
@@ -614,12 +631,13 @@ function seedRolesAndMigrateUsers(): void {
     && bootstrapName.length > 0 && bootstrapName.length <= 120 && bootstrapPhone.length <= 40) {
     const pw = hashPassword(bootstrapPassword);
     db.prepare(
-      'INSERT OR IGNORE INTO users (id, name, username, email, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR IGNORE INTO users (id, name, username, email, email_verified_at, phone, password_hash, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       'super-admin',
       bootstrapName,
       bootstrapUsername,
       bootstrapEmail,
+      now,
       bootstrapPhone,
       pw,
       'superadmin',
@@ -699,6 +717,7 @@ function hydrateStaffRow(row: Record<string, unknown>, rolesMap: Map<string, Rol
     name: String(row.name),
     username: row.username ? String(row.username) : undefined,
     email: String(row.email),
+    authType: row.auth_type === 'pin' ? 'pin' : 'password',
     phone: String(row.phone),
     profilePhotoUrl: row.profile_photo_filename
       ? `/api/staff/profile/photo/${encodeURIComponent(String(row.id))}?v=${encodeURIComponent(String(row.profile_photo_filename))}`
@@ -877,12 +896,21 @@ export function savePlatformSettings(actor: StaffMember, value: unknown): Platfo
   return settings;
 }
 
-export function authenticateUser(identifier: string, password: string): { token: string; user: StaffMember } | null {
+export function authenticateUser(identifier: string, password: string):
+  { setupRequired: true } | { token: string; user: StaffMember } | null {
   const row = db
     .prepare("SELECT * FROM users WHERE (LOWER(email) = ? OR LOWER(username) = ?) AND status = 'Active' LIMIT 1")
     .get(identifier.trim().toLowerCase(), identifier.trim().toLowerCase()) as Record<string, unknown> | undefined;
   if (!row) return null;
-  if (Number(row.must_set_password) === 1) return null;
+  if (Number(row.must_set_password) === 1) {
+    const expiresAt = String(row.pin_expires_at || '');
+    if (/^\d{4}$/.test(password) && expiresAt > new Date().toISOString()
+        && row.initial_pin_hash && verifyPassword(password, String(row.initial_pin_hash))) {
+      return { setupRequired: true };
+    }
+    return null;
+  }
+  if (row.auth_type === 'pin' && !/^\d{6}$/.test(password)) return null;
   const storedHash = String(row.password_hash);
   if (!verifyPassword(password, storedHash)) return null;
   if (!storedHash.startsWith('scrypt$')) {
@@ -2293,10 +2321,73 @@ export function setupStaffPassword(identifierValue: string, pin: string, passwor
   }
   const now = new Date().toISOString();
   const result = db.prepare(
-    'UPDATE users SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 ' +
+    "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 " +
     'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ?'
   ).run(hashPassword(password), row.id, row.initial_pin_hash, now);
   if (result.changes !== 1) throw new Error('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+  db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id = ?').run(row.id);
+}
+
+export function saveStaffAuthentication(staffId: string, currentCredential: string, authType: 'password' | 'pin', newCredential: string): StaffMember {
+  const row = db.prepare("SELECT * FROM users WHERE id = ? AND status = 'Active' LIMIT 1")
+    .get(staffId) as Record<string, unknown> | undefined;
+  if (!row) throw new Error('Active staff account not found.');
+  const currentType = row.auth_type === 'pin' ? 'pin' : 'password';
+  const storedHash = String(row.password_hash || '');
+  if ((currentType === 'pin' && !/^\d{6}$/.test(currentCredential))
+      || (currentType === 'password' && (!currentCredential || currentCredential.length > 128))
+      || !verifyPassword(currentCredential, storedHash)) {
+    throw new Error('Your current password or PIN is incorrect.');
+  }
+  if (authType === 'pin' ? !/^\d{6}$/.test(newCredential) : newCredential.length < 12 || newCredential.length > 128) {
+    throw new Error(authType === 'pin'
+      ? 'Choose a six-digit PIN.'
+      : 'Choose a password between 12 and 128 characters.');
+  }
+  db.prepare('UPDATE users SET password_hash = ?, auth_type = ? WHERE id = ?')
+    .run(hashPassword(newCredential), authType, staffId);
+  db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id = ?').run(staffId);
+  const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(staffId) as Record<string, unknown>;
+  return hydrateStaffRow(updated, new Map(getAllRoles().map((role) => [role.id, role])));
+}
+
+export function createStaffPasswordResetToken(emailValue: string): {
+  id: string; name: string; email: string; token: string;
+} | null {
+  const email = emailValue.trim().toLowerCase();
+  const row = db.prepare(
+    "SELECT id, name, email FROM users WHERE LOWER(email) = ? AND status = 'Active' AND email_verified_at IS NOT NULL LIMIT 1"
+  ).get(email) as { id: string; name: string; email: string } | undefined;
+  if (!row) return null;
+  const token = crypto.randomBytes(32).toString('hex');
+  const now = new Date().toISOString();
+  db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id = ?').run(row.id);
+  db.prepare('INSERT INTO staff_password_reset_tokens (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
+    .run(crypto.createHash('sha256').update(token).digest('hex'), row.id,
+      new Date(Date.now() + 30 * 60 * 1000).toISOString(), now);
+  return { ...row, token };
+}
+
+export function resetStaffPassword(token: string, password: string): void {
+  if (!/^[a-f0-9]{64}$/i.test(token) || password.length < 12 || password.length > 128) {
+    throw new Error('The reset link is invalid or expired, or the new password does not meet the requirements.');
+  }
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const now = new Date().toISOString();
+  withTransaction(() => {
+    const row = db.prepare(
+      'SELECT user_id FROM staff_password_reset_tokens WHERE token_hash = ? AND expires_at > ? LIMIT 1'
+    ).get(tokenHash, now) as { user_id: string } | undefined;
+    if (!row) throw new Error('The reset link is invalid or has expired. Request a new link.');
+    const result = db.prepare(
+      "UPDATE users SET password_hash = ?, auth_type = 'password', initial_pin_hash = NULL, pin_expires_at = NULL, must_set_password = 0 " +
+      "WHERE id = ? AND status = 'Active' AND email_verified_at IS NOT NULL"
+    ).run(hashPassword(password), row.user_id);
+    if (result.changes !== 1) throw new Error('The staff account is no longer active or verified.');
+    const consumed = db.prepare('DELETE FROM staff_password_reset_tokens WHERE token_hash = ?').run(tokenHash);
+    if (consumed.changes !== 1) throw new Error('The reset link has already been used.');
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
+  });
 }
 
 export function reissueStaffSetupPin(actor: StaffMember, staffId: string): {
@@ -2312,6 +2403,7 @@ export function reissueStaffSetupPin(actor: StaffMember, staffId: string): {
   db.prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?')
     .run(hashPassword(pin), expiresAt, staff.id);
   db.prepare('DELETE FROM sessions WHERE user_id=?').run(staff.id);
+  db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?').run(staff.id);
   writeAudit(actor, 'RESET_STAFF_PASSWORD', 'Staff', staff.id, 'Issued one-time staff password reset instructions.');
   return { ...staff, pin };
 }
@@ -3315,7 +3407,8 @@ export function saveStaffMember(
         .run(new Date().toISOString(), body.id);
     }
     if (body.password && body.password.trim().length >= 12) {
-      db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hashPassword(body.password.trim()), body.id);
+      db.prepare("UPDATE users SET password_hash=?, auth_type='password' WHERE id=?").run(hashPassword(body.password.trim()), body.id);
+      db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?').run(body.id);
     }
     writeAudit(actor, 'UPDATE_STAFF', 'Staff', body.id, `Updated staff record for ${body.name}`);
     return { id: body.id };
@@ -3324,13 +3417,14 @@ export function saveStaffMember(
   const id = crypto.randomUUID();
   const pin = makeInitialPin();
   db.prepare(
-    "INSERT INTO users (id, name, username, email, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status, created_at) " +
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'Active', ?)"
+    "INSERT INTO users (id, name, username, email, email_verified_at, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status, created_at) " +
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'Active', ?)"
   ).run(
     id,
     body.name.trim(),
     username,
     email,
+    new Date().toISOString(),
     body.phone.trim(),
     hashPassword(crypto.randomBytes(32).toString('hex')),
     hashPassword(pin),

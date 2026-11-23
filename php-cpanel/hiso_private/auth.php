@@ -305,12 +305,95 @@ function hiso_setup_staff_password(string $identifier, string $pin, string $pass
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
     }
     $update = $pdo->prepare(
-        'UPDATE users SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 ' .
+        "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 " .
         'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP()'
     );
     $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash']]);
     if ($update->rowCount() !== 1) {
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+    }
+    $pdo->prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?')->execute([$account['id']]);
+}
+
+function hiso_save_staff_authentication(array $user, array $body): array {
+    $authType = $body['authType'] ?? null;
+    $currentCredential = $body['currentCredential'] ?? null;
+    $newCredential = $body['newCredential'] ?? null;
+    if (!in_array($authType, ['password', 'pin'], true)
+        || !is_string($currentCredential) || !is_string($newCredential)) {
+        throw new InvalidArgumentException('Authentication type and credential fields are required.');
+    }
+    $pdo = hiso_pdo();
+    $stmt = $pdo->prepare('SELECT password_hash, auth_type FROM users WHERE id=? AND status="Active" LIMIT 1');
+    $stmt->execute([(string)$user['id']]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$account) throw new InvalidArgumentException('Active staff account not found.');
+    $currentType = ($account['auth_type'] ?? 'password') === 'pin' ? 'pin' : 'password';
+    if (($currentType === 'pin' && !preg_match('/^\d{6}$/', $currentCredential))
+        || ($currentType === 'password' && ($currentCredential === '' || strlen($currentCredential) > 128))
+        || !password_verify($currentCredential, (string)$account['password_hash'])) {
+        throw new InvalidArgumentException('Your current password or PIN is incorrect.');
+    }
+    if (($authType === 'pin' && !preg_match('/^\d{6}$/', $newCredential))
+        || ($authType === 'password' && (strlen($newCredential) < 12 || strlen($newCredential) > 128))) {
+        throw new InvalidArgumentException($authType === 'pin'
+            ? 'Choose a six-digit PIN.'
+            : 'Choose a password between 12 and 128 characters.');
+    }
+    $pdo->prepare('UPDATE users SET password_hash=?, auth_type=? WHERE id=?')
+        ->execute([password_hash($newCredential, PASSWORD_DEFAULT), $authType, (string)$user['id']]);
+    $pdo->prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?')->execute([(string)$user['id']]);
+    $updated = hiso_current_user();
+    if (!$updated) throw new RuntimeException('Updated staff session could not be reloaded.');
+    return $updated;
+}
+
+function hiso_create_staff_password_reset(string $email): ?array {
+    if (!hiso_table_exists('staff_password_reset_tokens')) {
+        throw new RuntimeException('Apply php-cpanel/migrations/011-staff-authentication.sql before using password resets.');
+    }
+    $email = strtolower(trim($email));
+    $stmt = hiso_pdo()->prepare(
+        'SELECT id, name, email FROM users WHERE LOWER(email)=? AND status="Active" AND email_verified_at IS NOT NULL LIMIT 1'
+    );
+    $stmt->execute([$email]);
+    $account = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$account) return null;
+    $token = bin2hex(random_bytes(32));
+    $pdo = hiso_pdo();
+    $pdo->prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?')->execute([$account['id']]);
+    $pdo->prepare('INSERT INTO staff_password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
+        ->execute([hash('sha256', $token), $account['id'], gmdate('Y-m-d H:i:s', time() + 1800)]);
+    $account['token'] = $token;
+    return $account;
+}
+
+function hiso_reset_staff_password(string $token, string $password): void {
+    if (!preg_match('/^[a-f0-9]{64}$/i', $token) || strlen($password) < 12 || strlen($password) > 128) {
+        throw new InvalidArgumentException('The reset link is invalid or expired, or the new password does not meet the requirements.');
+    }
+    $pdo = hiso_pdo();
+    $tokenHash = hash('sha256', $token);
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare(
+            'SELECT user_id FROM staff_password_reset_tokens WHERE token_hash=? AND expires_at > UTC_TIMESTAMP() LIMIT 1 FOR UPDATE'
+        );
+        $stmt->execute([$tokenHash]);
+        $account = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$account) throw new InvalidArgumentException('The reset link is invalid or has expired. Request a new link.');
+        $update = $pdo->prepare(
+            "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 " .
+            'WHERE id=? AND status="Active" AND email_verified_at IS NOT NULL'
+        );
+        $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['user_id']]);
+        if ($update->rowCount() !== 1) throw new InvalidArgumentException('The staff account is no longer active or verified.');
+        $pdo->prepare('DELETE FROM staff_password_reset_tokens WHERE token_hash=?')->execute([$tokenHash]);
+        $pdo->prepare('DELETE FROM sessions WHERE user_id=?')->execute([$account['user_id']]);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $error;
     }
 }
 
@@ -330,6 +413,9 @@ function hiso_issue_staff_password_reset_pin(array $actor, string $staffId): arr
     $pdo->prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?')
         ->execute([$pinHash, $expires, $staff['id']]);
     $pdo->prepare('DELETE FROM sessions WHERE user_id=?')->execute([$staff['id']]);
+    if (hiso_table_exists('staff_password_reset_tokens')) {
+        $pdo->prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?')->execute([$staff['id']]);
+    }
     hiso_audit($actor, 'RESET_STAFF_PASSWORD', 'Staff', (string)$staff['id'], 'Issued one-time staff password reset instructions.');
     $staff['pin'] = $pin;
     return $staff;
@@ -362,7 +448,7 @@ function hiso_current_user(): ?array {
     $photoColumn = hiso_column_exists('users', 'profile_photo_filename');
     $stmt = hiso_pdo()->prepare(
         'SELECT id, name, email, phone' . ($photoColumn ? ', profile_photo_filename' : '') .
-        ', role, title, skills, status, created_at FROM users WHERE id = ? AND status = "Active" LIMIT 1'
+        ', auth_type AS authType, role, title, skills, status, created_at FROM users WHERE id = ? AND status = "Active" LIMIT 1'
     );
     $stmt->execute([$userId]);
     $user = $stmt->fetch();

@@ -360,15 +360,37 @@ export const api = {
 
   // --- Staff Authentication & Workspace ---
   login: (identifier: string, password: string) =>
-    request<{ user: StaffMember }>('/api/auth/login', {
+    request<{ user?: StaffMember; setupRequired?: boolean }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ identifier, password }),
+    }),
+
+  requestStaffPasswordReset: (email: string) =>
+    request<{ ok: boolean }>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resetStaffPassword: (token: string, password: string) =>
+    request<{ ok: boolean }>('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
     }),
 
   setupStaffPassword: (identifier: string, pin: string, password: string) =>
     request<{ ok: boolean }>('/api/auth/setup-password', {
       method: 'POST',
       body: JSON.stringify({ identifier, pin, password }),
+    }),
+
+  saveStaffAuthentication: (payload: {
+    currentCredential: string;
+    authType: 'password' | 'pin';
+    newCredential: string;
+  }) =>
+    request<{ user: StaffMember }>('/api/staff/authentication', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   getFirstAdminSetupStatus: () =>

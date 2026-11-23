@@ -22,9 +22,11 @@ CREATE TABLE IF NOT EXISTS `users` (
   `name` VARCHAR(120) NOT NULL,
   `username` VARCHAR(50) NULL,
   `email` VARCHAR(190) NOT NULL,
+  `email_verified_at` DATETIME NULL,
   `phone` VARCHAR(40) NOT NULL DEFAULT '',
   `profile_photo_filename` VARCHAR(255) NULL,
   `password_hash` VARCHAR(255) NOT NULL,
+  `auth_type` ENUM('password', 'pin') NOT NULL DEFAULT 'password',
   `initial_pin_hash` VARCHAR(255) NULL,
   `pin_expires_at` DATETIME NULL,
   `must_set_password` TINYINT(1) NOT NULL DEFAULT 0,
@@ -36,6 +38,17 @@ CREATE TABLE IF NOT EXISTS `users` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_users_email` (`email`),
   UNIQUE KEY `uq_users_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `staff_password_reset_tokens` (
+  `token_hash` CHAR(64) NOT NULL,
+  `user_id` VARCHAR(36) NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`token_hash`),
+  KEY `idx_staff_password_reset_user` (`user_id`),
+  KEY `idx_staff_password_reset_expiry` (`expires_at`),
+  CONSTRAINT `fk_staff_password_reset_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `catalog_items` (

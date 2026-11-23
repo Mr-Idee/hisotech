@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,6 +21,7 @@ before(async () => {
 
 after(() => {
   db?.closeDatabase();
+  database?.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;');
   database?.close();
   process.chdir(originalCwd);
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -143,4 +145,31 @@ test('staff profile photos reject dimensions beyond the compressed image limit',
     phone: '',
     photoDataUrl: `data:image/jpeg;base64,${oversizedJpeg.toString('base64')}`,
   }), /larger than 1440px/);
+});
+
+test('staff onboarding PIN, authentication type changes, and reset links are single-use', () => {
+  const now = new Date().toISOString();
+  const staffId = '99999999-9999-4999-8999-999999999999';
+  const legacyHash = (value: string) => createHash('sha256').update(`hiso_salt:${value}`).digest('hex');
+  database!.prepare(
+    'INSERT INTO users (id, name, username, email, email_verified_at, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(staffId, 'Auth User', 'auth-user', 'auth-user@example.com', now, '', legacyHash('unusable'), legacyHash('1234'),
+    new Date(Date.now() + 60_000).toISOString(), 1, 'admin', 'Admin', '', 'Active', now);
+
+  assert.deepEqual(db!.authenticateUser('auth-user', '1234'), { setupRequired: true });
+  db!.setupStaffPassword('auth-user@example.com', '1234', 'initial password 123');
+  assert.ok(db!.authenticateUser('auth-user@example.com', 'initial password 123'));
+
+  const pinUser = db!.saveStaffAuthentication(staffId, 'initial password 123', 'pin', '123456');
+  assert.equal(pinUser.authType, 'pin');
+  assert.ok(db!.authenticateUser('auth-user', '123456'));
+  assert.equal(db!.authenticateUser('auth-user', 'initial password 123'), null);
+
+  const reset = db!.createStaffPasswordResetToken('auth-user@example.com');
+  assert.ok(reset);
+  db!.resetStaffPassword(reset!.token, 'reset password 123');
+  assert.throws(() => db!.resetStaffPassword(reset!.token, 'another password 123'), /invalid or has expired/);
+  const passwordUser = db!.authenticateUser('auth-user', 'reset password 123');
+  assert.ok(passwordUser && 'token' in passwordUser);
+  assert.equal(passwordUser.user.authType, 'password');
 });

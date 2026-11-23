@@ -127,6 +127,12 @@ export function WorkspaceView({
   const [staffSetupPin, setStaffSetupPin] = useState('');
   const [staffSetupPassword, setStaffSetupPassword] = useState('');
   const [staffSetupPasswordConfirm, setStaffSetupPasswordConfirm] = useState('');
+  const [forgotStaffPasswordMode, setForgotStaffPasswordMode] = useState(false);
+  const [resetStaffPasswordToken, setResetStaffPasswordToken] = useState(
+    () => new URLSearchParams(window.location.hash.split('?').slice(1).join('?')).get('reset') || ''
+  );
+  const [resetStaffPassword, setResetStaffPassword] = useState('');
+  const [resetStaffPasswordConfirm, setResetStaffPasswordConfirm] = useState('');
   const [setupAvailable, setSetupAvailable] = useState(false);
   const [setupChecked, setSetupChecked] = useState(false);
   const [setupOpen, setSetupOpen] = useState(
@@ -362,11 +368,55 @@ export function WorkspaceView({
     setErrorMsg('');
     setLoginBusy(true);
     try {
-      await api.login(email, password);
+      const result = await api.login(email, password);
+      if (result.setupRequired) {
+        setStaffSetupMode(true);
+        setStaffSetupPin(password);
+        setLoginPassword('');
+        showToast('PIN accepted. Create a new password to finish setting up your staff account.');
+        return;
+      }
       selectTab('overview', true);
       await loadWorkspace();
     } catch (err) {
       setErrorMsg((err as Error).message);
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function handleForgotStaffPassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setErrorMsg('');
+    setLoginBusy(true);
+    try {
+      await api.requestStaffPasswordReset(loginEmail);
+      showToast('A password reset link was sent to your staff email address.');
+      setForgotStaffPasswordMode(false);
+    } catch (error) {
+      setErrorMsg((error as Error).message);
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function handleResetStaffPassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setErrorMsg('');
+    if (resetStaffPassword !== resetStaffPasswordConfirm) {
+      setErrorMsg('The passwords do not match.');
+      return;
+    }
+    setLoginBusy(true);
+    try {
+      await api.resetStaffPassword(resetStaffPasswordToken, resetStaffPassword);
+      setResetStaffPasswordToken('');
+      setResetStaffPassword('');
+      setResetStaffPasswordConfirm('');
+      window.history.replaceState(null, '', '#workspace');
+      showToast('Your password has been reset. Sign in with your new password.');
+    } catch (error) {
+      setErrorMsg((error as Error).message);
     } finally {
       setLoginBusy(false);
     }
@@ -570,26 +620,49 @@ export function WorkspaceView({
           )}
 
           <form
-            onSubmit={staffSetupMode
-              ? handleStaffPasswordSetup
-              : (event) => {
+            onSubmit={resetStaffPasswordToken
+              ? handleResetStaffPassword
+              : staffSetupMode
+                ? handleStaffPasswordSetup
+                : forgotStaffPasswordMode
+                  ? handleForgotStaffPassword
+                  : (event) => {
                 event.preventDefault();
                 handleLogin(loginEmail, loginPassword);
               }}
             className="mt-6 space-y-4 text-sm"
           >
-            <label className="block">
-              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Username or Email</span>
-              <input
-                type="text"
-                required
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                autoComplete="username"
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
-              />
-            </label>
-            {staffSetupMode ? (
+            {!resetStaffPasswordToken && (
+              <label className="block">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  {forgotStaffPasswordMode ? 'Staff email address' : 'Username or Email'}
+                </span>
+                <input
+                  type={forgotStaffPasswordMode ? 'email' : 'text'}
+                  required
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  autoComplete={forgotStaffPasswordMode ? 'email' : 'username'}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </label>
+            )}
+            {resetStaffPasswordToken ? (
+              <>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">New password (at least 12 characters)</span>
+                  <input type="password" required minLength={12} maxLength={128} autoComplete="new-password"
+                    value={resetStaffPassword} onChange={(event) => setResetStaffPassword(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]" />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Confirm new password</span>
+                  <input type="password" required minLength={12} maxLength={128} autoComplete="new-password"
+                    value={resetStaffPasswordConfirm} onChange={(event) => setResetStaffPasswordConfirm(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm dark:border-slate-700 dark:bg-[#061327]" />
+                </label>
+              </>
+            ) : staffSetupMode ? (
               <>
                 <label className="block">
                   <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Four-digit setup PIN</span>
@@ -632,15 +705,20 @@ export function WorkspaceView({
                   />
                 </label>
               </>
+            ) : forgotStaffPasswordMode ? (
+              <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                We’ll email a reset link to your staff account’s verified email address.
+              </p>
             ) : (
               <label className="block">
-                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password</span>
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Password or PIN</span>
                 <span className="relative mt-1 block">
                   <input
                     type={showLoginPassword ? 'text' : 'password'}
                     required
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="Password, 4-digit setup PIN, or 6-digit PIN"
                     autoComplete="current-password"
                     className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 pr-11 text-sm text-slate-900 dark:border-slate-700 dark:bg-[#061327] dark:text-slate-100"
                   />
@@ -661,19 +739,36 @@ export function WorkspaceView({
               disabled={loginBusy}
               className="w-full rounded-lg bg-[#081E3E] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#D61F26] dark:bg-[#D61F26]"
             >
-              {loginBusy ? 'Please wait...' : staffSetupMode ? 'Set Password' : 'Sign In to Staff Workspace'}
+              {loginBusy ? 'Please wait...' : resetStaffPasswordToken
+                ? 'Reset Password'
+                : staffSetupMode
+                  ? 'Create Password'
+                  : forgotStaffPasswordMode
+                    ? 'Send Reset Link'
+                    : 'Sign In to Staff Workspace'}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setErrorMsg('');
-                setStaffSetupMode((mode) => !mode);
-                setLoginPassword('');
-              }}
-              className="w-full text-center text-xs font-semibold text-[#D61F26] underline underline-offset-2"
-            >
-              {staffSetupMode ? 'Return to staff sign in' : 'First time here? Set up password with PIN'}
-            </button>
+            {!resetStaffPasswordToken && (
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMsg('');
+                  if (staffSetupMode || forgotStaffPasswordMode) {
+                    setStaffSetupMode(false);
+                    setForgotStaffPasswordMode(false);
+                    setStaffSetupPin('');
+                    setStaffSetupPassword('');
+                    setStaffSetupPasswordConfirm('');
+                    setLoginPassword('');
+                  } else {
+                    setForgotStaffPasswordMode(true);
+                    setLoginPassword('');
+                  }
+                }}
+                className="w-full text-center text-xs font-semibold text-[#D61F26] underline underline-offset-2"
+              >
+                {staffSetupMode || forgotStaffPasswordMode ? 'Return to staff sign in' : 'Forgot Password?'}
+              </button>
+            )}
           </form>
 
           {setupOpen && (

@@ -389,12 +389,15 @@ function hiso_send_account_setup_email(
     }
     $destination = $recipientType === 'customer' ? 'customer portal' : 'staff workspace';
     $link = $appUrl . ($recipientType === 'customer' ? '/#customer' : '/#workspace');
+    $instruction = $recipientType === 'staff'
+        ? "Open {$link}, enter your username or email and this PIN at the staff sign-in form, then create a password of at least 12 characters."
+        : "Open {$link}, enter your email and this PIN, then create a password of at least 12 characters.";
     $message = "Hello {$name},\n\n"
         . "Your HI-SOTECH {$destination} account is ready.\n"
         . "Username: {$username}\n"
         . "One-time setup PIN: {$pin}\n"
         . "The PIN expires in 24 hours and can only be used once.\n"
-        . "Open {$link}, choose first-time password setup, enter the PIN, and create a password of at least 12 characters.\n"
+        . $instruction . "\n"
         . "If you did not expect this account, contact HI-SOTECH support.";
     try {
         $subject = $eventKey === 'customer_password_reset'
@@ -434,7 +437,10 @@ function hiso_send_account_setup_whatsapp(
     global $CONFIG;
     $destination = $recipientType === 'customer' ? 'customer' : 'staff';
     $link = rtrim((string)($CONFIG['APP_URL'] ?? ''), '/') . ($recipientType === 'customer' ? '/#customer' : '/#workspace');
-    $message = "HI-SOTECH {$destination} account setup for {$name}. Username: {$username}. One-time PIN: {$pin}. It expires in 24 hours. Open {$link} to set your password.";
+    $instruction = $recipientType === 'staff'
+        ? "Enter your username or email and this PIN at the staff sign-in form, then create a password."
+        : "Open {$link} to set your password.";
+    $message = "HI-SOTECH {$destination} account setup for {$name}. Username: {$username}. One-time PIN: {$pin}. It expires in 24 hours. {$instruction}";
     try {
         $config = hiso_whatsapp_template_config($eventKey);
         hiso_whatsapp_send_template($config, $phone, $message);
