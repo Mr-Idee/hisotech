@@ -653,7 +653,7 @@ export function WorkspaceView({
 
   if (!data) {
     return (
-      <div className="mx-auto max-w-lg px-4 py-12">
+      <div className="workspace-ui mx-auto max-w-lg px-4 py-12">
         <div className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm dark:border-slate-800 dark:bg-[#0B1D39]">
           <div className="flex items-center gap-3">
             <img src="/assets/hisotech-logo-mark.png" alt="HI-SOTECH" className="h-10 w-10 object-contain" />
@@ -1125,7 +1125,7 @@ export function WorkspaceView({
   );
 
   return (
-    <div className="mx-auto grid min-h-[calc(100dvh-65px)] max-w-7xl grid-cols-12 grid-rows-1 overflow-visible lg:h-[calc(100dvh-65px)] lg:overflow-hidden">
+    <div className="workspace-ui mx-auto grid min-h-[calc(100dvh-65px)] max-w-7xl grid-cols-12 grid-rows-1 overflow-visible lg:h-[calc(100dvh-65px)] lg:overflow-hidden">
       {/* Sidebar */}
       <aside className={`hidden min-h-0 overflow-y-auto border-r border-slate-200 bg-[#081E3E] p-3 text-slate-200 dark:border-slate-800 lg:block ${sidebarCollapsed ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
         {renderNavigationContents()}
