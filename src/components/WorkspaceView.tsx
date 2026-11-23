@@ -330,7 +330,7 @@ export function WorkspaceView({
     setData(null);
     setLoading(false);
     setMobileNavOpen(false);
-    setErrorMsg('Your staff session was signed out in another tab.');
+    setErrorMsg('');
   }), []);
 
   useEffect(() => {
