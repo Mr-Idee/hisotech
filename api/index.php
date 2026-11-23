@@ -1770,10 +1770,15 @@ try {
         $stmt->execute([$identifier, $identifier]);
         $user = $stmt->fetch();
         if ($user && (int)($user['must_set_password'] ?? 0) === 1) {
-            if (preg_match('/^\d{4}$/', $password) && !empty($user['initial_pin_hash'])
-                && !empty($user['pin_expires_at']) && strtotime((string)$user['pin_expires_at']) > time()
-                && password_verify($password, (string)$user['initial_pin_hash'])) {
-                hiso_json_response(['setupRequired' => true]);
+            $pinHash = (string)($user['initial_pin_hash'] ?? '');
+            $pinIsActive = preg_match('/^\d{4}$/', $password) && $pinHash !== ''
+                && (int)($user['pin_attempts'] ?? HISO_SETUP_PIN_MAX_ATTEMPTS) < HISO_SETUP_PIN_MAX_ATTEMPTS
+                && !empty($user['pin_expires_at']) && strtotime((string)$user['pin_expires_at']) > time();
+            if ($pinIsActive) {
+                if (password_verify($password, $pinHash)) {
+                    hiso_json_response(['setupRequired' => true]);
+                }
+                hiso_record_failed_setup_pin_attempt('users', (string)$user['id'], $pinHash);
             }
             hiso_json_response(['error' => 'Invalid email or password.'], 401);
         }

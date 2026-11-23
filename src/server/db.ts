@@ -52,6 +52,7 @@ import type {
 } from '../lib/types';
 
 const DB_PATH = path.resolve(process.cwd(), '.hiso_preview.sqlite');
+const SETUP_PIN_MAX_ATTEMPTS = 10;
 const UPLOAD_DIR = path.resolve(process.cwd(), '.hiso_uploads');
 const STAFF_PROFILE_DIR = path.join(UPLOAD_DIR, 'staff_profiles');
 
@@ -102,6 +103,7 @@ CREATE TABLE IF NOT EXISTS users (
   auth_type TEXT NOT NULL DEFAULT 'password',
   initial_pin_hash TEXT,
   pin_expires_at TEXT,
+  pin_attempts INTEGER NOT NULL DEFAULT 0,
   must_set_password INTEGER NOT NULL DEFAULT 0,
   profile_photo_filename TEXT,
   role TEXT NOT NULL,
@@ -265,6 +267,7 @@ CREATE TABLE IF NOT EXISTS customer_profiles (
   password_hash TEXT,
   initial_pin_hash TEXT,
   pin_expires_at TEXT,
+  pin_attempts INTEGER NOT NULL DEFAULT 0,
   must_set_password INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -491,9 +494,11 @@ ensureColumn('customer_profiles', 'email_verified_at', 'email_verified_at TEXT')
 ensureColumn('customer_profiles', 'password_hash', 'password_hash TEXT');
 ensureColumn('customer_profiles', 'initial_pin_hash', 'initial_pin_hash TEXT');
 ensureColumn('customer_profiles', 'pin_expires_at', 'pin_expires_at TEXT');
+ensureColumn('customer_profiles', 'pin_attempts', 'pin_attempts INTEGER NOT NULL DEFAULT 0');
 ensureColumn('customer_profiles', 'must_set_password', 'must_set_password INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'initial_pin_hash', 'initial_pin_hash TEXT');
 ensureColumn('users', 'pin_expires_at', 'pin_expires_at TEXT');
+ensureColumn('users', 'pin_attempts', 'pin_attempts INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'must_set_password', 'must_set_password INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'profile_photo_filename', 'profile_photo_filename TEXT');
 ensureColumn('users', 'username', 'username TEXT');
@@ -515,6 +520,15 @@ function hashPassword(password: string): string {
 
 function makeInitialPin(): string {
   return String(crypto.randomInt(1000, 10000));
+}
+
+function recordFailedSetupPinAttempt(table: 'users' | 'customer_profiles', id: string, pinHash: string): void {
+  db.prepare(
+    `UPDATE ${table} SET pin_attempts = pin_attempts + 1, ` +
+    'initial_pin_hash = CASE WHEN pin_attempts + 1 >= ? THEN NULL ELSE initial_pin_hash END ' +
+    'WHERE id = ? AND initial_pin_hash = ? AND must_set_password = 1 ' +
+    'AND pin_expires_at > ? AND pin_attempts < ?'
+  ).run(SETUP_PIN_MAX_ATTEMPTS, id, pinHash, new Date().toISOString(), SETUP_PIN_MAX_ATTEMPTS);
 }
 
 function verifyPassword(password: string, storedHash: string): boolean {
@@ -904,9 +918,11 @@ export function authenticateUser(identifier: string, password: string):
   if (!row) return null;
   if (Number(row.must_set_password) === 1) {
     const expiresAt = String(row.pin_expires_at || '');
-    if (/^\d{4}$/.test(password) && expiresAt > new Date().toISOString()
-        && row.initial_pin_hash && verifyPassword(password, String(row.initial_pin_hash))) {
-      return { setupRequired: true };
+    const pinHash = String(row.initial_pin_hash || '');
+    if (/^\d{4}$/.test(password) && Number(row.pin_attempts) < SETUP_PIN_MAX_ATTEMPTS
+        && expiresAt > new Date().toISOString() && pinHash) {
+      if (verifyPassword(password, pinHash)) return { setupRequired: true };
+      recordFailedSetupPinAttempt('users', String(row.id), pinHash);
     }
     return null;
   }
@@ -2208,7 +2224,7 @@ export function createCustomerAccountForApprovedQuote(
   if (existing) {
     id = existing.id;
     db.prepare(
-      'UPDATE customer_profiles SET name=?, phone=?, location=?, ref_code=?, initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?'
+      'UPDATE customer_profiles SET name=?, phone=?, location=?, ref_code=?, initial_pin_hash=?, pin_expires_at=?, pin_attempts=0, must_set_password=1 WHERE id=?'
     ).run(enquiry.customer_name, enquiry.phone, enquiry.location, enquiry.ref_code, hashPassword(pin), expiresAt, id);
   } else {
     id = crypto.randomUUID();
@@ -2248,7 +2264,7 @@ export function issueCustomerPasswordResetPin(actor: StaffMember, quoteId: strin
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare(
-      'UPDATE customer_profiles SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?'
+      'UPDATE customer_profiles SET initial_pin_hash=?, pin_expires_at=?, pin_attempts=0, must_set_password=1 WHERE id=?'
     ).run(hashPassword(pin), expiresAt, account.id);
     db.prepare('DELETE FROM customer_sessions WHERE customer_id=?').run(account.id);
     db.prepare('DELETE FROM customer_login_tokens WHERE customer_id=?').run(account.id);
@@ -2292,17 +2308,21 @@ export function setupCustomerPassword(emailValue: string, pin: string, password:
   }
   const email = emailValue.trim().toLowerCase();
   const row = db.prepare(
-    'SELECT id, initial_pin_hash, pin_expires_at FROM customer_profiles WHERE LOWER(email) = ? AND must_set_password = 1 LIMIT 1'
-  ).get(email) as { id: string; initial_pin_hash: string | null; pin_expires_at: string | null } | undefined;
-  if (!row?.initial_pin_hash || !row.pin_expires_at || row.pin_expires_at <= new Date().toISOString()
-      || !verifyPassword(pin, row.initial_pin_hash)) {
+    'SELECT id, initial_pin_hash, pin_expires_at, pin_attempts FROM customer_profiles WHERE LOWER(email) = ? AND must_set_password = 1 LIMIT 1'
+  ).get(email) as { id: string; initial_pin_hash: string | null; pin_expires_at: string | null; pin_attempts: number } | undefined;
+  const now = new Date().toISOString();
+  if (!row?.initial_pin_hash || !row.pin_expires_at || row.pin_expires_at <= now
+      || row.pin_attempts >= SETUP_PIN_MAX_ATTEMPTS) {
     throw new Error('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
   }
-  const now = new Date().toISOString();
+  if (!verifyPassword(pin, row.initial_pin_hash)) {
+    recordFailedSetupPinAttempt('customer_profiles', row.id, row.initial_pin_hash);
+    throw new Error('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
+  }
   const result = db.prepare(
-    'UPDATE customer_profiles SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0, email_verified_at=? ' +
-    'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ?'
-  ).run(hashPassword(password), now, row.id, row.initial_pin_hash, now);
+    'UPDATE customer_profiles SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, pin_attempts=0, must_set_password=0, email_verified_at=? ' +
+    'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ? AND pin_attempts < ?'
+  ).run(hashPassword(password), now, row.id, row.initial_pin_hash, now, SETUP_PIN_MAX_ATTEMPTS);
   if (result.changes !== 1) throw new Error('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
 }
 
@@ -2312,18 +2332,22 @@ export function setupStaffPassword(identifierValue: string, pin: string, passwor
   }
   const identifier = identifierValue.trim().toLowerCase();
   const row = db.prepare(
-    "SELECT id, initial_pin_hash, pin_expires_at FROM users WHERE (LOWER(email)=? OR LOWER(username)=?) " +
+    "SELECT id, initial_pin_hash, pin_expires_at, pin_attempts FROM users WHERE (LOWER(email)=? OR LOWER(username)=?) " +
     "AND status='Active' AND must_set_password=1 LIMIT 1"
-  ).get(identifier, identifier) as { id: string; initial_pin_hash: string | null; pin_expires_at: string | null } | undefined;
-  if (!row?.initial_pin_hash || !row.pin_expires_at || row.pin_expires_at <= new Date().toISOString()
-      || !verifyPassword(pin, row.initial_pin_hash)) {
+  ).get(identifier, identifier) as { id: string; initial_pin_hash: string | null; pin_expires_at: string | null; pin_attempts: number } | undefined;
+  const now = new Date().toISOString();
+  if (!row?.initial_pin_hash || !row.pin_expires_at || row.pin_expires_at <= now
+      || row.pin_attempts >= SETUP_PIN_MAX_ATTEMPTS) {
     throw new Error('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
   }
-  const now = new Date().toISOString();
+  if (!verifyPassword(pin, row.initial_pin_hash)) {
+    recordFailedSetupPinAttempt('users', row.id, row.initial_pin_hash);
+    throw new Error('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+  }
   const result = db.prepare(
-    "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 " +
-    'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ?'
-  ).run(hashPassword(password), row.id, row.initial_pin_hash, now);
+    "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, pin_attempts=0, must_set_password=0 " +
+    'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > ? AND pin_attempts < ?'
+  ).run(hashPassword(password), row.id, row.initial_pin_hash, now, SETUP_PIN_MAX_ATTEMPTS);
   if (result.changes !== 1) throw new Error('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
   db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id = ?').run(row.id);
 }
@@ -2400,7 +2424,7 @@ export function reissueStaffSetupPin(actor: StaffMember, staffId: string): {
   if (!staff) throw new Error('An active staff account was not found.');
   const pin = makeInitialPin();
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  db.prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?')
+  db.prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, pin_attempts=0, must_set_password=1 WHERE id=?')
     .run(hashPassword(pin), expiresAt, staff.id);
   db.prepare('DELETE FROM sessions WHERE user_id=?').run(staff.id);
   db.prepare('DELETE FROM staff_password_reset_tokens WHERE user_id=?').run(staff.id);

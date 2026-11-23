@@ -2,6 +2,8 @@
 
 Corporate solar website, load estimator, customer portal, and operations workspace. The PHP/MySQL cPanel package is in [`php-cpanel/README_CPANEL_AND_LOCAL_SETUP.md`](php-cpanel/README_CPANEL_AND_LOCAL_SETUP.md).
 
+For the complete email catalog, communication triggers, and customer/staff workflows, see [`COMMUNICATIONS.md`](COMMUNICATIONS.md).
+
 ## Local preview
 
 Requires Node.js 22+.

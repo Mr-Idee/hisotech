@@ -173,3 +173,41 @@ test('staff onboarding PIN, authentication type changes, and reset links are sin
   assert.ok(passwordUser && 'token' in passwordUser);
   assert.equal(passwordUser.user.authType, 'password');
 });
+
+test('staff and customer setup PINs lock after ten total wrong attempts', () => {
+  const now = new Date().toISOString();
+  const staffId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const legacyHash = (value: string) => createHash('sha256').update(`hiso_salt:${value}`).digest('hex');
+  database!.prepare(
+    'INSERT INTO users (id, name, username, email, email_verified_at, phone, password_hash, initial_pin_hash, pin_expires_at, must_set_password, role, title, skills, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(staffId, 'Locked Staff', 'locked-staff', 'locked-staff@example.com', now, '', legacyHash('unused'),
+    legacyHash('5678'), new Date(Date.now() + 60_000).toISOString(), 1, 'admin', 'Admin', '', 'Active', now);
+  database!.prepare(
+    'INSERT INTO customer_profiles (id, name, email, phone, location, company, ref_code, initial_pin_hash, pin_expires_at, must_set_password, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(customerId, 'Locked Customer', 'locked-customer@example.com', '', '', '', 'HISO-LOCKED',
+    legacyHash('9876'), new Date(Date.now() + 60_000).toISOString(), 1, now);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (attempt % 2 === 0) {
+      assert.equal(db!.authenticateUser('locked-staff', '0000'), null);
+    } else {
+      assert.throws(() => db!.setupStaffPassword('locked-staff', '0000', 'staff password 123'));
+    }
+    assert.throws(() => db!.setupCustomerPassword('locked-customer@example.com', '0000', 'customer password 123'));
+  }
+  assert.equal(db!.authenticateUser('locked-staff', '5678'), null);
+  assert.throws(() => db!.setupStaffPassword('locked-staff', '5678', 'staff password 123'));
+  assert.throws(() => db!.setupCustomerPassword('locked-customer@example.com', '9876', 'customer password 123'));
+
+  const staff = database!.prepare('SELECT pin_attempts, initial_pin_hash, must_set_password FROM users WHERE id=?')
+    .get(staffId) as { pin_attempts: number; initial_pin_hash: string | null; must_set_password: number };
+  const customer = database!.prepare('SELECT pin_attempts, initial_pin_hash, must_set_password FROM customer_profiles WHERE id=?')
+    .get(customerId) as { pin_attempts: number; initial_pin_hash: string | null; must_set_password: number };
+  assert.equal(staff.pin_attempts, 10);
+  assert.equal(staff.initial_pin_hash, null);
+  assert.equal(staff.must_set_password, 1);
+  assert.equal(customer.pin_attempts, 10);
+  assert.equal(customer.initial_pin_hash, null);
+  assert.equal(customer.must_set_password, 1);
+});

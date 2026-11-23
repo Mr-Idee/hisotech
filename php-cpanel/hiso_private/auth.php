@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 
+const HISO_SETUP_PIN_MAX_ATTEMPTS = 10;
+
 $mailerAutoload = __DIR__ . '/vendor/autoload.php';
 if (is_file($mailerAutoload)) {
     require_once $mailerAutoload;
@@ -23,6 +25,18 @@ function hiso_start_session(): void {
         'samesite' => 'Lax',
     ]);
     session_start();
+}
+
+function hiso_record_failed_setup_pin_attempt(string $table, string $id, string $pinHash): void {
+    if (!in_array($table, ['users', 'customer_profiles'], true)) {
+        throw new LogicException('Unsupported setup PIN account table.');
+    }
+    hiso_pdo()->prepare(
+        "UPDATE {$table} SET pin_attempts=pin_attempts+1, " .
+        'initial_pin_hash=CASE WHEN pin_attempts+1 >= ? THEN NULL ELSE initial_pin_hash END ' .
+        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 ' .
+        'AND pin_expires_at > UTC_TIMESTAMP() AND pin_attempts < ?'
+    )->execute([HISO_SETUP_PIN_MAX_ATTEMPTS, $id, $pinHash, HISO_SETUP_PIN_MAX_ATTEMPTS]);
 }
 
 function hiso_current_customer(): ?array {
@@ -170,7 +184,7 @@ function hiso_create_customer_account_from_approved_quote(array $actor, string $
         $id = (string)$existing['id'];
         $pdo->prepare(
             'UPDATE customer_profiles SET name=?, phone=?, location=?, ref_code=?, initial_pin_hash=?, ' .
-            'pin_expires_at=?, must_set_password=1 WHERE id=?'
+            'pin_expires_at=?, pin_attempts=0, must_set_password=1 WHERE id=?'
         )->execute([
             $enquiry['customer_name'], $enquiry['phone'], $enquiry['location'],
             $enquiry['ref_code'], $pinHash, $expires, $id,
@@ -227,7 +241,7 @@ function hiso_issue_customer_password_reset_pin(array $actor, string $quoteId): 
     $pdo->beginTransaction();
     try {
         $pdo->prepare(
-            'UPDATE customer_profiles SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?'
+            'UPDATE customer_profiles SET initial_pin_hash=?, pin_expires_at=?, pin_attempts=0, must_set_password=1 WHERE id=?'
         )->execute([$pinHash, $expires, $account['customer_id']]);
         $pdo->prepare('DELETE FROM customer_sessions WHERE customer_id=?')->execute([$account['customer_id']]);
         $pdo->prepare('DELETE FROM customer_login_tokens WHERE customer_id=?')->execute([$account['customer_id']]);
@@ -253,20 +267,24 @@ function hiso_setup_customer_password(string $email, string $pin, string $passwo
     }
     $pdo = hiso_pdo();
     $stmt = $pdo->prepare(
-        'SELECT id, initial_pin_hash FROM customer_profiles WHERE LOWER(email)=? AND must_set_password=1 ' .
-        'AND pin_expires_at > UTC_TIMESTAMP() LIMIT 1'
+        'SELECT id, initial_pin_hash, pin_attempts FROM customer_profiles WHERE LOWER(email)=? AND must_set_password=1 ' .
+        'AND pin_expires_at > UTC_TIMESTAMP() AND pin_attempts < ? LIMIT 1'
     );
-    $stmt->execute([strtolower(trim($email))]);
+    $stmt->execute([strtolower(trim($email)), HISO_SETUP_PIN_MAX_ATTEMPTS]);
     $account = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$account || !is_string($account['initial_pin_hash']) || !password_verify($pin, $account['initial_pin_hash'])) {
+    if (!$account || !is_string($account['initial_pin_hash'])) {
+        throw new InvalidArgumentException('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
+    }
+    if (!password_verify($pin, $account['initial_pin_hash'])) {
+        hiso_record_failed_setup_pin_attempt('customer_profiles', (string)$account['id'], $account['initial_pin_hash']);
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
     }
     $update = $pdo->prepare(
-        'UPDATE customer_profiles SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, ' .
+        'UPDATE customer_profiles SET password_hash=?, initial_pin_hash=NULL, pin_expires_at=NULL, pin_attempts=0, ' .
         'must_set_password=0, email_verified_at=COALESCE(email_verified_at, UTC_TIMESTAMP()) ' .
-        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP()'
+        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP() AND pin_attempts < ?'
     );
-    $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash']]);
+    $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash'], HISO_SETUP_PIN_MAX_ATTEMPTS]);
     if ($update->rowCount() !== 1) {
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask the Admin to resend your setup email.');
     }
@@ -297,18 +315,23 @@ function hiso_setup_staff_password(string $identifier, string $pin, string $pass
     $identifier = strtolower(trim($identifier));
     $stmt = $pdo->prepare(
         'SELECT id, initial_pin_hash FROM users WHERE (LOWER(email)=? OR LOWER(username)=?) ' .
-        'AND status="Active" AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP() LIMIT 1'
+        'AND status="Active" AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP() ' .
+        'AND pin_attempts < ? LIMIT 1'
     );
-    $stmt->execute([$identifier, $identifier]);
+    $stmt->execute([$identifier, $identifier, HISO_SETUP_PIN_MAX_ATTEMPTS]);
     $account = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$account || !is_string($account['initial_pin_hash']) || !password_verify($pin, $account['initial_pin_hash'])) {
+    if (!$account || !is_string($account['initial_pin_hash'])) {
+        throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
+    }
+    if (!password_verify($pin, $account['initial_pin_hash'])) {
+        hiso_record_failed_setup_pin_attempt('users', (string)$account['id'], $account['initial_pin_hash']);
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
     }
     $update = $pdo->prepare(
-        "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, must_set_password=0 " .
-        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP()'
+        "UPDATE users SET password_hash=?, auth_type='password', initial_pin_hash=NULL, pin_expires_at=NULL, pin_attempts=0, must_set_password=0 " .
+        'WHERE id=? AND initial_pin_hash=? AND must_set_password=1 AND pin_expires_at > UTC_TIMESTAMP() AND pin_attempts < ?'
     );
-    $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash']]);
+    $update->execute([password_hash($password, PASSWORD_DEFAULT), $account['id'], $account['initial_pin_hash'], HISO_SETUP_PIN_MAX_ATTEMPTS]);
     if ($update->rowCount() !== 1) {
         throw new InvalidArgumentException('The PIN is invalid or has expired. Ask your Super Admin to resend your setup email.');
     }
@@ -410,7 +433,7 @@ function hiso_issue_staff_password_reset_pin(array $actor, string $staffId): arr
     $pinHash = password_hash($pin, PASSWORD_DEFAULT);
     if (!is_string($pinHash)) throw new RuntimeException('Staff account setup could not be secured.');
     $expires = gmdate('Y-m-d H:i:s', time() + 86400);
-    $pdo->prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, must_set_password=1 WHERE id=?')
+    $pdo->prepare('UPDATE users SET initial_pin_hash=?, pin_expires_at=?, pin_attempts=0, must_set_password=1 WHERE id=?')
         ->execute([$pinHash, $expires, $staff['id']]);
     $pdo->prepare('DELETE FROM sessions WHERE user_id=?')->execute([$staff['id']]);
     if (hiso_table_exists('staff_password_reset_tokens')) {
