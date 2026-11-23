@@ -45,6 +45,7 @@ import type {
   CatalogItemType,
   EnquiryRecord,
   LineItem,
+  NotificationRecord,
   PermissionKey,
   QuotationRecord,
   RoleDefinition,
@@ -117,6 +118,10 @@ export function WorkspaceView({
   const mainContentRef = useRef<HTMLElement>(null);
   const authEpochRef = useRef(0);
   const [errorMsg, setErrorMsg] = useState('');
+  const [notificationView, setNotificationView] = useState<'active' | 'archived'>('active');
+  const [archivedNotifications, setArchivedNotifications] = useState<NotificationRecord[]>([]);
+  const [selectedNotificationIds, setSelectedNotificationIds] = useState<string[]>([]);
+  const [notificationBusy, setNotificationBusy] = useState(false);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState('');
@@ -248,6 +253,47 @@ export function WorkspaceView({
     notifyUser(msg);
   }
 
+  async function openArchivedNotifications() {
+    setNotificationView('archived');
+    setSelectedNotificationIds([]);
+    setNotificationBusy(true);
+    try {
+      const result = await api.getNotifications(true);
+      setArchivedNotifications(result.notifications);
+    } catch (error) {
+      showToast((error as Error).message);
+    } finally {
+      setNotificationBusy(false);
+    }
+  }
+
+  function openActiveNotifications() {
+    setNotificationView('active');
+    setSelectedNotificationIds([]);
+  }
+
+  async function manageSelectedNotifications(action: 'archive' | 'restore' | 'clear') {
+    const ids = selectedNotificationIds;
+    if (!ids.length || notificationBusy) return;
+    if (action === 'clear' && !window.confirm(`Permanently clear ${ids.length} selected notification(s)?`)) return;
+    setNotificationBusy(true);
+    try {
+      const result = await api.manageNotifications({ action, notificationIds: ids });
+      setSelectedNotificationIds([]);
+      await loadWorkspace();
+      if (notificationView === 'archived') {
+        const archived = await api.getNotifications(true);
+        setArchivedNotifications(archived.notifications);
+      }
+      const verb = action === 'archive' ? 'Archived' : action === 'restore' ? 'Restored' : 'Cleared';
+      showToast(`${verb} ${result.affected} notification(s).`);
+    } catch (error) {
+      showToast((error as Error).message);
+    } finally {
+      setNotificationBusy(false);
+    }
+  }
+
   function openEnquiryFollowUp(enquiry: EnquiryRecord) {
     setErrorMsg('');
     setFollowUpEnquiry(enquiry);
@@ -328,6 +374,9 @@ export function WorkspaceView({
   useEffect(() => listenForStaffLogout(() => {
     authEpochRef.current += 1;
     setData(null);
+    setArchivedNotifications([]);
+    setSelectedNotificationIds([]);
+    setNotificationView('active');
     setLoading(false);
     setMobileNavOpen(false);
     setErrorMsg('');
@@ -458,6 +507,9 @@ export function WorkspaceView({
     authEpochRef.current += 1;
     setMobileNavOpen(false);
     setData(null);
+    setArchivedNotifications([]);
+    setSelectedNotificationIds([]);
+    setNotificationView('active');
     setErrorMsg(
       notifyStaffLogoutAcrossTabs()
         ? ''
@@ -915,6 +967,9 @@ export function WorkspaceView({
   const canManagePlatformSettings = user.role === 'superadmin' || user.role === 'admin'
     || (hasPermission(user, 'manage_storefront') && hasPermission(user, 'manage_invoices'));
   const unreadCount = data.notifications.filter((n) => !n.isRead).length;
+  const visibleNotifications = notificationView === 'active' ? data.notifications : archivedNotifications;
+  const allVisibleNotificationsSelected = visibleNotifications.length > 0
+    && visibleNotifications.every((notification) => selectedNotificationIds.includes(notification.id));
   const openTicketsCount = data.tickets.filter((t) => t.status !== 'Resolved').length;
   const pendingOrders = data.orders.filter((o) => o.status === 'Pending' || o.status === 'Confirmed').length;
   const pendingQuotes = data.quotes.filter((q) => q.status === 'Pending MD').length;
@@ -1985,33 +2040,123 @@ export function WorkspaceView({
         {/* NOTIFICATIONS */}
         {tab === 'notifications' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Notifications</h1>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-pressed={notificationView === 'active'}
+                  onClick={openActiveNotifications}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                    notificationView === 'active'
+                      ? 'border-[#D61F26] bg-red-50 text-[#D61F26] dark:bg-red-950/30'
+                      : 'border-slate-300 dark:border-slate-700'
+                  }`}
+                >
+                  Active
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={notificationView === 'archived'}
+                  onClick={openArchivedNotifications}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                    notificationView === 'archived'
+                      ? 'border-[#D61F26] bg-red-50 text-[#D61F26] dark:bg-red-950/30'
+                      : 'border-slate-300 dark:border-slate-700'
+                  }`}
+                >
+                  Archived
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-[#0B1D39]">
+              <label className="mr-auto flex items-center gap-2 px-1 text-xs font-semibold">
+                <input
+                  type="checkbox"
+                  checked={allVisibleNotificationsSelected}
+                  disabled={!visibleNotifications.length || notificationBusy}
+                  onChange={(event) => setSelectedNotificationIds(
+                    event.target.checked ? visibleNotifications.map((notification) => notification.id) : []
+                  )}
+                  className="h-4 w-4 accent-[#D61F26]"
+                />
+                Select all
+              </label>
+              <span className="px-1 text-xs text-slate-500 dark:text-slate-400">
+                {selectedNotificationIds.length} selected
+              </span>
+              {notificationView === 'active' ? (
+                <button
+                  type="button"
+                  disabled={!selectedNotificationIds.length || notificationBusy}
+                  onClick={() => void manageSelectedNotifications('archive')}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700"
+                >
+                  Archive selected
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!selectedNotificationIds.length || notificationBusy}
+                  onClick={() => void manageSelectedNotifications('restore')}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700"
+                >
+                  Move to active
+                </button>
+              )}
               <button
                 type="button"
-                onClick={async () => {
-                  await api.markNotificationsRead();
-                  await loadWorkspace();
-                }}
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold dark:border-slate-700"
+                disabled={!selectedNotificationIds.length || notificationBusy}
+                onClick={() => void manageSelectedNotifications('clear')}
+                className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-300"
               >
-                Mark All Read
+                Clear selected
               </button>
+              {notificationView === 'active' && (
+                <button
+                  type="button"
+                  disabled={!data.notifications.some((notification) => !notification.isRead) || notificationBusy}
+                  onClick={async () => {
+                    await api.markNotificationsRead();
+                    await loadWorkspace();
+                  }}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700"
+                >
+                  Mark All Read
+                </button>
+              )}
             </div>
             <div className="space-y-2.5">
-              {data.notifications.map((n) => (
+              {visibleNotifications.map((n) => (
                 <div
                   key={n.id}
-                  className={`rounded-xl border p-4 text-sm ${
+                  className={`flex items-start gap-3 rounded-xl border p-4 text-sm ${
                     n.isRead
                       ? 'border-slate-200 bg-white dark:border-slate-800 dark:bg-[#0B1D39]'
                       : 'border-[#D61F26]/50 bg-red-50/50 dark:bg-red-950/20'
                   }`}
                 >
-                  <div className="font-bold text-[#081E3E] dark:text-white">{n.title}</div>
-                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{n.body}</p>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select notification: ${n.title}`}
+                    checked={selectedNotificationIds.includes(n.id)}
+                    disabled={notificationBusy}
+                    onChange={(event) => setSelectedNotificationIds((selected) => event.target.checked
+                      ? [...selected, n.id]
+                      : selected.filter((id) => id !== n.id))}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-[#D61F26]"
+                  />
+                  <div className="min-w-0">
+                    <div className="font-bold text-[#081E3E] dark:text-white">{n.title}</div>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{n.body}</p>
+                  </div>
                 </div>
               ))}
+              {!visibleNotifications.length && (
+                <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+                  {notificationBusy ? 'Loading notifications...' : `No ${notificationView} notifications.`}
+                </div>
+              )}
             </div>
           </div>
         )}

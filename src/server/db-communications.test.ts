@@ -211,3 +211,27 @@ test('staff and customer setup PINs lock after ten total wrong attempts', () => 
   assert.equal(customer.initial_pin_hash, null);
   assert.equal(customer.must_set_password, 1);
 });
+
+test('notification archive and clear actions are restricted to the signed-in staff owner', () => {
+  const staffId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const otherStaffId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const firstId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const secondId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  const otherId = 'abababab-abab-4bab-8bab-abababababab';
+  const now = new Date().toISOString();
+  const addNotification = (id: string, userId: string) => database!.prepare(
+    'INSERT INTO notifications (id, user_id, title, body, target_module, target_ref, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+  ).run(id, userId, 'Test notification', 'Notification body', 'notifications', id, now);
+  addNotification(firstId, staffId);
+  addNotification(secondId, staffId);
+  addNotification(otherId, otherStaffId);
+
+  assert.equal(db!.listNotifications(staffId, false).length, 2);
+  assert.equal(db!.manageNotifications(staffId, 'archive', [firstId]), 1);
+  assert.deepEqual(db!.listNotifications(staffId, false).map((notification) => notification.id), [secondId]);
+  assert.deepEqual(db!.listNotifications(staffId, true).map((notification) => notification.id), [firstId]);
+  assert.equal(db!.manageNotifications(staffId, 'restore', [firstId]), 1);
+  assert.equal(db!.manageNotifications(staffId, 'clear', [secondId, otherId]), 1);
+  assert.deepEqual(db!.listNotifications(staffId, false).map((notification) => notification.id), [firstId]);
+  assert.deepEqual(db!.listNotifications(otherStaffId, false).map((notification) => notification.id), [otherId]);
+});

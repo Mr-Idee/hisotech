@@ -7,6 +7,7 @@ import type {
   LineItem,
   OrderDeliveryMethod,
   OrderPaymentMethod,
+  NotificationRecord,
   PermissionKey,
   PlatformSettings,
   ServiceTicket,
@@ -636,6 +637,18 @@ export const api = {
     }),
 
   markNotificationsRead: () => request<{ ok: boolean }>('/api/notifications/read', { method: 'POST' }),
+
+  getNotifications: (archived: boolean) =>
+    request<{ notifications: NotificationRecord[] }>(`/api/notifications?archived=${archived}`),
+
+  manageNotifications: (payload: {
+    action: 'archive' | 'restore' | 'clear';
+    notificationIds: string[];
+  }) =>
+    request<{ ok: boolean; affected: number }>('/api/notifications/manage', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   sendTestEmail: (recipientEmail?: string) =>
     request<{ ok: boolean }>('/api/communications/test-email', {

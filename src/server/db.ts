@@ -365,6 +365,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   target_module TEXT NOT NULL,
   target_ref TEXT NOT NULL,
   is_read INTEGER NOT NULL DEFAULT 0,
+  is_archived INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -504,6 +505,7 @@ ensureColumn('users', 'profile_photo_filename', 'profile_photo_filename TEXT');
 ensureColumn('users', 'username', 'username TEXT');
 ensureColumn('users', 'auth_type', "auth_type TEXT NOT NULL DEFAULT 'password'");
 ensureColumn('users', 'email_verified_at', 'email_verified_at TEXT');
+ensureColumn('notifications', 'is_archived', 'is_archived INTEGER NOT NULL DEFAULT 0');
 const staffEmailVerificationMigration = 'staff-email-verification-backfill-v1';
 if (!db.prepare('SELECT id FROM app_migrations WHERE id = ?').get(staffEmailVerificationMigration)) {
   const migratedAt = new Date().toISOString();
@@ -2803,7 +2805,7 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
       ).map((r) => hydrateTicketRow(r as Record<string, unknown>));
 
   const notifications: NotificationRecord[] = (
-    db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 40').all(user.id) as Record<string, unknown>[]
+    db.prepare('SELECT * FROM notifications WHERE user_id = ? AND is_archived = 0 ORDER BY created_at DESC LIMIT 40').all(user.id) as Record<string, unknown>[]
   ).map((n) => ({
     id: String(n.id),
     userId: String(n.user_id),
@@ -2812,6 +2814,7 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
     targetModule: String(n.target_module),
     targetRef: String(n.target_ref),
     isRead: Boolean(n.is_read),
+    isArchived: Boolean(n.is_archived),
     createdAt: String(n.created_at),
   }));
 
@@ -3463,7 +3466,39 @@ export function saveStaffMember(
 }
 
 export function markNotificationsRead(userId: string): void {
-  db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(userId);
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_archived = 0').run(userId);
+}
+
+export function listNotifications(userId: string, archived: boolean): NotificationRecord[] {
+  return (db.prepare(
+    'SELECT * FROM notifications WHERE user_id = ? AND is_archived = ? ORDER BY created_at DESC LIMIT 40'
+  ).all(userId, archived ? 1 : 0) as Record<string, unknown>[]).map((notification) => ({
+    id: String(notification.id),
+    userId: String(notification.user_id),
+    title: String(notification.title),
+    body: String(notification.body),
+    targetModule: String(notification.target_module),
+    targetRef: String(notification.target_ref),
+    isRead: Boolean(notification.is_read),
+    isArchived: Boolean(notification.is_archived),
+    createdAt: String(notification.created_at),
+  }));
+}
+
+export function manageNotifications(userId: string, action: 'archive' | 'restore' | 'clear', ids: string[]): number {
+  const notificationIds = [...new Set(ids)];
+  if (!notificationIds.length || notificationIds.length > 100
+      || notificationIds.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+    throw new Error('Select between 1 and 100 valid notifications.');
+  }
+  const placeholders = notificationIds.map(() => '?').join(', ');
+  const sql = action === 'clear'
+    ? `DELETE FROM notifications WHERE user_id = ? AND id IN (${placeholders})`
+    : 'UPDATE notifications SET is_archived = ? WHERE user_id = ? AND id IN (' + placeholders + ')';
+  const result = action === 'clear'
+    ? db.prepare(sql).run(userId, ...notificationIds)
+    : db.prepare(sql).run(action === 'archive' ? 1 : 0, userId, ...notificationIds);
+  return Number(result.changes);
 }
 
 export function getHomepageSections(): Partial<Record<string, { heading: string; body: string; enabled: boolean }>> {

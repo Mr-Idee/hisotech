@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS `notifications` (
   `target_module` VARCHAR(60) NOT NULL,
   `target_ref` VARCHAR(60) NOT NULL,
   `is_read` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_archived` TINYINT(1) NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_notif_user` (`user_id`)

@@ -316,6 +316,7 @@ export interface NotificationRecord {
   targetModule: string;
   targetRef: string;
   isRead: boolean;
+  isArchived: boolean;
   createdAt: string;
 }
 

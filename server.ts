@@ -45,6 +45,8 @@ import {
   getUserBySessionToken,
   hydrateWorkspace,
   issueInvoice,
+  listNotifications,
+  manageNotifications,
   markNotificationsRead,
   createNotification,
   deletePushSubscription,
@@ -2601,6 +2603,34 @@ async function startServer() {
     }
     markNotificationsRead(user.id);
     res.json({ ok: true });
+  });
+
+  app.get('/api/notifications', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    res.json({ notifications: listNotifications(user.id, req.query.archived === 'true') });
+  });
+
+  app.post('/api/notifications/manage', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    const action = req.body?.action;
+    const notificationIds = req.body?.notificationIds;
+    if ((action !== 'archive' && action !== 'restore' && action !== 'clear')
+        || !Array.isArray(notificationIds) || notificationIds.length < 1 || notificationIds.length > 100
+        || notificationIds.some((id: unknown) => typeof id !== 'string'
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+      res.status(422).json({ error: 'Notification action or selection is invalid.' });
+      return;
+    }
+    const affected = manageNotifications(user.id, action, notificationIds);
+    res.json({ ok: true, affected });
   });
 
   app.get('/api/files/:photoId', (req, res) => {

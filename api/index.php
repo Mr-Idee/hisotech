@@ -683,7 +683,7 @@ function hiso_hydrate_workspace(array $user): array {
         }
     }
 
-    $notifStmt = $pdo->prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 40');
+    $notifStmt = $pdo->prepare('SELECT * FROM notifications WHERE user_id = ? AND is_archived = 0 ORDER BY created_at DESC LIMIT 40');
     $notifStmt->execute([$user['id']]);
     $notifications = array_map(fn($n) => [
         'id' => $n['id'],
@@ -693,6 +693,7 @@ function hiso_hydrate_workspace(array $user): array {
         'targetModule' => $n['target_module'],
         'targetRef' => $n['target_ref'],
         'isRead' => (bool)$n['is_read'],
+        'isArchived' => (bool)$n['is_archived'],
         'createdAt' => $n['created_at'],
     ], $notifStmt->fetchAll());
 
@@ -3140,10 +3141,67 @@ try {
         hiso_json_response(['ok' => true]);
     }
 
+    if ($method === 'GET' && $route === 'notifications') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        if (!hiso_column_exists('notifications', 'is_archived')) {
+            hiso_json_response(['error' => 'Apply php-cpanel/migrations/013-notification-archive.sql before managing archived notifications.'], 503);
+        }
+        $archived = ($_GET['archived'] ?? 'false') === 'true';
+        $stmt = hiso_pdo()->prepare(
+            'SELECT * FROM notifications WHERE user_id = ? AND is_archived = ? ORDER BY created_at DESC LIMIT 40'
+        );
+        $stmt->execute([$user['id'], $archived ? 1 : 0]);
+        $notifications = array_map(static fn($notification) => [
+            'id' => $notification['id'],
+            'userId' => $notification['user_id'],
+            'title' => $notification['title'],
+            'body' => $notification['body'],
+            'targetModule' => $notification['target_module'],
+            'targetRef' => $notification['target_ref'],
+            'isRead' => (bool)$notification['is_read'],
+            'isArchived' => (bool)$notification['is_archived'],
+            'createdAt' => $notification['created_at'],
+        ], $stmt->fetchAll());
+        hiso_json_response(['notifications' => $notifications]);
+    }
+
+    if ($method === 'POST' && $route === 'notifications/manage') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        if (!hiso_column_exists('notifications', 'is_archived')) {
+            hiso_json_response(['error' => 'Apply php-cpanel/migrations/013-notification-archive.sql before managing archived notifications.'], 503);
+        }
+        $body = hiso_json_body();
+        $action = $body['action'] ?? null;
+        $notificationIds = $body['notificationIds'] ?? null;
+        if (!in_array($action, ['archive', 'restore', 'clear'], true) || !is_array($notificationIds)
+            || count($notificationIds) < 1 || count($notificationIds) > 100) {
+            hiso_json_response(['error' => 'Select between 1 and 100 notifications and choose a valid action.'], 422);
+        }
+        foreach ($notificationIds as $notificationId) {
+            if (!is_string($notificationId) || !preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i', $notificationId)) {
+                hiso_json_response(['error' => 'Notification selection is invalid.'], 422);
+            }
+        }
+        $notificationIds = array_values(array_unique($notificationIds));
+        $placeholders = implode(',', array_fill(0, count($notificationIds), '?'));
+        if ($action === 'clear') {
+            $stmt = hiso_pdo()->prepare("DELETE FROM notifications WHERE user_id = ? AND id IN ({$placeholders})");
+            $stmt->execute(array_merge([$user['id']], $notificationIds));
+        } else {
+            $stmt = hiso_pdo()->prepare(
+                "UPDATE notifications SET is_archived = ? WHERE user_id = ? AND id IN ({$placeholders})"
+            );
+            $stmt->execute(array_merge([$action === 'archive' ? 1 : 0, $user['id']], $notificationIds));
+        }
+        hiso_json_response(['ok' => true, 'affected' => $stmt->rowCount()]);
+    }
+
     if ($method === 'POST' && $route === 'notifications/read') {
         $user = hiso_current_user();
         if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
-        hiso_pdo()->prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?')->execute([$user['id']]);
+        hiso_pdo()->prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_archived = 0')->execute([$user['id']]);
         hiso_json_response(['ok' => true]);
     }
 
