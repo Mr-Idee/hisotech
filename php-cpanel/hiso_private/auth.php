@@ -359,8 +359,10 @@ function hiso_current_user(): ?array {
     if (!$userId) {
         return null;
     }
+    $photoColumn = hiso_column_exists('users', 'profile_photo_filename');
     $stmt = hiso_pdo()->prepare(
-        'SELECT id, name, email, phone, role, title, skills, status, created_at FROM users WHERE id = ? AND status = "Active" LIMIT 1'
+        'SELECT id, name, email, phone' . ($photoColumn ? ', profile_photo_filename' : '') .
+        ', role, title, skills, status, created_at FROM users WHERE id = ? AND status = "Active" LIMIT 1'
     );
     $stmt->execute([$userId]);
     $user = $stmt->fetch();
@@ -368,8 +370,94 @@ function hiso_current_user(): ?array {
         return null;
     }
     unset($user['password_hash']);
+    $user['profilePhotoUrl'] = !empty($user['profile_photo_filename'])
+        ? '/api/staff/profile/photo/' . rawurlencode((string)$user['id']) . '?v=' . rawurlencode((string)$user['profile_photo_filename'])
+        : null;
+    unset($user['profile_photo_filename']);
     $user['permissions'] = hiso_user_permissions((string)$user['role']);
     return $user;
+}
+
+function hiso_column_exists(string $table, string $column): bool {
+    if (!preg_match('/^[a-z_]+$/', $table) || !preg_match('/^[a-z_]+$/', $column)) {
+        return false;
+    }
+    $stmt = hiso_pdo()->prepare(
+        'SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?'
+    );
+    $stmt->execute([$table, $column]);
+    return (int)$stmt->fetchColumn() > 0;
+}
+
+function hiso_update_staff_profile(array $user, array $body): array {
+    if (!hiso_column_exists('users', 'profile_photo_filename')) {
+        throw new RuntimeException('Apply php-cpanel/migrations/010-staff-profiles-contact-groups.sql before using staff profiles.');
+    }
+    $name = trim((string)($body['name'] ?? ''));
+    $phone = trim((string)($body['phone'] ?? ''));
+    $photoDataUrl = $body['photoDataUrl'] ?? null;
+    $removePhoto = $body['removePhoto'] ?? false;
+    if (strlen($name) < 2 || strlen($name) > 120 || preg_match('/[\r\n]/', $name)) {
+        throw new InvalidArgumentException('Enter a name between 2 and 120 characters.');
+    }
+    if (strlen($phone) > 40 || preg_match('/[\r\n]/', $phone)) {
+        throw new InvalidArgumentException('Enter a valid phone number of at most 40 characters.');
+    }
+    if (!is_bool($removePhoto) || ($photoDataUrl !== null && !is_string($photoDataUrl))
+        || ($removePhoto && is_string($photoDataUrl) && $photoDataUrl !== '')) {
+        throw new InvalidArgumentException('Profile photo data is invalid.');
+    }
+
+    $pdo = hiso_pdo();
+    $stmt = $pdo->prepare("SELECT phone, profile_photo_filename FROM users WHERE id = ? AND status = 'Active' LIMIT 1");
+    $stmt->execute([(string)$user['id']]);
+    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$existing) throw new InvalidArgumentException('Active staff account not found.');
+
+    $storedPhoto = null;
+    if (is_string($photoDataUrl) && $photoDataUrl !== '') {
+        if (strlen($photoDataUrl) > 1_400_000
+            || !preg_match('#^data:image/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$#', $photoDataUrl, $matches)) {
+            throw new InvalidArgumentException('Choose a compressed JPEG, PNG, or WebP profile photo no larger than 1MB.');
+        }
+        $binary = base64_decode($matches[2], true);
+        if ($binary === false || strlen($binary) < 100 || strlen($binary) > 1024 * 1024) {
+            throw new InvalidArgumentException('The profile photo is invalid or exceeds the 1MB limit.');
+        }
+        $dimensions = @getimagesizefromstring($binary);
+        if ($dimensions === false || $dimensions[0] > 1440 || $dimensions[1] > 1440
+            || $dimensions[0] * $dimensions[1] > 2073600) {
+            throw new InvalidArgumentException('The profile photo dimensions exceed the supported 1440px limit.');
+        }
+        $storedPhoto = hiso_store_photo_data_url($photoDataUrl, 'staff-profile.jpg', 'staff_profiles');
+    }
+    $nextFilename = $storedPhoto['storage_filename'] ?? ($removePhoto ? null : $existing['profile_photo_filename']);
+    try {
+        $pdo->beginTransaction();
+        $pdo->prepare('UPDATE users SET name = ?, phone = ?, profile_photo_filename = ? WHERE id = ? AND status = "Active"')
+            ->execute([$name, $phone, $nextFilename, $user['id']]);
+        if (trim((string)$existing['phone']) !== $phone) {
+            $pdo->prepare(
+                "UPDATE whatsapp_recipient_consents SET revoked_at = UTC_TIMESTAMP() WHERE recipient_type = 'staff' AND recipient_id = ? AND revoked_at IS NULL"
+            )->execute([$user['id']]);
+        }
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($storedPhoto) {
+            $path = hiso_storage_dir('staff_profiles') . '/' . basename($storedPhoto['storage_filename']);
+            if (is_file($path)) unlink($path);
+        }
+        throw $error;
+    }
+
+    if (($storedPhoto || $removePhoto) && !empty($existing['profile_photo_filename'])) {
+        $oldPath = hiso_storage_dir('staff_profiles') . '/' . basename((string)$existing['profile_photo_filename']);
+        if (is_file($oldPath)) unlink($oldPath);
+    }
+    $updated = hiso_current_user();
+    if (!$updated) throw new RuntimeException('Updated staff session could not be reloaded.');
+    return $updated;
 }
 
 function hiso_require_permission(string $permission): array {

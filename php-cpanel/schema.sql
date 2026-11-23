@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `username` VARCHAR(50) NULL,
   `email` VARCHAR(190) NOT NULL,
   `phone` VARCHAR(40) NOT NULL DEFAULT '',
+  `profile_photo_filename` VARCHAR(255) NULL,
   `password_hash` VARCHAR(255) NOT NULL,
   `initial_pin_hash` VARCHAR(255) NULL,
   `pin_expires_at` DATETIME NULL,
@@ -354,6 +355,26 @@ CREATE TABLE IF NOT EXISTS `communications_consents` (
   PRIMARY KEY (`customer_id`, `channel`),
   KEY `idx_consent_channel_active` (`channel`, `revoked_at`),
   CONSTRAINT `fk_consent_customer` FOREIGN KEY (`customer_id`) REFERENCES `customer_profiles` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `customer_contact_groups` (
+  `id` VARCHAR(36) NOT NULL,
+  `name` VARCHAR(80) NOT NULL,
+  `created_by` VARCHAR(36) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_customer_contact_group_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `customer_contact_group_members` (
+  `group_id` VARCHAR(36) NOT NULL,
+  `customer_id` VARCHAR(36) NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`group_id`, `customer_id`),
+  KEY `idx_contact_group_member_customer` (`customer_id`),
+  CONSTRAINT `fk_contact_group_member_group` FOREIGN KEY (`group_id`) REFERENCES `customer_contact_groups` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_contact_group_member_customer` FOREIGN KEY (`customer_id`) REFERENCES `customer_profiles` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `whatsapp_recipient_consents` (

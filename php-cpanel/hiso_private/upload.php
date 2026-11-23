@@ -7,7 +7,11 @@ require_once __DIR__ . '/config.php';
  * Validates and re-encodes a base64 Data URL or uploaded file into a clean JPEG
  * stored outside public_html to prevent polyglot script uploads.
  */
-function hiso_store_photo_data_url(string $dataUrl, string $originalName = 'site-photo.jpg'): array {
+function hiso_store_photo_data_url(
+    string $dataUrl,
+    string $originalName = 'site-photo.jpg',
+    string $storageSubdir = 'job_photos'
+): array {
     if (!preg_match('#^data:image/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$#', $dataUrl, $matches)) {
         throw new RuntimeException('Unsupported image payload. Use JPEG, PNG, or WebP.');
     }
@@ -16,7 +20,7 @@ function hiso_store_photo_data_url(string $dataUrl, string $originalName = 'site
     if ($binary === false || strlen($binary) > 6 * 1024 * 1024) {
         throw new RuntimeException('Image exceeds 6MB limit or is malformed.');
     }
-    return hiso_store_photo_binary($binary, $originalName);
+    return hiso_store_photo_binary($binary, $originalName, $storageSubdir);
 }
 
 function hiso_store_photo_upload(array $upload): array {
@@ -34,7 +38,10 @@ function hiso_store_photo_upload(array $upload): array {
     return hiso_store_photo_binary($binary, (string)($upload['name'] ?? 'site-photo.jpg'));
 }
 
-function hiso_store_photo_binary(string $binary, string $originalName): array {
+function hiso_store_photo_binary(string $binary, string $originalName, string $storageSubdir = 'job_photos'): array {
+    if (!in_array($storageSubdir, ['job_photos', 'staff_profiles'], true)) {
+        throw new InvalidArgumentException('Photo storage location is invalid.');
+    }
     $finfo = new finfo(FILEINFO_MIME_TYPE);
     $mime = $finfo->buffer($binary);
     if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp'], true)) {
@@ -47,7 +54,7 @@ function hiso_store_photo_binary(string $binary, string $originalName): array {
     }
 
     $filename = hiso_uuid() . '.jpg';
-    $destDir = hiso_storage_dir('job_photos');
+    $destDir = hiso_storage_dir($storageSubdir);
     $destPath = $destDir . '/' . $filename;
 
     if (function_exists('imagecreatefromstring')) {

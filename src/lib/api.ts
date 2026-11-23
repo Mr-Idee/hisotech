@@ -231,13 +231,34 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  saveStaffProfile: (payload: { name: string; phone: string; photoDataUrl?: string; removePhoto?: boolean }) =>
+    request<{ user: StaffMember }>('/api/staff/profile', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   getCommunicationContacts: () =>
     request<{
       email: { id: string; name: string; email: string; phone: string }[];
       whatsapp: { id: string; name: string; email: string; phone: string; recipientType: 'customer' | 'staff' | 'enquiry' }[];
       pushCustomers: { id: string; name: string }[];
       myWhatsappConsents: { operational: boolean; marketing: boolean; phone: string };
+      customerDirectory: { id: string; name: string; email: string; phone: string }[];
+      customerGroups: { id: string; name: string; customerIds: string[] }[];
+      contactGroupsReady: boolean;
     }>('/api/communications/contacts'),
+
+  saveCustomerContactGroup: (payload: { id?: string; name: string; customerIds: string[] }) =>
+    request<{ id: string; groups: { id: string; name: string; customerIds: string[] }[] }>('/api/communications/contact-groups', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteCustomerContactGroup: (groupId: string) =>
+    request<{ ok: boolean; groups: { id: string; name: string; customerIds: string[] }[] }>(
+      `/api/communications/contact-groups/${encodeURIComponent(groupId)}`,
+      { method: 'DELETE' },
+    ),
 
   getMyWhatsAppConsent: () =>
     request<{ operational: boolean; marketing: boolean; phone: string }>('/api/communications/my-whatsapp-consent'),
@@ -254,20 +275,22 @@ export const api = {
       body: JSON.stringify({ recipientType, recipientId, message, attachments }),
     }),
 
-  sendWhatsAppNewsletter: (payload: { message: string; recipients: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }[]; attachments: NewsletterAttachment[] }) =>
-    request<{ ok: boolean; delivered: number }>('/api/communications/whatsapp-newsletter', {
+  sendWhatsAppNewsletter: (payload: { message: string; recipients: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }[]; attachments: NewsletterAttachment[]; groupId?: string }) =>
+    request<{ ok: boolean; delivered: number; skipped: number }>('/api/communications/whatsapp-newsletter', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  sendNewsletter: (payload: { subject: string; message: string; attachments: NewsletterAttachment[] }) =>
-    request<{ ok: boolean; delivered: number }>('/api/communications/newsletter', {
+  sendNewsletter: (payload: { subject: string; message: string; attachments: NewsletterAttachment[]; groupId?: string }) =>
+    request<{ ok: boolean; delivered: number; skipped: number }>('/api/communications/newsletter', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  sendPushNotification: (payload: { title: string; body: string; userIds: string[]; customerIds: string[] }) =>
-    request<{ ok: boolean; delivered: number; failed: number }>('/api/communications/push', {
+  sendPushNotification: (payload: {
+    title: string; body: string; userIds: string[]; customerIds: string[]; customerGroupId?: string;
+  }) =>
+    request<{ ok: boolean; delivered: number; failed: number; skipped: number }>('/api/communications/push', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

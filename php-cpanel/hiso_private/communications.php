@@ -20,6 +20,154 @@ function hiso_marketing_contacts(string $channel): array {
     return $contacts;
 }
 
+function hiso_customer_contact_directory(): array {
+    return hiso_pdo()->query(
+        'SELECT id, name, email, phone FROM customer_profiles WHERE email_verified_at IS NOT NULL ORDER BY name LIMIT 2000'
+    )->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function hiso_customer_contact_groups(): array {
+    $groups = hiso_pdo()->query('SELECT id, name FROM customer_contact_groups ORDER BY name')->fetchAll(PDO::FETCH_ASSOC);
+    $stmt = hiso_pdo()->query('SELECT group_id, customer_id FROM customer_contact_group_members ORDER BY customer_id');
+    $members = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $members[(string)$row['group_id']][] = (string)$row['customer_id'];
+    }
+    return array_map(static fn($group) => [
+        'id' => (string)$group['id'],
+        'name' => (string)$group['name'],
+        'customerIds' => $members[(string)$group['id']] ?? [],
+    ], $groups);
+}
+
+function hiso_save_customer_contact_group(array $body, string $actorId): array {
+    $id = trim((string)($body['id'] ?? ''));
+    $name = trim((string)($body['name'] ?? ''));
+    $customerIds = $body['customerIds'] ?? null;
+    if ($name === '' || strlen($name) > 80 || preg_match('/[\r\n]/', $name)) {
+        throw new InvalidArgumentException('Enter a group name between 1 and 80 characters.');
+    }
+    if (!is_array($customerIds) || count($customerIds) > 1000) {
+        throw new InvalidArgumentException('Select up to 1,000 verified customers for this group.');
+    }
+    foreach ($customerIds as $customerId) {
+        if (!is_string($customerId) || !preg_match('/^[A-Fa-f0-9-]{36}$/', $customerId)) {
+            throw new InvalidArgumentException('Customer group selection is invalid.');
+        }
+    }
+    $customerIds = array_values(array_unique($customerIds));
+    if ($customerIds) {
+        $stmt = hiso_pdo()->prepare(
+            'SELECT COUNT(*) FROM customer_profiles WHERE email_verified_at IS NOT NULL AND id IN (' .
+            implode(',', array_fill(0, count($customerIds), '?')) . ')'
+        );
+        $stmt->execute($customerIds);
+        if ((int)$stmt->fetchColumn() !== count($customerIds)) {
+            throw new InvalidArgumentException('Groups can include only existing, verified customer accounts.');
+        }
+    }
+    if ($id !== '' && !preg_match('/^[A-Fa-f0-9-]{36}$/', $id)) {
+        throw new InvalidArgumentException('Contact group ID is invalid.');
+    }
+    $pdo = hiso_pdo();
+    $isUpdate = $id !== '';
+    if ($isUpdate) {
+        $stmt = $pdo->prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1');
+        $stmt->execute([$id]);
+        if (!$stmt->fetchColumn()) throw new InvalidArgumentException('Contact group not found.');
+    } else {
+        $id = hiso_uuid();
+    }
+    try {
+        $pdo->beginTransaction();
+        if ($isUpdate) {
+            $pdo->prepare('UPDATE customer_contact_groups SET name = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?')
+                ->execute([$name, $id]);
+        } else {
+            $pdo->prepare('INSERT INTO customer_contact_groups (id, name, created_by) VALUES (?, ?, ?)')
+                ->execute([$id, $name, $actorId]);
+        }
+        $pdo->prepare('DELETE FROM customer_contact_group_members WHERE group_id = ?')->execute([$id]);
+        $insert = $pdo->prepare('INSERT INTO customer_contact_group_members (group_id, customer_id) VALUES (?, ?)');
+        foreach ($customerIds as $customerId) $insert->execute([$id, $customerId]);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($error instanceof PDOException && (string)$error->getCode() === '23000') {
+            throw new InvalidArgumentException('A contact group with that name already exists.');
+        }
+        throw $error;
+    }
+    return ['id' => $id];
+}
+
+function hiso_delete_customer_contact_group(string $id): void {
+    if (!preg_match('/^[A-Fa-f0-9-]{36}$/', $id)) {
+        throw new InvalidArgumentException('Contact group ID is invalid.');
+    }
+    $stmt = hiso_pdo()->prepare('DELETE FROM customer_contact_groups WHERE id = ?');
+    $stmt->execute([$id]);
+    if ($stmt->rowCount() === 0) throw new InvalidArgumentException('Contact group not found.');
+}
+
+function hiso_customer_contact_group_recipients(string $groupId, string $channel): array {
+    if (!preg_match('/^[A-Fa-f0-9-]{36}$/', $groupId) || !in_array($channel, ['email', 'whatsapp'], true)) {
+        throw new InvalidArgumentException('Contact group or delivery channel is invalid.');
+    }
+    $exists = hiso_pdo()->prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1');
+    $exists->execute([$groupId]);
+    if (!$exists->fetchColumn()) throw new InvalidArgumentException('Contact group not found.');
+    $total = hiso_pdo()->prepare('SELECT COUNT(*) FROM customer_contact_group_members WHERE group_id = ?');
+    $total->execute([$groupId]);
+    $column = $channel === 'email' ? 'email' : 'phone';
+    $stmt = hiso_pdo()->prepare(
+        'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' .
+        'JOIN customer_profiles c ON c.id = m.customer_id ' .
+        'JOIN communications_consents x ON x.customer_id = c.id AND x.channel = ? ' .
+        'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL AND x.consented_at IS NOT NULL ' .
+        'AND x.revoked_at IS NULL AND c.' . $column . ' <> "" ORDER BY c.name'
+    );
+    $stmt->execute([$channel, $groupId]);
+    $contacts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if ($channel === 'email') {
+        $contacts = array_values(array_filter($contacts, static fn($contact) =>
+            filter_var($contact['email'] ?? '', FILTER_VALIDATE_EMAIL) !== false
+        ));
+    } else {
+        $contacts = array_values(array_filter($contacts, static fn($contact) =>
+            preg_match('/^\+[1-9][0-9]{7,14}$/', (string)($contact['phone'] ?? '')) === 1
+        ));
+    }
+    return ['contacts' => $contacts, 'skipped' => max(0, (int)$total->fetchColumn() - count($contacts))];
+}
+
+function hiso_customer_contact_group_push_recipients(string $groupId): array {
+    if (!preg_match('/^[A-Fa-f0-9-]{36}$/', $groupId)) {
+        throw new InvalidArgumentException('Contact group ID is invalid.');
+    }
+    if (!hiso_table_exists('customer_contact_groups') || !hiso_table_exists('customer_contact_group_members')) {
+        throw new InvalidArgumentException('Apply php-cpanel/migrations/010-staff-profiles-contact-groups.sql before using groups for push notifications.');
+    }
+    $exists = hiso_pdo()->prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1');
+    $exists->execute([$groupId]);
+    if (!$exists->fetchColumn()) throw new InvalidArgumentException('Contact group not found.');
+
+    $total = hiso_pdo()->prepare('SELECT COUNT(*) FROM customer_contact_group_members WHERE group_id = ?');
+    $total->execute([$groupId]);
+    $subscribed = hiso_pdo()->prepare(
+        'SELECT DISTINCT c.id FROM customer_contact_group_members m ' .
+        'JOIN customer_profiles c ON c.id = m.customer_id ' .
+        'JOIN push_subscriptions p ON p.owner_type = ? AND p.owner_id = c.id ' .
+        'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL'
+    );
+    $subscribed->execute(['customer', $groupId]);
+    $customerIds = array_map('strval', array_column($subscribed->fetchAll(PDO::FETCH_ASSOC), 'id'));
+    return [
+        'customerIds' => $customerIds,
+        'skipped' => max(0, (int)$total->fetchColumn() - count($customerIds)),
+    ];
+}
+
 function hiso_send_lifecycle_email_to_roles(string $eventKey, array $roles, string $subject, string $message): void {
     $roles = array_values(array_unique(array_filter($roles, static fn($role) =>
         is_string($role) && in_array($role, ['admin', 'director', 'superadmin'], true)
@@ -351,7 +499,7 @@ function hiso_whatsapp_send(string $phone, string $message): void {
     }
 }
 
-function hiso_newsletter_send(string $subject, string $message, array $attachments): int {
+function hiso_newsletter_send(string $subject, string $message, array $attachments, ?array $recipients = null): int {
     global $CONFIG;
     $messageLength = preg_match_all('/./us', $message);
     if (trim($subject) === '' || strlen($subject) > 180 || preg_match('/[\r\n]/', $subject)
@@ -361,7 +509,7 @@ function hiso_newsletter_send(string $subject, string $message, array $attachmen
     if (count($attachments) > 3) {
         throw new InvalidArgumentException('A newsletter may include at most three attachments.');
     }
-    $recipients = hiso_marketing_contacts('email');
+    $recipients = $recipients ?? hiso_marketing_contacts('email');
     if (!$recipients) {
         throw new InvalidArgumentException('No verified customers have active email marketing consent.');
     }
@@ -551,7 +699,12 @@ function hiso_whatsapp_consent_contacts(string $purpose): array {
     ));
 }
 
-function hiso_whatsapp_consent_contact(string $recipientType, string $recipientId, string $purpose): ?array {
+function hiso_whatsapp_consent_contact(
+    string $recipientType,
+    string $recipientId,
+    string $purpose,
+    bool $includeInvalidPhone = false
+): ?array {
     if (!in_array($recipientType, ['customer', 'staff', 'enquiry'], true)
         || !in_array($purpose, ['operational', 'marketing'], true)) {
         return null;
@@ -590,7 +743,7 @@ function hiso_whatsapp_consent_contact(string $recipientType, string $recipientI
     $stmt = hiso_pdo()->prepare($sql);
     $stmt->execute([$recipientId]);
     $contact = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$contact || !preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone'])) {
+    if (!$contact || (!$includeInvalidPhone && !preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone']))) {
         return null;
     }
     return $contact;

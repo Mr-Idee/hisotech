@@ -53,13 +53,29 @@ import type {
 
 const DB_PATH = path.resolve(process.cwd(), '.hiso_preview.sqlite');
 const UPLOAD_DIR = path.resolve(process.cwd(), '.hiso_uploads');
+const STAFF_PROFILE_DIR = path.join(UPLOAD_DIR, 'staff_profiles');
 
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
+if (!fs.existsSync(STAFF_PROFILE_DIR)) {
+  fs.mkdirSync(STAFF_PROFILE_DIR, { recursive: true });
+}
 
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+
+function withTransaction<T>(action: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = action();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
 
 export function closeDatabase(): void {
   db.close();
@@ -85,6 +101,7 @@ CREATE TABLE IF NOT EXISTS users (
   initial_pin_hash TEXT,
   pin_expires_at TEXT,
   must_set_password INTEGER NOT NULL DEFAULT 0,
+  profile_photo_filename TEXT,
   role TEXT NOT NULL,
   title TEXT NOT NULL,
   skills TEXT NOT NULL DEFAULT '',
@@ -373,6 +390,21 @@ CREATE TABLE IF NOT EXISTS communications_consents (
   PRIMARY KEY (customer_id, channel)
 );
 
+CREATE TABLE IF NOT EXISTS customer_contact_groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS customer_contact_group_members (
+  group_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, customer_id)
+);
+
 CREATE TABLE IF NOT EXISTS whatsapp_recipient_consents (
   recipient_type TEXT NOT NULL CHECK (recipient_type IN ('customer', 'staff', 'enquiry')),
   recipient_id TEXT NOT NULL,
@@ -454,6 +486,7 @@ ensureColumn('customer_profiles', 'must_set_password', 'must_set_password INTEGE
 ensureColumn('users', 'initial_pin_hash', 'initial_pin_hash TEXT');
 ensureColumn('users', 'pin_expires_at', 'pin_expires_at TEXT');
 ensureColumn('users', 'must_set_password', 'must_set_password INTEGER NOT NULL DEFAULT 0');
+ensureColumn('users', 'profile_photo_filename', 'profile_photo_filename TEXT');
 ensureColumn('users', 'username', 'username TEXT');
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON users(username) WHERE username IS NOT NULL AND username <> ''");
 
@@ -503,6 +536,32 @@ function saveBase64Upload(dataUrl: string, prefix = 'upload'): { filename: strin
   const filename = `${prefix}-${crypto.randomUUID()}.${ext}`;
   fs.writeFileSync(path.join(UPLOAD_DIR, filename), Buffer.from(match[3], 'base64'));
   return { filename, mimeType: match[1] };
+}
+
+function getJpegDimensions(binary: Buffer): { width: number; height: number } | null {
+  if (binary.length < 4 || binary[0] !== 0xff || binary[1] !== 0xd8) return null;
+  const frameMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+  let offset = 2;
+  while (offset + 4 < binary.length) {
+    if (binary[offset] !== 0xff) return null;
+    while (offset < binary.length && binary[offset] === 0xff) offset++;
+    if (offset >= binary.length) return null;
+    const marker = binary[offset++];
+    if (marker === 0xd9 || marker === 0xda) return null;
+    if ([0xd8, 0x01, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7].includes(marker)) continue;
+    if (offset + 1 >= binary.length) return null;
+    const length = binary.readUInt16BE(offset);
+    if (length < 2 || offset + length > binary.length) return null;
+    if (frameMarkers.has(marker)) {
+      if (length < 7) return null;
+      return {
+        height: binary.readUInt16BE(offset + 3),
+        width: binary.readUInt16BE(offset + 5),
+      };
+    }
+    offset += length;
+  }
+  return null;
 }
 
 function seedRolesAndMigrateUsers(): void {
@@ -641,6 +700,9 @@ function hydrateStaffRow(row: Record<string, unknown>, rolesMap: Map<string, Rol
     username: row.username ? String(row.username) : undefined,
     email: String(row.email),
     phone: String(row.phone),
+    profilePhotoUrl: row.profile_photo_filename
+      ? `/api/staff/profile/photo/${encodeURIComponent(String(row.id))}?v=${encodeURIComponent(String(row.profile_photo_filename))}`
+      : undefined,
     role: roleId as UserRole,
     roleName: roleDef?.name ?? roleId,
     permissions: roleId === 'superadmin'
@@ -843,6 +905,85 @@ export function getUserBySessionToken(token: string | undefined): StaffMember | 
   if (!row) return null;
   const rolesMap = new Map(getAllRoles().map((r) => [r.id, r]));
   return hydrateStaffRow(row, rolesMap);
+}
+
+export function saveStaffProfile(staffId: string, payload: {
+  name: string;
+  phone: string;
+  photoDataUrl?: string;
+  removePhoto?: boolean;
+}): StaffMember {
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  const phone = typeof payload.phone === 'string' ? payload.phone.trim() : '';
+  if (name.length < 2 || name.length > 120 || /[\r\n]/.test(name)) {
+    throw new Error('Enter a name between 2 and 120 characters.');
+  }
+  if (phone.length > 40 || /[\r\n]/.test(phone)) {
+    throw new Error('Enter a valid phone number of at most 40 characters.');
+  }
+  if (payload.removePhoto && payload.photoDataUrl) {
+    throw new Error('Choose a photo or remove the current photo, not both.');
+  }
+
+  let newFilename: string | null = null;
+  if (payload.photoDataUrl !== undefined) {
+    const match = payload.photoDataUrl.match(/^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/);
+    if (!match || payload.photoDataUrl.length > 1_400_000) {
+      throw new Error('Choose a compressed JPEG profile photo no larger than 1MB.');
+    }
+    const binary = Buffer.from(match[1], 'base64');
+    const dimensions = getJpegDimensions(binary);
+    if (binary.length < 100 || binary.length > 1024 * 1024
+        || binary.toString('base64') !== match[1]
+        || !dimensions || dimensions.width > 1440 || dimensions.height > 1440
+        || dimensions.width * dimensions.height > 2_073_600) {
+      throw new Error('The profile photo is invalid, exceeds 1MB, or is larger than 1440px.');
+    }
+    newFilename = `${crypto.randomUUID()}.jpg`;
+    fs.writeFileSync(path.join(STAFF_PROFILE_DIR, newFilename), binary, { flag: 'wx' });
+  }
+
+  const existing = db.prepare("SELECT phone, profile_photo_filename FROM users WHERE id = ? AND status = 'Active' LIMIT 1")
+    .get(staffId) as { phone: string; profile_photo_filename: string | null } | undefined;
+  if (!existing) {
+    if (newFilename) fs.unlinkSync(path.join(STAFF_PROFILE_DIR, newFilename));
+    throw new Error('Active staff account not found.');
+  }
+
+  const nextFilename = newFilename ?? (payload.removePhoto ? null : existing.profile_photo_filename);
+  try {
+    withTransaction(() => {
+      db.prepare("UPDATE users SET name = ?, phone = ?, profile_photo_filename = ? WHERE id = ? AND status = 'Active'")
+        .run(name, phone, nextFilename, staffId);
+      if (existing.phone.trim() !== phone) {
+        db.prepare("UPDATE whatsapp_recipient_consents SET revoked_at = ? WHERE recipient_type = 'staff' AND recipient_id = ? AND revoked_at IS NULL")
+          .run(new Date().toISOString(), staffId);
+      }
+    });
+  } catch (error) {
+    if (newFilename && fs.existsSync(path.join(STAFF_PROFILE_DIR, newFilename))) {
+      fs.unlinkSync(path.join(STAFF_PROFILE_DIR, newFilename));
+    }
+    throw error;
+  }
+
+  if ((newFilename || payload.removePhoto) && existing.profile_photo_filename) {
+    const oldFilename = path.basename(existing.profile_photo_filename);
+    const oldPath = path.join(STAFF_PROFILE_DIR, oldFilename);
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+  }
+
+  const row = db.prepare('SELECT * FROM users WHERE id = ? LIMIT 1').get(staffId) as Record<string, unknown>;
+  return hydrateStaffRow(row, new Map(getAllRoles().map((role) => [role.id, role])));
+}
+
+export function getStaffProfilePhotoFile(staffId: string): { filePath: string; mimeType: string } | null {
+  if (!/^[a-f0-9-]{36}$/i.test(staffId)) return null;
+  const row = db.prepare("SELECT profile_photo_filename FROM users WHERE id = ? AND status = 'Active' LIMIT 1")
+    .get(staffId) as { profile_photo_filename: string | null } | undefined;
+  if (!row?.profile_photo_filename || !/^[a-f0-9-]{36}\.jpg$/i.test(row.profile_photo_filename)) return null;
+  const filePath = path.join(STAFF_PROFILE_DIR, row.profile_photo_filename);
+  return fs.existsSync(filePath) ? { filePath, mimeType: 'image/jpeg' } : null;
 }
 
 export function destroySession(token: string | undefined): void {
@@ -1448,28 +1589,28 @@ export function getStaffWhatsAppConsents(staffId: string): { operational: boolea
 export function listWhatsAppConsentContacts(purpose: 'operational' | 'marketing') {
   const rows = purpose === 'marketing'
     ? db.prepare(
-      'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c ' +
+      `SELECT c.id, c.name, c.email, c.phone, 'customer' AS recipient_type FROM customer_profiles c ` +
       'JOIN communications_consents x ON x.customer_id = c.id ' +
-      'WHERE x.channel = "whatsapp" AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL ' +
-      'AND c.email_verified_at IS NOT NULL AND c.phone <> "" ' +
-      'UNION ALL SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u ' +
-      'JOIN whatsapp_recipient_consents x ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
-      'AND x.purpose = "marketing" AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone ' +
-      'WHERE u.status = "Active" AND u.phone <> "" ' +
-      'UNION ALL SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e ' +
-      'JOIN whatsapp_recipient_consents x ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
-      'AND x.purpose = "marketing" AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone WHERE e.phone <> "" ORDER BY name'
+      `WHERE x.channel = 'whatsapp' AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL ` +
+      `AND c.email_verified_at IS NOT NULL AND c.phone <> '' ` +
+      `UNION ALL SELECT u.id, u.name, u.email, u.phone, 'staff' AS recipient_type FROM users u ` +
+      `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'staff' AND x.recipient_id = u.id ` +
+      `AND x.purpose = 'marketing' AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone ` +
+      `WHERE u.status = 'Active' AND u.phone <> '' ` +
+      `UNION ALL SELECT e.id, e.customer_name AS name, e.email, e.phone, 'enquiry' AS recipient_type FROM enquiries e ` +
+      `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'enquiry' AND x.recipient_id = e.id ` +
+      `AND x.purpose = 'marketing' AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone WHERE e.phone <> '' ORDER BY name`
     ).all()
     : db.prepare(
       'SELECT x.recipient_id AS id, u.name, u.email, u.phone, x.recipient_type FROM whatsapp_recipient_consents x ' +
-      'JOIN users u ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
-      'WHERE x.purpose = "operational" AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone AND u.status = "Active" ' +
+      `JOIN users u ON x.recipient_type = 'staff' AND x.recipient_id = u.id ` +
+      `WHERE x.purpose = 'operational' AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone AND u.status = 'Active' ` +
       'UNION ALL SELECT x.recipient_id AS id, e.customer_name AS name, e.email, e.phone, x.recipient_type FROM whatsapp_recipient_consents x ' +
-      'JOIN enquiries e ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
-      'WHERE x.purpose = "operational" AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone ' +
+      `JOIN enquiries e ON x.recipient_type = 'enquiry' AND x.recipient_id = e.id ` +
+      `WHERE x.purpose = 'operational' AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone ` +
       'UNION ALL SELECT x.recipient_id AS id, c.name, c.email, c.phone, x.recipient_type FROM whatsapp_recipient_consents x ' +
-      'JOIN customer_profiles c ON x.recipient_type = "customer" AND x.recipient_id = c.id ' +
-      'WHERE x.purpose = "operational" AND x.revoked_at IS NULL AND x.phone_at_consent = c.phone AND c.email_verified_at IS NOT NULL ORDER BY name'
+      `JOIN customer_profiles c ON x.recipient_type = 'customer' AND x.recipient_id = c.id ` +
+      `WHERE x.purpose = 'operational' AND x.revoked_at IS NULL AND x.phone_at_consent = c.phone AND c.email_verified_at IS NOT NULL ORDER BY name`
     ).all() as Record<string, unknown>[];
   return rows.map((row) => ({
     id: String(row.id),
@@ -1484,51 +1625,52 @@ export function getWhatsAppConsentContact(
   recipientType: 'customer' | 'staff' | 'enquiry',
   recipientId: string,
   purpose: 'operational' | 'marketing',
+  includeInvalidPhone = false,
 ) {
   const row = purpose === 'marketing' && recipientType === 'customer'
     ? db.prepare(
-      'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c ' +
-      'JOIN communications_consents x ON x.customer_id = c.id AND x.channel = "whatsapp" ' +
-      'WHERE c.id = ? AND c.email_verified_at IS NOT NULL AND c.phone <> "" ' +
+      `SELECT c.id, c.name, c.email, c.phone, 'customer' AS recipient_type FROM customer_profiles c ` +
+      `JOIN communications_consents x ON x.customer_id = c.id AND x.channel = 'whatsapp' ` +
+      `WHERE c.id = ? AND c.email_verified_at IS NOT NULL AND c.phone <> '' ` +
       'AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL LIMIT 1'
     ).get(recipientId)
     : purpose === 'marketing' && recipientType === 'staff'
       ? db.prepare(
-        'SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u ' +
-        'JOIN whatsapp_recipient_consents x ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
-        'WHERE u.id = ? AND u.status = "Active" AND u.phone <> "" AND x.purpose = "marketing" ' +
+        `SELECT u.id, u.name, u.email, u.phone, 'staff' AS recipient_type FROM users u ` +
+        `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'staff' AND x.recipient_id = u.id ` +
+        `WHERE u.id = ? AND u.status = 'Active' AND u.phone <> '' AND x.purpose = 'marketing' ` +
         'AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone LIMIT 1'
       ).get(recipientId)
       : purpose === 'marketing'
         ? db.prepare(
-          'SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e ' +
-          'JOIN whatsapp_recipient_consents x ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
-          'WHERE e.id = ? AND e.phone <> "" AND x.purpose = "marketing" ' +
+          `SELECT e.id, e.customer_name AS name, e.email, e.phone, 'enquiry' AS recipient_type FROM enquiries e ` +
+          `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'enquiry' AND x.recipient_id = e.id ` +
+          `WHERE e.id = ? AND e.phone <> '' AND x.purpose = 'marketing' ` +
           'AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone LIMIT 1'
         ).get(recipientId)
         : recipientType === 'customer'
           ? db.prepare(
-            'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c ' +
-            'JOIN whatsapp_recipient_consents x ON x.recipient_type = "customer" AND x.recipient_id = c.id ' +
-            'WHERE c.id = ? AND c.email_verified_at IS NOT NULL AND c.phone <> "" AND x.purpose = "operational" ' +
+            `SELECT c.id, c.name, c.email, c.phone, 'customer' AS recipient_type FROM customer_profiles c ` +
+            `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'customer' AND x.recipient_id = c.id ` +
+            `WHERE c.id = ? AND c.email_verified_at IS NOT NULL AND c.phone <> '' AND x.purpose = 'operational' ` +
             'AND x.revoked_at IS NULL AND x.phone_at_consent = c.phone LIMIT 1'
           ).get(recipientId)
           : recipientType === 'staff'
             ? db.prepare(
-              'SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u ' +
-              'JOIN whatsapp_recipient_consents x ON x.recipient_type = "staff" AND x.recipient_id = u.id ' +
-              'WHERE u.id = ? AND u.status = "Active" AND u.phone <> "" AND x.purpose = "operational" ' +
+              `SELECT u.id, u.name, u.email, u.phone, 'staff' AS recipient_type FROM users u ` +
+              `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'staff' AND x.recipient_id = u.id ` +
+              `WHERE u.id = ? AND u.status = 'Active' AND u.phone <> '' AND x.purpose = 'operational' ` +
               'AND x.revoked_at IS NULL AND x.phone_at_consent = u.phone LIMIT 1'
             ).get(recipientId)
             : db.prepare(
-              'SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e ' +
-              'JOIN whatsapp_recipient_consents x ON x.recipient_type = "enquiry" AND x.recipient_id = e.id ' +
-              'WHERE e.id = ? AND e.phone <> "" AND x.purpose = "operational" ' +
+              `SELECT e.id, e.customer_name AS name, e.email, e.phone, 'enquiry' AS recipient_type FROM enquiries e ` +
+              `JOIN whatsapp_recipient_consents x ON x.recipient_type = 'enquiry' AND x.recipient_id = e.id ` +
+              `WHERE e.id = ? AND e.phone <> '' AND x.purpose = 'operational' ` +
               'AND x.revoked_at IS NULL AND x.phone_at_consent = e.phone LIMIT 1'
             ).get(recipientId);
   if (!row) return null;
   const contact = row as { id: string; name: string; email: string; phone: string; recipient_type: string };
-  if (!/^\+[1-9]\d{7,14}$/.test(contact.phone)) return null;
+  if (!includeInvalidPhone && !/^\+[1-9]\d{7,14}$/.test(contact.phone)) return null;
   return {
     id: String(contact.id),
     name: String(contact.name),
@@ -1733,11 +1875,132 @@ export function listMarketingContacts(channel: 'email' | 'whatsapp') {
     name: String(row.name),
     email: String(row.email),
     phone: String(row.phone),
-  })).filter((row) => channel === 'email' ? Boolean(row.email) : Boolean(row.phone));
+  })).filter((row) => channel === 'email'
+    ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email)
+    : /^\+[1-9]\d{7,14}$/.test(row.phone));
 }
 
 export function getMarketingContact(customerId: string, channel: 'email' | 'whatsapp') {
   return listMarketingContacts(channel).find((contact) => contact.id === customerId) ?? null;
+}
+
+export function listCustomerContactDirectory() {
+  return (db.prepare(
+    'SELECT id, name, email, phone FROM customer_profiles WHERE email_verified_at IS NOT NULL ORDER BY name LIMIT 2000'
+  ).all() as Record<string, unknown>[]).map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    email: String(row.email || ''),
+    phone: String(row.phone || ''),
+  }));
+}
+
+export function listCustomerContactGroups() {
+  const groups = db.prepare('SELECT id, name FROM customer_contact_groups ORDER BY name').all() as { id: string; name: string }[];
+  const members = db.prepare('SELECT group_id, customer_id FROM customer_contact_group_members ORDER BY customer_id')
+    .all() as { group_id: string; customer_id: string }[];
+  const idsByGroup = new Map<string, string[]>();
+  for (const member of members) {
+    const ids = idsByGroup.get(member.group_id) ?? [];
+    ids.push(member.customer_id);
+    idsByGroup.set(member.group_id, ids);
+  }
+  return groups.map((group) => ({
+    id: String(group.id),
+    name: String(group.name),
+    customerIds: idsByGroup.get(group.id) ?? [],
+  }));
+}
+
+export function saveCustomerContactGroup(payload: {
+  id?: string;
+  name: string;
+  customerIds: string[];
+}, actorId: string): { id: string } {
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  if (!name || name.length > 80 || /[\r\n]/.test(name)) {
+    throw new Error('Enter a group name between 1 and 80 characters.');
+  }
+  if (!Array.isArray(payload.customerIds) || payload.customerIds.length > 1000
+      || payload.customerIds.some((id) => typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id))) {
+    throw new Error('Select up to 1,000 verified customers for this group.');
+  }
+  const customerIds = [...new Set(payload.customerIds)];
+  if (customerIds.length) {
+    const placeholders = customerIds.map(() => '?').join(',');
+    const count = (db.prepare(
+      `SELECT COUNT(*) AS count FROM customer_profiles WHERE email_verified_at IS NOT NULL AND id IN (${placeholders})`
+    ).get(...customerIds) as { count: number }).count;
+    if (count !== customerIds.length) {
+      throw new Error('Groups can include only existing, verified customer accounts.');
+    }
+  }
+  const id = payload.id || crypto.randomUUID();
+  if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Contact group ID is invalid.');
+  const now = new Date().toISOString();
+  const existing = db.prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1').get(id);
+  if (payload.id && !existing) throw new Error('Contact group not found.');
+  try {
+    withTransaction(() => {
+      if (existing) {
+        db.prepare('UPDATE customer_contact_groups SET name = ?, updated_at = ? WHERE id = ?').run(name, now, id);
+      } else {
+        db.prepare('INSERT INTO customer_contact_groups (id, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+          .run(id, name, actorId, now, now);
+      }
+      db.prepare('DELETE FROM customer_contact_group_members WHERE group_id = ?').run(id);
+      const addMember = db.prepare(
+        'INSERT INTO customer_contact_group_members (group_id, customer_id, created_at) VALUES (?, ?, ?)'
+      );
+      for (const customerId of customerIds) addMember.run(id, customerId, now);
+    });
+  } catch (error) {
+    if (String((error as Error).message).includes('UNIQUE constraint failed')) {
+      throw new Error('A contact group with that name already exists.');
+    }
+    throw error;
+  }
+  return { id };
+}
+
+export function deleteCustomerContactGroup(groupId: string): void {
+  if (!/^[a-f0-9-]{36}$/i.test(groupId)) throw new Error('Contact group ID is invalid.');
+  const exists = db.prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1').get(groupId);
+  if (!exists) throw new Error('Contact group not found.');
+  withTransaction(() => {
+    db.prepare('DELETE FROM customer_contact_group_members WHERE group_id = ?').run(groupId);
+    db.prepare('DELETE FROM customer_contact_groups WHERE id = ?').run(groupId);
+  });
+}
+
+export function getCustomerContactGroupRecipients(groupId: string, channel: 'email' | 'whatsapp') {
+  if (!/^[a-f0-9-]{36}$/i.test(groupId)) throw new Error('Contact group ID is invalid.');
+  const group = db.prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1').get(groupId);
+  if (!group) throw new Error('Contact group not found.');
+  const total = (db.prepare('SELECT COUNT(*) AS count FROM customer_contact_group_members WHERE group_id = ?')
+    .get(groupId) as { count: number }).count;
+  const rows = channel === 'email'
+    ? db.prepare(
+      'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' +
+      'JOIN customer_profiles c ON c.id = m.customer_id ' +
+      `JOIN communications_consents x ON x.customer_id = c.id AND x.channel = 'email' ` +
+      'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL ORDER BY c.name'
+    ).all(groupId) as Record<string, unknown>[]
+    : db.prepare(
+      'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' +
+      'JOIN customer_profiles c ON c.id = m.customer_id ' +
+      `JOIN communications_consents x ON x.customer_id = c.id AND x.channel = 'whatsapp' ` +
+      'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL ORDER BY c.name'
+    ).all(groupId) as Record<string, unknown>[];
+  const contacts = rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    email: String(row.email || ''),
+    phone: String(row.phone || ''),
+  })).filter((contact) => channel === 'email'
+    ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact.email)
+    : /^\+[1-9]\d{7,14}$/.test(contact.phone));
+  return { contacts, skipped: Math.max(0, total - contacts.length) };
 }
 
 export function upsertPushSubscription(ownerType: 'staff' | 'customer', ownerId: string, subscription: {
@@ -1812,9 +2075,27 @@ export function getVerifiedCustomerIds(customerIds: string[]): string[] {
 export function getPushSubscribedCustomers() {
   const rows = db.prepare(
     "SELECT DISTINCT c.id, c.name FROM customer_profiles c JOIN push_subscriptions p ON p.owner_id = c.id " +
-    "WHERE p.owner_type = 'customer' AND c.email_verified_at IS NOT NULL ORDER BY c.name LIMIT 500"
+    "WHERE p.owner_type = 'customer' AND c.email_verified_at IS NOT NULL ORDER BY c.name LIMIT 2000"
   ).all() as { id: string; name: string }[];
   return rows.map((row) => ({ id: row.id, name: row.name }));
+}
+
+export function getCustomerContactGroupPushRecipients(groupId: string): { customerIds: string[]; skipped: number } {
+  if (!/^[a-f0-9-]{36}$/i.test(groupId)) throw new Error('Contact group ID is invalid.');
+  const group = db.prepare('SELECT id FROM customer_contact_groups WHERE id = ? LIMIT 1').get(groupId);
+  if (!group) throw new Error('Contact group not found.');
+  const total = (db.prepare('SELECT COUNT(*) AS count FROM customer_contact_group_members WHERE group_id = ?')
+    .get(groupId) as { count: number }).count;
+  const rows = db.prepare(
+    "SELECT DISTINCT c.id FROM customer_contact_group_members m " +
+    "JOIN customer_profiles c ON c.id = m.customer_id " +
+    "JOIN push_subscriptions p ON p.owner_type = 'customer' AND p.owner_id = c.id " +
+    "WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL"
+  ).all(groupId) as { id: string }[];
+  return {
+    customerIds: rows.map((row) => String(row.id)),
+    skipped: Math.max(0, total - rows.length),
+  };
 }
 
 export function createCustomerLoginLink(payload: {

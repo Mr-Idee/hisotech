@@ -12,13 +12,25 @@ export function PushSubscriptionControl() {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
+  const [mobileGuidance, setMobileGuidance] = useState('');
 
   useEffect(() => {
-    if (!('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.getRegistration('/').then(async (registration) => {
-      const current = await registration?.pushManager.getSubscription();
+    const userAgent = navigator.userAgent;
+    const appleMobile = /iPhone|iPad|iPod/i.test(userAgent)
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    setMobileGuidance(appleMobile
+      ? 'On iPhone or iPad, add HI-SOTECH to the Home Screen, open the installed app, then enable notifications. Web Push requires iOS/iPadOS 16.4 or later.'
+      : /Android/i.test(userAgent)
+        ? 'On Android, use Chrome (or another Web Push-capable browser), allow notifications, and keep this app installed or open in that browser.'
+        : '');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setError('This browser does not support Web Push notifications.');
+      return;
+    }
+    void navigator.serviceWorker.ready.then(async (registration) => {
+      const current = await registration.pushManager.getSubscription();
       if (current) setSubscription(current);
-    }).catch(() => undefined);
+    }).catch(() => setError('Could not load the app notification worker. Reload the installed app and try again.'));
   }, []);
 
   async function subscribe() {
@@ -32,8 +44,19 @@ export function PushSubscriptionControl() {
       if (!window.isSecureContext) {
         throw new Error('Web Push requires HTTPS (localhost is supported for local testing).');
       }
+      const appleMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+        || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+      if (appleMobile && !isStandalone) {
+        throw new Error('On iPhone or iPad, first use Safari’s Share menu to add HI-SOTECH to the Home Screen, then open the installed app. Web Push requires iOS/iPadOS 16.4 or later.');
+      }
       const permission = await Notification.requestPermission();
-      if (permission !== 'granted') throw new Error('Notification permission was not granted.');
+      if (permission !== 'granted') {
+        throw new Error(permission === 'denied'
+          ? 'Notifications are blocked for this app in browser or device settings. Allow them there, then try again.'
+          : 'Notification permission was not granted.');
+      }
       const { publicKey } = await api.getPushConfig();
       const registration = await navigator.serviceWorker.ready;
       const applicationServerKey = decodeVapidKey(publicKey).buffer as ArrayBuffer;
@@ -76,6 +99,7 @@ export function PushSubscriptionControl() {
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             Opt in on this device to HI-SOTECH service updates and optional news. Unsubscribe here or revoke permission in browser settings.
           </p>
+          {mobileGuidance && <p className="mt-2 max-w-2xl text-xs text-slate-600 dark:text-slate-300">{mobileGuidance}</p>}
         </div>
         <button type="button" onClick={subscription ? unsubscribe : subscribe} disabled={busy}
           className="rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26] disabled:opacity-60">

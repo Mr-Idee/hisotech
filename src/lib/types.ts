@@ -32,6 +32,7 @@ export interface StaffMember {
   username?: string;
   email: string;
   phone: string;
+  profilePhotoUrl?: string;
   role: UserRole;
   roleName?: string;
   permissions?: PermissionKey[];

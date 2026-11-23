@@ -23,6 +23,7 @@ import {
   ShoppingBag,
   Trash2,
   Users,
+  UserRound,
   Wallet,
   X,
 } from 'lucide-react';
@@ -62,6 +63,7 @@ import { WorkspaceFinance } from './WorkspaceFinance';
 import { WorkspaceInstallations } from './WorkspaceInstallations';
 import { WebsiteEditorView } from './WebsiteEditorView';
 import { WorkspaceCommunications } from './WorkspaceCommunications';
+import { WorkspaceStaffProfile } from './WorkspaceStaffProfile';
 import { WorkspaceSettings } from './WorkspaceSettings';
 
 type WorkspaceTab =
@@ -75,6 +77,7 @@ type WorkspaceTab =
   | 'finance'
   | 'installations'
   | 'staff'
+  | 'profile'
   | 'notifications'
   | 'communications'
   | 'audit'
@@ -90,7 +93,7 @@ interface WorkspaceViewProps {
 
 const WORKSPACE_TABS: WorkspaceTab[] = [
   'overview', 'enquiries', 'tickets', 'catalog', 'orders', 'quotes',
-  'invoices', 'finance', 'installations', 'staff', 'notifications', 'communications',
+  'invoices', 'finance', 'installations', 'staff', 'profile', 'notifications', 'communications',
   'audit', 'settings', 'website',
 ];
 
@@ -879,6 +882,7 @@ export function WorkspaceView({
       icon: Users,
       allowed: hasPermission(user, 'manage_staff') || hasPermission(user, 'manage_roles'),
     },
+    { id: 'profile', label: 'My Profile', icon: UserRound, allowed: true },
     { id: 'notifications', label: `Notifications (${unreadCount})`, icon: Bell, allowed: true },
     { id: 'communications', label: 'Communications', icon: MessageSquareText, allowed: hasPermission(user, 'manage_communications') },
     { id: 'audit', label: 'Audit Trail', icon: ShieldCheck, allowed: hasPermission(user, 'view_audit') },
@@ -1956,6 +1960,19 @@ export function WorkspaceView({
 
         {tab === 'communications' && hasPermission(user, 'manage_communications') && (
           <WorkspaceCommunications staff={data.staff} />
+        )}
+
+        {tab === 'profile' && (
+          <WorkspaceStaffProfile
+            user={data.user}
+            onSaved={(updatedUser) => setData((current) => current ? {
+              ...current,
+              user: { ...current.user, ...updatedUser },
+              staff: current.staff.map((member) => member.id === updatedUser.id
+                ? { ...member, ...updatedUser }
+                : member),
+            } : current)}
+          />
         )}
 
         {tab === 'settings' && canManagePlatformSettings && (

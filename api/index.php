@@ -522,13 +522,23 @@ function hiso_hydrate_workspace(array $user): array {
         return $mapped;
     }, $rolesRaw);
 
-    $staffRaw = $pdo->query('SELECT id, name, username, email, phone, role, title, skills, status, must_set_password, created_at AS createdAt FROM users ORDER BY created_at ASC')->fetchAll();
+    $staffPhotoSelect = hiso_column_exists('users', 'profile_photo_filename')
+        ? 'profile_photo_filename'
+        : 'NULL AS profile_photo_filename';
+    $staffRaw = $pdo->query(
+        'SELECT id, name, username, email, phone, ' . $staffPhotoSelect .
+        ', role, title, skills, status, must_set_password, created_at AS createdAt FROM users ORDER BY created_at ASC'
+    )->fetchAll();
     $staff = array_map(function($s) use ($rolesMap) {
         $r = $rolesMap[$s['role']] ?? null;
         $s['roleName'] = $r ? $r['name'] : $s['role'];
         $s['permissions'] = $r ? $r['permissions'] : [];
         $s['mustSetPassword'] = (bool)$s['must_set_password'];
+        $s['profilePhotoUrl'] = !empty($s['profile_photo_filename'])
+            ? '/api/staff/profile/photo/' . rawurlencode((string)$s['id']) . '?v=' . rawurlencode((string)$s['profile_photo_filename'])
+            : null;
         unset($s['must_set_password']);
+        unset($s['profile_photo_filename']);
         return $s;
     }, $staffRaw);
 
@@ -1733,6 +1743,27 @@ try {
         hiso_json_response(['user' => $user]);
     }
 
+    if ($method === 'POST' && $route === 'staff/profile') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        if (!hiso_column_exists('users', 'profile_photo_filename')) {
+            hiso_json_response(['error' => 'Apply php-cpanel/migrations/010-staff-profiles-contact-groups.sql before using staff profiles.'], 503);
+        }
+        $body = hiso_json_body();
+        if (!is_string($body['name'] ?? null) || !is_string($body['phone'] ?? null)
+            || (isset($body['photoDataUrl']) && !is_string($body['photoDataUrl']))
+            || (isset($body['removePhoto']) && !is_bool($body['removePhoto']))) {
+            hiso_json_response(['error' => 'Profile name, phone, or photo data is invalid.'], 422);
+        }
+        try {
+            $updated = hiso_update_staff_profile($user, $body);
+            hiso_audit($updated, 'UPDATE_OWN_STAFF_PROFILE', 'Staff', (string)$updated['id'], 'Updated own profile details.');
+            hiso_json_response(['user' => $updated]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
     // --- Authenticated Workspace Endpoints ---
     if ($method === 'GET' && $route === 'workspace/bootstrap') {
         $user = hiso_current_user();
@@ -1827,6 +1858,8 @@ try {
 
     if ($method === 'GET' && $route === 'communications/contacts') {
         $user = hiso_require_permission('manage_communications');
+        $contactGroupsReady = hiso_table_exists('customer_contact_groups')
+            && hiso_table_exists('customer_contact_group_members');
         $pushCustomers = hiso_pdo()->query(
             "SELECT DISTINCT c.id, c.name FROM customer_profiles c JOIN push_subscriptions p ON p.owner_id = c.id " .
             "WHERE p.owner_type = 'customer' AND c.email_verified_at IS NOT NULL ORDER BY c.name LIMIT 500"
@@ -1836,12 +1869,55 @@ try {
             'whatsapp' => hiso_whatsapp_consent_contacts('marketing'),
             'whatsappOperational' => hiso_whatsapp_consent_contacts('operational'),
             'pushCustomers' => $pushCustomers,
+            'customerDirectory' => hiso_customer_contact_directory(),
+            'customerGroups' => $contactGroupsReady ? hiso_customer_contact_groups() : [],
+            'contactGroupsReady' => $contactGroupsReady,
             'myWhatsappConsents' => [
                 'operational' => hiso_whatsapp_consent_contact('staff', (string)$user['id'], 'operational') !== null,
                 'marketing' => hiso_whatsapp_consent_contact('staff', (string)$user['id'], 'marketing') !== null,
                 'phone' => (string)($user['phone'] ?? ''),
             ],
         ]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/contact-groups') {
+        $user = hiso_require_permission('manage_communications');
+        if (!hiso_table_exists('customer_contact_groups') || !hiso_table_exists('customer_contact_group_members')) {
+            hiso_json_response(['error' => 'Apply php-cpanel/migrations/010-staff-profiles-contact-groups.sql before managing contact groups.'], 503);
+        }
+        $body = hiso_json_body();
+        if (!is_string($body['name'] ?? null) || (isset($body['id']) && !is_string($body['id']))) {
+            hiso_json_response(['error' => 'Contact group name or ID is invalid.'], 422);
+        }
+        try {
+            $result = hiso_save_customer_contact_group($body, (string)$user['id']);
+            $groupName = substr(trim((string)($body['name'] ?? '')), 0, 80);
+            hiso_audit(
+                $user,
+                isset($body['id']) ? 'UPDATE_CUSTOMER_CONTACT_GROUP' : 'CREATE_CUSTOMER_CONTACT_GROUP',
+                'Contact group',
+                $result['id'],
+                'Saved customer contact group "' . $groupName . '".'
+            );
+            hiso_json_response($result + ['groups' => hiso_customer_contact_groups()]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
+    }
+
+    if ($method === 'DELETE' && str_starts_with($route, 'communications/contact-groups/')) {
+        $user = hiso_require_permission('manage_communications');
+        if (!hiso_table_exists('customer_contact_groups') || !hiso_table_exists('customer_contact_group_members')) {
+            hiso_json_response(['error' => 'Apply php-cpanel/migrations/010-staff-profiles-contact-groups.sql before managing contact groups.'], 503);
+        }
+        $groupId = substr($route, strlen('communications/contact-groups/'));
+        try {
+            hiso_delete_customer_contact_group($groupId);
+            hiso_audit($user, 'DELETE_CUSTOMER_CONTACT_GROUP', 'Contact group', $groupId, 'Deleted a customer contact group.');
+            hiso_json_response(['ok' => true, 'groups' => hiso_customer_contact_groups()]);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        }
     }
 
     if ($method === 'POST' && $route === 'communications/whatsapp') {
@@ -1858,8 +1934,13 @@ try {
         if ($message === '' || $messageLength === false || $messageLength > 1024 || strlen($message) > 4096) {
             hiso_json_response(['error' => 'Enter a template body parameter of at most 1024 characters.'], 422);
         }
-        $contact = hiso_whatsapp_consent_contact($recipientType, $recipientId, 'marketing');
-        if (!$contact) hiso_json_response(['error' => 'This recipient has not opted in to WhatsApp marketing or has withdrawn consent.'], 422);
+        $contact = hiso_whatsapp_consent_contact($recipientType, $recipientId, 'marketing', true);
+        if (!$contact) {
+            hiso_json_response(['error' => 'This recipient has no active WhatsApp marketing consent. Service-update consent is separate and does not authorize marketing messages.'], 422);
+        }
+        if (!preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone'])) {
+            hiso_json_response(['error' => 'Please use the required country code in the opted-in phone number.'], 422);
+        }
         $attachments = $body['attachments'] ?? [];
         if (!is_array($attachments) || count($attachments) > 1) {
             hiso_json_response(['error' => 'A WhatsApp message may include at most one image or PDF attachment.'], 422);
@@ -1888,6 +1969,10 @@ try {
         $message = trim((string)($body['message'] ?? ''));
         $length = preg_match_all('/./us', $message);
         $recipients = $body['recipients'] ?? null;
+        if (isset($body['groupId']) && !is_string($body['groupId'])) {
+            hiso_json_response(['error' => 'Contact group selection is invalid.'], 422);
+        }
+        $groupId = trim((string)($body['groupId'] ?? ''));
         $attachments = $body['attachments'] ?? [];
         if ($message === '' || $length === false || $length > 1024 || strlen($message) > 4096) {
             hiso_json_response(['error' => 'WhatsApp newsletter template text is required and limited to 1024 characters.'], 422);
@@ -1896,15 +1981,48 @@ try {
             || !is_array($attachments) || count($attachments) > 1) {
             hiso_json_response(['error' => 'Select 1–200 recipients and at most one validated image or PDF attachment.'], 422);
         }
-        $contacts = [];
+        $uniqueRecipients = [];
         foreach ($recipients as $recipient) {
             if (!is_array($recipient) || !in_array($recipient['recipientType'] ?? null, ['customer', 'staff', 'enquiry'], true)
-                || !is_string($recipient['recipientId'] ?? null)) {
+                || !is_string($recipient['recipientId'] ?? null) || $recipient['recipientId'] === ''
+                || strlen($recipient['recipientId']) > 36) {
                 hiso_json_response(['error' => 'Recipient selection is invalid.'], 422);
             }
-            $contact = hiso_whatsapp_consent_contact((string)$recipient['recipientType'], (string)$recipient['recipientId'], 'marketing');
-            if (!$contact) hiso_json_response(['error' => 'One or more recipients lack active WhatsApp marketing consent.'], 422);
+            $uniqueRecipients[(string)$recipient['recipientType'] . ':' . $recipient['recipientId']] = $recipient;
+        }
+        $skipped = 0;
+        $eligibleGroupContacts = null;
+        if ($groupId !== '') {
+            try {
+                $groupResult = hiso_customer_contact_group_recipients($groupId, 'whatsapp');
+                $eligibleGroupContacts = [];
+                foreach ($groupResult['contacts'] as $contact) $eligibleGroupContacts[(string)$contact['id']] = true;
+                $skipped = $groupResult['skipped'];
+            } catch (InvalidArgumentException $error) {
+                hiso_json_response(['error' => $error->getMessage()], 422);
+            }
+        }
+        $contacts = [];
+        foreach ($uniqueRecipients as $recipient) {
+            $recipientType = (string)$recipient['recipientType'];
+            $recipientId = (string)$recipient['recipientId'];
+            if ($eligibleGroupContacts !== null
+                && ($recipientType !== 'customer' || !isset($eligibleGroupContacts[$recipientId]))) {
+                $skipped++;
+                continue;
+            }
+            $contact = hiso_whatsapp_consent_contact($recipientType, $recipientId, 'marketing', true);
+            if (!$contact || !preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone'])) {
+                $skipped++;
+                continue;
+            }
             $contacts[] = $contact;
+        }
+        if (!$contacts) {
+            hiso_json_response([
+                'error' => 'No selected recipients currently have active WhatsApp marketing consent and a valid country-code phone number. Service-update consent is separate.',
+                'skipped' => $skipped,
+            ], 422);
         }
         try {
             $media = count($attachments) ? hiso_validate_whatsapp_media($attachments[0]) : null;
@@ -1924,7 +2042,7 @@ try {
             hiso_json_response(['error' => $status === 503 ? $error->getMessage() : 'WhatsApp newsletter delivery failed.'], $status);
         }
         hiso_audit($user, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', hiso_uuid(), 'Sent to ' . count($contacts) . ' marketing-consented recipients.');
-        hiso_json_response(['ok' => true, 'delivered' => count($contacts)]);
+        hiso_json_response(['ok' => true, 'delivered' => count($contacts), 'skipped' => $skipped]);
     }
 
     if ($method === 'POST' && $route === 'communications/newsletter') {
@@ -1936,11 +2054,33 @@ try {
         }
         $attachments = $body['attachments'] ?? [];
         if (!is_array($attachments)) hiso_json_response(['error' => 'Attachment data is invalid.'], 422);
+        if (isset($body['groupId']) && !is_string($body['groupId'])) {
+            hiso_json_response(['error' => 'Contact group selection is invalid.'], 422);
+        }
+        $groupId = trim((string)($body['groupId'] ?? ''));
+        $recipients = hiso_marketing_contacts('email');
+        $skipped = 0;
+        if ($groupId !== '') {
+            try {
+                $groupResult = hiso_customer_contact_group_recipients($groupId, 'email');
+                $recipients = $groupResult['contacts'];
+                $skipped = $groupResult['skipped'];
+            } catch (InvalidArgumentException $error) {
+                hiso_json_response(['error' => $error->getMessage()], 422);
+            }
+        }
+        if (!$recipients) {
+            hiso_json_response([
+                'error' => 'No customers in this selection have active email marketing consent and a valid email address.',
+                'skipped' => $skipped,
+            ], 422);
+        }
         try {
             $delivered = hiso_newsletter_send(
                 (string)($body['subject'] ?? ''),
                 (string)($body['message'] ?? ''),
-                $attachments
+                $attachments,
+                $recipients
             );
         } catch (InvalidArgumentException $error) {
             hiso_json_response(['error' => $error->getMessage()], 422);
@@ -1949,7 +2089,7 @@ try {
             hiso_json_response(['error' => $configured ? $error->getMessage() : 'Newsletter delivery failed. Check the private SMTP configuration and mail server status.'], $configured ? 503 : 502);
         }
         hiso_audit($user, 'SEND_OPTED_IN_NEWSLETTER', 'Newsletter', hiso_uuid(), 'Sent newsletter to ' . $delivered . ' consented recipients.');
-        hiso_json_response(['ok' => true, 'delivered' => $delivered]);
+        hiso_json_response(['ok' => true, 'delivered' => $delivered, 'skipped' => $skipped]);
     }
 
     if ($method === 'POST' && $route === 'communications/push') {
@@ -1974,19 +2114,40 @@ try {
         $message = trim((string)($body['body'] ?? ''));
         $targets = $body['userIds'] ?? [];
         $customerTargets = $body['customerIds'] ?? [];
+        $customerGroupId = $body['customerGroupId'] ?? '';
         $titleLength = preg_match_all('/./us', $title);
         $messageLength = preg_match_all('/./us', $message);
         if ($title === '' || $titleLength === false || $titleLength > 120 || strlen($title) > 480
             || $message === '' || $messageLength === false || $messageLength > 500 || strlen($message) > 2000) {
             hiso_json_response(['error' => 'Push title (max 120 characters) and body (max 500 characters) are required.'], 422);
         }
-        if (!is_array($targets) || !is_array($customerTargets) || count($targets) + count($customerTargets) < 1
-            || count($targets) + count($customerTargets) > 50
+        if (!is_array($targets) || !is_array($customerTargets)
+            || !is_string($customerGroupId) || strlen($customerGroupId) > 36
             || count(array_filter(array_merge($targets, $customerTargets), fn($id) => !is_string($id) || strlen($id) > 36)) > 0) {
-            hiso_json_response(['error' => 'Select between 1 and 50 staff or subscribed customer recipients.'], 422);
+            hiso_json_response(['error' => 'Select valid staff/customer recipients and an optional customer group.'], 422);
+        }
+        if (count($targets) + count($customerTargets) > 200) {
+            hiso_json_response(['error' => 'Select no more than 200 staff or customer accounts.'], 422);
         }
         $targets = array_values(array_unique(array_filter($targets, fn($id) => is_string($id) && strlen($id) <= 36)));
         $customerTargets = array_values(array_unique(array_filter($customerTargets, fn($id) => is_string($id) && strlen($id) <= 36)));
+        $skipped = 0;
+        if ($customerGroupId !== '') {
+            try {
+                $groupRecipients = hiso_customer_contact_group_push_recipients($customerGroupId);
+                $customerTargets = array_values(array_unique(array_merge($customerTargets, $groupRecipients['customerIds'])));
+                $skipped = $groupRecipients['skipped'];
+            } catch (InvalidArgumentException $error) {
+                hiso_json_response(['error' => $error->getMessage()], 422);
+            }
+        }
+        $requestedAccounts = count($targets) + count($customerTargets);
+        if ($requestedAccounts < 1 && $customerGroupId !== '') {
+            hiso_json_response(['error' => 'No group members have an active push subscription. ' . $skipped . ' member(s) skipped.'], 422);
+        }
+        if ($requestedAccounts < 1 || $requestedAccounts > 200) {
+            hiso_json_response(['error' => 'Select between 1 and 200 staff or subscribed customer accounts.'], 422);
+        }
         $pdo = hiso_pdo();
         $validTargets = [];
         if ($targets) {
@@ -2035,7 +2196,7 @@ try {
             hiso_notify((string)$targetId, $title, $message, 'communications', 'push');
         }
         hiso_audit($user, 'SEND_WEB_PUSH', 'User', 'multiple', 'Sent push notification to ' . $delivered . ' subscribed device(s).');
-        hiso_json_response(['ok' => true, 'delivered' => $delivered, 'failed' => $failed]);
+        hiso_json_response(['ok' => true, 'delivered' => $delivered, 'failed' => $failed, 'skipped' => $skipped]);
     }
 
     if ($method === 'POST' && $route === 'push/subscriptions') {
@@ -2923,6 +3084,42 @@ try {
         header('Content-Type: ' . $photo['mime_type']);
         header('Content-Length: ' . (string)filesize($path));
         header('Cache-Control: private, max-age=86400');
+        header('X-Content-Type-Options: nosniff');
+        readfile($path);
+        exit;
+    }
+
+    if ($method === 'GET' && str_starts_with($route, 'staff/profile/photo/')) {
+        if (!hiso_current_user()) {
+            http_response_code(401);
+            exit('Authentication required.');
+        }
+        if (!hiso_column_exists('users', 'profile_photo_filename')) {
+            http_response_code(503);
+            exit('Apply php-cpanel/migrations/010-staff-profiles-contact-groups.sql first.');
+        }
+        $staffId = substr($route, strlen('staff/profile/photo/'));
+        if (!preg_match('/^[A-Fa-f0-9-]{36}$/', $staffId)) {
+            http_response_code(404);
+            exit('Not found');
+        }
+        $stmt = hiso_pdo()->prepare(
+            "SELECT profile_photo_filename FROM users WHERE id = ? AND status = 'Active' LIMIT 1"
+        );
+        $stmt->execute([$staffId]);
+        $filename = $stmt->fetchColumn();
+        if (!is_string($filename) || !preg_match('/^[A-Fa-f0-9-]{36}\.jpg$/', $filename)) {
+            http_response_code(404);
+            exit('Not found');
+        }
+        $path = hiso_storage_dir('staff_profiles') . '/' . basename($filename);
+        if (!is_file($path)) {
+            http_response_code(404);
+            exit('Missing file');
+        }
+        header('Content-Type: image/jpeg');
+        header('Content-Length: ' . (string)filesize($path));
+        header('Cache-Control: private, max-age=3600');
         header('X-Content-Type-Options: nosniff');
         readfile($path);
         exit;

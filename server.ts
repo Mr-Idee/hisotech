@@ -25,11 +25,17 @@ import {
   createStoreOrder,
   decideQuotation,
   deleteCatalogItem,
+  deleteCustomerContactGroup,
   destroySession,
   destroyCustomerSession,
   getCustomerBySessionToken,
   getCustomerEquipmentPhoto,
   getPhotoFile,
+  getStaffProfilePhotoFile,
+  getCustomerContactGroupRecipients,
+  getCustomerContactGroupPushRecipients,
+  listCustomerContactDirectory,
+  listCustomerContactGroups,
   getPublicCatalog,
   getPublicEstimatorSettings,
   getPublicDocument,
@@ -63,6 +69,8 @@ import {
   saveQuotation,
   saveRoleDefinition,
   saveStaffMember,
+  saveStaffProfile,
+  saveCustomerContactGroup,
   reissueStaffSetupPin,
   setupCustomerPassword,
   setupStaffPassword,
@@ -1349,6 +1357,43 @@ async function startServer() {
     res.json({ user });
   });
 
+  app.post('/api/staff/profile', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    const { name, phone, photoDataUrl, removePhoto } = req.body ?? {};
+    if (typeof name !== 'string' || typeof phone !== 'string'
+        || (photoDataUrl !== undefined && typeof photoDataUrl !== 'string')
+        || (removePhoto !== undefined && typeof removePhoto !== 'boolean')) {
+      res.status(422).json({ error: 'Profile name, phone, or photo data is invalid.' });
+      return;
+    }
+    try {
+      const updated = saveStaffProfile(user.id, { name, phone, photoDataUrl, removePhoto });
+      writeAudit(updated, 'UPDATE_OWN_STAFF_PROFILE', 'Staff', updated.id, 'Updated own profile details.');
+      res.json({ user: updated });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
+  app.get('/api/staff/profile/photo/:staffId', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!user) {
+      res.status(401).send('Authentication required.');
+      return;
+    }
+    const photo = getStaffProfilePhotoFile(req.params.staffId);
+    if (!photo) {
+      res.status(404).send('Not found.');
+      return;
+    }
+    res.type(photo.mimeType).set('Cache-Control', 'private, max-age=3600')
+      .set('X-Content-Type-Options', 'nosniff').sendFile(photo.filePath);
+  });
+
   // --- Protected Workspace API (Permission-Based RBAC) ---
   app.get('/api/website/content', (_req, res) => {
     res.json({ homepage: getHomepageSections() });
@@ -1434,7 +1479,46 @@ async function startServer() {
       whatsappOperational: listWhatsAppConsentContacts('operational'),
       pushCustomers: getPushSubscribedCustomers(),
       myWhatsappConsents: getStaffWhatsAppConsents(user!.id),
+      customerDirectory: listCustomerContactDirectory(),
+      customerGroups: listCustomerContactGroups(),
+      contactGroupsReady: true,
     });
+  });
+
+  app.post('/api/communications/contact-groups', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!hasPermission(user, 'manage_communications')) {
+      res.status(user ? 403 : 401).json({ error: 'Communications permission required.' });
+      return;
+    }
+    const { id, name, customerIds } = req.body ?? {};
+    if ((id !== undefined && typeof id !== 'string') || typeof name !== 'string' || !Array.isArray(customerIds)) {
+      res.status(422).json({ error: 'Contact group name and customer selection are required.' });
+      return;
+    }
+    try {
+      const result = saveCustomerContactGroup({ id, name, customerIds }, user!.id);
+      writeAudit(user!, id ? 'UPDATE_CUSTOMER_CONTACT_GROUP' : 'CREATE_CUSTOMER_CONTACT_GROUP',
+        'Contact group', result.id, `Saved customer contact group "${name.trim().slice(0, 80)}".`);
+      res.json({ ...result, groups: listCustomerContactGroups() });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
+  app.delete('/api/communications/contact-groups/:groupId', (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!hasPermission(user, 'manage_communications')) {
+      res.status(user ? 403 : 401).json({ error: 'Communications permission required.' });
+      return;
+    }
+    try {
+      deleteCustomerContactGroup(req.params.groupId);
+      writeAudit(user!, 'DELETE_CUSTOMER_CONTACT_GROUP', 'Contact group', req.params.groupId, 'Deleted a customer contact group.');
+      res.json({ ok: true, groups: listCustomerContactGroups() });
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
   });
 
   app.post('/api/communications/test-email', async (req, res) => {
@@ -1501,9 +1585,9 @@ async function startServer() {
       res.status(422).json({ error: 'Select a recipient with active WhatsApp marketing consent.' });
       return;
     }
-    const contact = getWhatsAppConsentContact(recipientType, recipientId, 'marketing');
+    const contact = getWhatsAppConsentContact(recipientType, recipientId, 'marketing', true);
     if (!contact) {
-      res.status(422).json({ error: 'This recipient has not opted in to WhatsApp marketing or has withdrawn consent.' });
+      res.status(422).json({ error: 'This recipient has no active WhatsApp marketing consent. Service-update consent is separate and does not authorize marketing messages.' });
       return;
     }
     if (!isValidE164(contact.phone)) {
@@ -1552,6 +1636,11 @@ async function startServer() {
     }
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const recipients = req.body?.recipients;
+    if (req.body?.groupId !== undefined && typeof req.body.groupId !== 'string') {
+      res.status(422).json({ error: 'Contact group selection is invalid.' });
+      return;
+    }
+    const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
     const attachments = req.body?.attachments ?? [];
     const messageError = validateMessage(message);
     if (messageError || message.length > 1024) {
@@ -1568,10 +1657,32 @@ async function startServer() {
       res.status(422).json({ error: 'A WhatsApp newsletter may include at most one image or PDF attachment.' });
       return;
     }
-    const resolved = recipients.map((r: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }) =>
-      getWhatsAppConsentContact(r.recipientType, r.recipientId, 'marketing'));
-    if (resolved.some((contact) => !contact)) {
-      res.status(422).json({ error: 'One or more recipients lack active WhatsApp marketing consent.' });
+    const uniqueRecipients = [...new Map(
+      recipients.map((r: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }) =>
+        [`${r.recipientType}:${r.recipientId}`, r] as const)
+    ).values()];
+    let skipped = 0;
+    let allowedGroupRecipients: Set<string> | null = null;
+    if (groupId) {
+      try {
+        const groupRecipients = getCustomerContactGroupRecipients(groupId, 'whatsapp');
+        allowedGroupRecipients = new Set(groupRecipients.contacts.map((contact) => contact.id));
+        skipped = groupRecipients.skipped;
+      } catch (error) {
+        res.status(422).json({ error: (error as Error).message });
+        return;
+      }
+    }
+    const resolved = uniqueRecipients.map((r: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }) => {
+      if (groupId && (r.recipientType !== 'customer' || !allowedGroupRecipients?.has(r.recipientId))) return null;
+      return getWhatsAppConsentContact(r.recipientType, r.recipientId, 'marketing', true);
+    }).filter((contact): contact is NonNullable<typeof contact> => Boolean(contact && isValidE164(contact.phone)));
+    skipped += uniqueRecipients.length - resolved.length;
+    if (!resolved.length) {
+      res.status(422).json({
+        error: 'No selected recipients currently have active WhatsApp marketing consent and a valid country-code phone number. Service-update consent is separate.',
+        skipped,
+      });
       return;
     }
     let config: ReturnType<typeof getWhatsAppConfiguration>;
@@ -1592,13 +1703,13 @@ async function startServer() {
       const mediaId = attachments.length ? await uploadWhatsAppMedia(config, attachments[0]) : '';
       let delivered = 0;
       for (const contact of resolved) {
-        await sendWhatsAppTemplate(config, contact!.phone, message, mediaId
+        await sendWhatsAppTemplate(config, contact.phone, message, mediaId
           ? { id: mediaId, mimeType: attachments[0].mimeType }
           : undefined);
         delivered += 1;
       }
       writeAudit(user!, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', crypto.randomUUID(), `Sent to ${delivered} marketing-consented recipient(s).`);
-      res.json({ ok: true, delivered });
+      res.json({ ok: true, delivered, skipped });
     } catch (error) {
       const text = (error as Error).message;
       res.status(502).json({ error: text.includes('HTTP ') ? text : 'WhatsApp newsletter delivery failed; provider configuration and status were not logged.' });
@@ -1618,6 +1729,11 @@ async function startServer() {
     const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const attachments = req.body?.attachments;
+    if (req.body?.groupId !== undefined && typeof req.body.groupId !== 'string') {
+      res.status(422).json({ error: 'Contact group selection is invalid.' });
+      return;
+    }
+    const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
     if (!subject || subject.length > 180 || /[\r\n]/.test(subject) || !message || message.length > 10000) {
       res.status(422).json({ error: 'Newsletter subject (max 180 characters) and message (max 10000 characters) are required.' });
       return;
@@ -1645,9 +1761,23 @@ async function startServer() {
       res.status(503).json({ error: 'Newsletter SMTP is not configured on the private server.' });
       return;
     }
-    const recipients = listMarketingContacts('email');
+    let recipients = listMarketingContacts('email');
+    let skipped = 0;
+    if (groupId) {
+      try {
+        const groupRecipients = getCustomerContactGroupRecipients(groupId, 'email');
+        recipients = groupRecipients.contacts;
+        skipped = groupRecipients.skipped;
+      } catch (error) {
+        res.status(422).json({ error: (error as Error).message });
+        return;
+      }
+    }
     if (!recipients.length) {
-      res.status(422).json({ error: 'No verified customers have active email marketing consent.' });
+      res.status(422).json({
+        error: 'No customers in this selection have active email marketing consent and a valid email address.',
+        skipped,
+      });
       return;
     }
     try {
@@ -1670,7 +1800,7 @@ async function startServer() {
         delivered += batch.length;
       }
       writeAudit(user!, 'SEND_OPTED_IN_NEWSLETTER', 'Newsletter', crypto.randomUUID(), `Sent newsletter to ${delivered} consented recipients.`);
-      res.json({ ok: true, delivered });
+      res.json({ ok: true, delivered, skipped });
     } catch {
       res.status(502).json({ error: 'Newsletter delivery failed; check the private SMTP configuration and mail server status.' });
     }
@@ -1690,14 +1820,41 @@ async function startServer() {
     const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
     const targetIds = req.body?.userIds;
     const customerTargetIds = req.body?.customerIds ?? [];
+    const customerGroupId = req.body?.customerGroupId;
     if (!title || title.length > 120 || !body || body.length > 500) {
       res.status(422).json({ error: 'Push title (max 120 characters) and body (max 500 characters) are required.' });
       return;
     }
     if (!Array.isArray(targetIds) || !Array.isArray(customerTargetIds)
-      || targetIds.length + customerTargetIds.length < 1 || targetIds.length + customerTargetIds.length > 50
+      || (customerGroupId !== undefined && (typeof customerGroupId !== 'string' || customerGroupId.length > 36))
       || [...targetIds, ...customerTargetIds].some((id: unknown) => typeof id !== 'string' || id.length > 36)) {
-      res.status(422).json({ error: 'Select between 1 and 50 staff or subscribed customer recipients.' });
+      res.status(422).json({ error: 'Select valid staff/customer recipients and an optional customer group.' });
+      return;
+    }
+    if (targetIds.length + customerTargetIds.length > 200) {
+      res.status(422).json({ error: 'Select no more than 200 staff or customer accounts.' });
+      return;
+    }
+    let groupedCustomerIds: string[] = [];
+    let skipped = 0;
+    if (customerGroupId) {
+      try {
+        const groupRecipients = getCustomerContactGroupPushRecipients(customerGroupId);
+        groupedCustomerIds = groupRecipients.customerIds;
+        skipped = groupRecipients.skipped;
+      } catch (error) {
+        res.status(422).json({ error: (error as Error).message });
+        return;
+      }
+    }
+    const requestedAccountCount = new Set(targetIds as string[]).size
+      + new Set([...(customerTargetIds as string[]), ...groupedCustomerIds]).size;
+    if (!requestedAccountCount && customerGroupId) {
+      res.status(422).json({ error: `No group members have an active push subscription. ${skipped} member(s) skipped.` });
+      return;
+    }
+    if (!requestedAccountCount || requestedAccountCount > 200) {
+      res.status(422).json({ error: 'Select between 1 and 200 staff or subscribed customer accounts.' });
       return;
     }
     const vapidSubject = process.env.VAPID_SUBJECT || '';
@@ -1709,7 +1866,7 @@ async function startServer() {
       return;
     }
     const recipients = getActiveStaffIds([...new Set(targetIds as string[])]);
-    const customerRecipients = getVerifiedCustomerIds([...new Set(customerTargetIds as string[])]);
+    const customerRecipients = getVerifiedCustomerIds([...new Set([...(customerTargetIds as string[]), ...groupedCustomerIds])]);
     if (!recipients.length && !customerRecipients.length) {
       res.status(422).json({ error: 'No active staff or verified customer recipients were found.' });
       return;
@@ -1743,7 +1900,7 @@ async function startServer() {
         createNotification(targetId, title, body, 'communications', 'push');
       }
       writeAudit(user!, 'SEND_WEB_PUSH', 'User', 'multiple', `Sent push notification to ${delivered} subscribed devices.`);
-      res.json({ ok: true, delivered, failed: results.length - delivered });
+      res.json({ ok: true, delivered, failed: results.length - delivered, skipped });
     } catch {
       res.status(503).json({ error: 'Web Push delivery failed. Verify the private VAPID keys and subject.' });
     }
