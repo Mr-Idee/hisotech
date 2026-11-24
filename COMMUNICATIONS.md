@@ -25,6 +25,7 @@ The production implementation is primarily in [`php-cpanel/hiso_private/communic
 | Staff logs a payment receipt | Director and Super Admin | `HI-SOTECH payment receipt awaiting verification: {paymentCode}` | Receipt code, amount, pending-verification status, and a finance workspace link. |
 | Quote, invoice, ticket, or installation lifecycle event | Related eligible customer/enquiry/staff recipient | Production subject: `HI-SOTECH service update`; Node preview uses `HI-SOTECH update: {event}` unless a specific subject is supplied | Uses the event message supplied by the trigger. If enabled for the event and recipient, this same lifecycle message may also be sent as WhatsApp and browser push. Delivery is conditional on the recipient records, channel configuration, subscriptions, and (for WhatsApp) active operational consent. |
 | Staff emails a quotation or invoice PDF from the workspace | Customer on the document's enquiry | `HI-SOTECH Quotation {documentCode}` or `HI-SOTECH Invoice {documentCode}` | Short message with the validated PDF attached. This is a staff action, not an automatic quotation-approval email. |
+| Staff sends a one-to-one service reply | Customer on an active, unarchived enquiry or unresolved support ticket | Approved `new_enquiry` or `ticket_status` WhatsApp template | Staff-entered service reply tied to the selected request. Requires communications permission and an E.164 phone number; it does not require marketing consent. This path is not for promotions. |
 | Super Admin sends an SMTP test from Communications | Chosen address, or the signed-in Super Admin address | `HI-SOTECH email delivery test` | Fixed test message confirming outbound SMTP delivery. Rate-limited. |
 | Staff sends an email newsletter | Customers with active email-marketing consent; optionally restricted to a selected contact group | Staff-entered subject | Staff-entered message and validated attachments, sent in BCC batches. Recipients are re-resolved server-side at send time; unconsented, invalid, or unavailable contacts are skipped. |
 
@@ -176,7 +177,7 @@ The PHP invoice-issuance path sends the invoice email through the invoice-specif
 
 ## Other communication channels
 
-- **WhatsApp:** public enquiry acknowledgement is sent only with valid operational consent recorded for the submitted number. Staff-composed single-recipient messages and WhatsApp newsletters require current marketing consent; service-update consent does not grant marketing consent. Customer/staff account setup WhatsApp notices are sent only when matching operational consent exists. Meta-approved templates and private provider credentials are required.
+- **WhatsApp:** a public enquiry acknowledgement and staff-composed replies tied to an active enquiry or unresolved support ticket use the corresponding approved service template and valid submitted request phone, without requiring marketing consent. The staff reply route accepts only those request records and is not for promotions. Other lifecycle updates and customer/staff account setup WhatsApp notices remain gated by active operational consent. Staff-composed marketing messages and WhatsApp newsletters require current marketing consent. Meta-approved templates and private provider credentials are required.
 - **Browser push:** event-driven lifecycle notifications and staff-composed push notifications are sent only to registered subscriptions. Messages are truncated before delivery; expired subscriptions are removed when detected.
 - **In-app notifications:** assignment and workflow events can create internal workspace notifications. They are separate from email and do not imply that an email was sent.
 - **No automatic invoice/order-status email:** updating an order's dispatch/delivery status does not by itself compose an email. Invoice issuance and payment events have their own triggers above.
@@ -189,7 +190,7 @@ Consent and delivery outcomes are handled by the API at send time. An accepted A
 
 1. A visitor submits the home-page enquiry form. It creates an enquiry only; it does not create a quotation.
 2. A load-estimator submission creates an enquiry with an estimate and quotation workflow data.
-3. The customer receives the personalized enquiry acknowledgement; Admin and Super Admin receive an internal copy. Optional WhatsApp confirmation depends on operational consent.
+3. The customer receives the personalized enquiry acknowledgement; Admin and Super Admin receive an internal copy. The WhatsApp acknowledgement uses the enquiry phone and approved service template, without requiring marketing consent.
 4. Admin follows up with the customer, drafts a message if needed, and can forward the enquiry and note to the Director. Enquiries remain enquiries; they do not have quotation line items unless the enquiry is an estimator request or is linked to a Store order.
 5. For estimator work, staff drafts a quotation and submits it for Director approval. The Director approves or rejects it; the decision is sent internally.
 6. After approval, Admin can approve the customer profile and provision the customer portal account. The customer receives the setup PIN by email.
@@ -223,12 +224,12 @@ Consent and delivery outcomes are handled by the API at send time. An accepted A
 1. Customer submits a service ticket from the authenticated portal.
 2. Staff triages and assigns the ticket; assigned technical staff receive an internal notification.
 3. Authorized technicians acknowledge installations and submit field reports with validated photos. Admin/Director manage release, assignment, and status.
-4. Relevant customer and staff notifications are sent through the configured lifecycle channels, subject to recipient resolution and consent/configuration rules.
+4. Staff can send a WhatsApp reply tied to the open ticket using the service-reply composer. It does not require marketing consent and must not contain promotions. Automatic lifecycle updates remain subject to recipient resolution, operational consent, and provider configuration.
 
 ### Contact groups and batch communications
 
 1. Staff with communications permission create named groups from verified customer accounts.
-2. For each newsletter send, the API resolves the selected group and rechecks current channel-specific consent and contact details. Selection in the browser is not treated as consent.
+2. For each newsletter send, the API resolves the selected group and rechecks current channel-specific consent and contact details. Selection in the browser is not treated as consent. The separate one-to-one service-reply path only resolves active enquiry and support-ticket records, never arbitrary customer contacts.
 3. Email newsletter messages use BCC batches. WhatsApp newsletters use the approved Meta template and can include one validated image/PDF. Push is sent only to subscribed devices.
 
 ## Production setup notes

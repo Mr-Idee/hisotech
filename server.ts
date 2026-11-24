@@ -52,6 +52,7 @@ import {
   deletePushSubscription,
   getStaffWhatsAppConsents,
   getWhatsAppConsentContact,
+  getWhatsAppServiceRequestContact,
   getLifecycleNotificationTargets,
   getPaymentInvoiceId,
   getActiveStaffIds,
@@ -61,6 +62,7 @@ import {
   getVerifiedCustomerIds,
   listMarketingContacts,
   listWhatsAppConsentContacts,
+  listWhatsAppServiceRequests,
   logCommunicationDelivery,
   recordPayment,
   releaseInstallation,
@@ -435,20 +437,20 @@ async function sendEnquiryConfirmationWhatsApp(
   quoteCode?: string,
 ): Promise<void> {
   const message = `Hello ${name}, we have received your HI-SOTECH enquiry ${refCode}${quoteCode ? ` and load estimate ${quoteCode}` : ''}. A representative will get back to you shortly using this WhatsApp number. Thank you.`;
-  let contact: ReturnType<typeof getWhatsAppConsentContact>;
+  let contact: ReturnType<typeof getWhatsAppServiceRequestContact>;
   try {
-    contact = getWhatsAppConsentContact('enquiry', enquiryId, 'operational');
+    contact = getWhatsAppServiceRequestContact('enquiry', enquiryId);
   } catch {
     logCommunicationDelivery({
       eventKey: 'new_enquiry', recipientType: 'enquiry', recipientId: enquiryId,
-      channel: 'whatsapp', status: 'failed', errorCode: 'consent_lookup_failed',
+      channel: 'whatsapp', status: 'failed', errorCode: 'service_request_lookup_failed',
     });
     return;
   }
   if (!contact || contact.phone !== phone) {
     logCommunicationDelivery({
       eventKey: 'new_enquiry', recipientType: 'enquiry', recipientId: enquiryId,
-      channel: 'whatsapp', status: 'skipped', errorCode: 'no_active_operational_consent',
+      channel: 'whatsapp', status: 'skipped', errorCode: 'service_request_unavailable',
     });
     return;
   }
@@ -1573,6 +1575,7 @@ async function startServer() {
       email: listMarketingContacts('email'),
       whatsapp: listWhatsAppConsentContacts('marketing'),
       whatsappOperational: listWhatsAppConsentContacts('operational'),
+      whatsappServiceRequests: listWhatsAppServiceRequests(),
       pushCustomers: getPushSubscribedCustomers(),
       myWhatsappConsents: getStaffWhatsAppConsents(user!.id),
       customerDirectory: listCustomerContactDirectory(),
@@ -1717,6 +1720,46 @@ async function startServer() {
         return;
       }
       res.status(502).json({ error: message.includes('HTTP ') ? message : 'WhatsApp message could not be delivered. Check private provider configuration and status.' });
+    }
+  });
+
+  app.post('/api/communications/whatsapp-service', async (req, res) => {
+    const { user } = getSessionUser(req);
+    if (!hasPermission(user, 'manage_communications')) {
+      res.status(user ? 403 : 401).json({ error: 'Communications permission required.' });
+      return;
+    }
+    if (!allowCommunicationsAction(user!.id, 'whatsapp-service-single', 30)) {
+      res.status(429).json({ error: 'WhatsApp service-reply limit reached. Try again later.' });
+      return;
+    }
+    const requestType = req.body?.requestType;
+    const requestId = typeof req.body?.requestId === 'string' ? req.body.requestId.trim() : '';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    const messageError = validateMessage(message);
+    if (messageError || (requestType !== 'enquiry' && requestType !== 'ticket') || !requestId
+        || requestId.length > 36 || [...message].length > 1024) {
+      res.status(422).json({ error: messageError || 'Select an active enquiry or support ticket and enter a service reply of up to 1024 characters.' });
+      return;
+    }
+    const contact = getWhatsAppServiceRequestContact(requestType, requestId);
+    if (!contact) {
+      res.status(422).json({ error: 'That request is unavailable, closed, or has no valid country-code WhatsApp number.' });
+      return;
+    }
+    try {
+      const eventKey = requestType === 'enquiry' ? 'new_enquiry' : 'ticket_status';
+      await sendWhatsAppTemplate(getWhatsAppConfiguration(eventKey), contact.phone, message);
+      writeAudit(user!, 'SEND_WHATSAPP_SERVICE_REPLY', requestType, contact.requestCode,
+        `Sent a service reply for ${contact.requestCode}.`);
+      res.json({ ok: true });
+    } catch (error) {
+      const message = (error as Error).message;
+      if (error instanceof WhatsAppConfigurationError) {
+        res.status(503).json({ error: message });
+        return;
+      }
+      res.status(502).json({ error: message.includes('HTTP ') ? message : 'WhatsApp service reply could not be delivered. Check private provider configuration and status.' });
     }
   });
 

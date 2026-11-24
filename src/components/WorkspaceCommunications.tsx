@@ -7,6 +7,14 @@ import { PushSubscriptionControl } from './PushSubscriptionControl';
 
 type Contact = { id: string; name: string; email: string; phone: string };
 type WhatsAppContact = Contact & { recipientType: 'customer' | 'staff' | 'enquiry' };
+type WhatsAppServiceRequest = {
+  id: string;
+  requestType: 'enquiry' | 'ticket';
+  requestCode: string;
+  name: string;
+  phone: string;
+  subject: string;
+};
 type CustomerGroup = { id: string; name: string; customerIds: string[] };
 
 function readFile(file: File): Promise<string> {
@@ -24,6 +32,7 @@ function readFile(file: File): Promise<string> {
 export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
   const [emailContacts, setEmailContacts] = useState<Contact[]>([]);
   const [whatsappContacts, setWhatsappContacts] = useState<WhatsAppContact[]>([]);
+  const [whatsappServiceRequests, setWhatsappServiceRequests] = useState<WhatsAppServiceRequest[]>([]);
   const [pushCustomers, setPushCustomers] = useState<{ id: string; name: string }[]>([]);
   const [customerDirectory, setCustomerDirectory] = useState<Contact[]>([]);
   const [customerGroups, setCustomerGroups] = useState<CustomerGroup[]>([]);
@@ -36,6 +45,8 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
   const [whatsappGroupId, setWhatsappGroupId] = useState('');
   const [whatsappRecipientKey, setWhatsappRecipientKey] = useState('');
   const [whatsappMessage, setWhatsappMessage] = useState('');
+  const [whatsappServiceRequestKey, setWhatsappServiceRequestKey] = useState('');
+  const [whatsappServiceMessage, setWhatsappServiceMessage] = useState('');
   const [subject, setSubject] = useState('');
   const [newsletterMessage, setNewsletterMessage] = useState('');
   const [whatsappNewsletterMessage, setWhatsappNewsletterMessage] = useState('');
@@ -57,6 +68,7 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
     api.getCommunicationContacts().then((contacts) => {
       setEmailContacts(contacts.email);
       setWhatsappContacts(contacts.whatsapp);
+      setWhatsappServiceRequests(contacts.whatsappServiceRequests);
       setPushCustomers(contacts.pushCustomers);
       setMyWhatsappConsent(contacts.myWhatsappConsents);
       setCustomerDirectory(contacts.customerDirectory);
@@ -327,10 +339,10 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
-        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">One-to-one WhatsApp message</h2>
+        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">One-to-one WhatsApp marketing message</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{whatsappContacts.length} marketing-consented contact(s)</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Uses approved proactive templates only. Recipients must have active WhatsApp marketing consent.
+          Uses an approved template. Recipients must have active WhatsApp marketing consent.
         </p>
         <form className="mt-4 space-y-3" onSubmit={(event) => {
           event.preventDefault();
@@ -357,6 +369,53 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
           </label>
           <button disabled={busy || !whatsappContacts.length} className="rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26] disabled:opacity-50">
             {busy ? 'Sending…' : 'Send WhatsApp message'}
+          </button>
+        </form>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
+        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Customer-initiated service reply</h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Reply only about an active enquiry or support ticket the customer submitted. This route does not require marketing consent; do not include promotions.
+        </p>
+        <form className="mt-4 space-y-3" onSubmit={(event) => {
+          event.preventDefault();
+          void submit(async () => {
+            const request = whatsappServiceRequests.find(
+              (item) => `${item.requestType}:${item.id}` === whatsappServiceRequestKey
+            );
+            if (!request) throw new Error('Select an active enquiry or support ticket.');
+            await api.sendWhatsAppServiceReply({
+              requestType: request.requestType,
+              requestId: request.id,
+              message: whatsappServiceMessage,
+            });
+            setWhatsappServiceMessage('');
+            return `Service reply sent for ${request.requestCode}.`;
+          });
+        }}>
+          <label className="block text-xs font-medium">
+            Active customer request
+            <select required value={whatsappServiceRequestKey}
+              onChange={(event) => setWhatsappServiceRequestKey(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]">
+              <option value="">Select an enquiry or support ticket</option>
+              {whatsappServiceRequests.map((request) => (
+                <option key={`${request.requestType}:${request.id}`} value={`${request.requestType}:${request.id}`}>
+                  {request.requestType === 'enquiry' ? 'Enquiry' : 'Support'} {request.requestCode} · {request.name} · {request.subject} · {request.phone}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs font-medium">
+            Service reply (up to 1024 characters)
+            <textarea required maxLength={1024} rows={4} value={whatsappServiceMessage}
+              onChange={(event) => setWhatsappServiceMessage(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]" />
+          </label>
+          <button disabled={busy || !whatsappServiceRequests.length}
+            className="rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26] disabled:opacity-50">
+            {busy ? 'Sending…' : 'Send service reply'}
           </button>
         </form>
       </section>

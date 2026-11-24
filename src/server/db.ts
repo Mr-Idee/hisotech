@@ -1667,6 +1667,47 @@ export function listWhatsAppConsentContacts(purpose: 'operational' | 'marketing'
   })).filter((row) => /^\+[1-9]\d{7,14}$/.test(row.phone));
 }
 
+export function listWhatsAppServiceRequests() {
+  const rows = db.prepare(
+    `SELECT id, 'enquiry' AS request_type, ref_code AS request_code, customer_name AS name, phone, need_summary AS subject ` +
+    'FROM enquiries WHERE archived_at IS NULL ' +
+    `UNION ALL SELECT id, 'ticket' AS request_type, ticket_code AS request_code, customer_name AS name, customer_phone AS phone, subject ` +
+    "FROM service_tickets WHERE status <> 'Resolved' ORDER BY request_code"
+  ).all() as Record<string, unknown>[];
+  return rows.map((row) => ({
+    id: String(row.id),
+    requestType: String(row.request_type) as 'enquiry' | 'ticket',
+    requestCode: String(row.request_code),
+    name: String(row.name),
+    phone: String(row.phone || ''),
+    subject: String(row.subject || ''),
+  })).filter((row) => /^\+[1-9]\d{7,14}$/.test(row.phone));
+}
+
+export function getWhatsAppServiceRequestContact(requestType: 'enquiry' | 'ticket', requestId: string) {
+  const row = requestType === 'enquiry'
+    ? db.prepare(
+      `SELECT id, 'enquiry' AS request_type, ref_code AS request_code, customer_name AS name, phone, need_summary AS subject ` +
+      'FROM enquiries WHERE id = ? AND archived_at IS NULL LIMIT 1'
+    ).get(requestId)
+    : db.prepare(
+      `SELECT id, 'ticket' AS request_type, ticket_code AS request_code, customer_name AS name, customer_phone AS phone, subject ` +
+      "FROM service_tickets WHERE id = ? AND status <> 'Resolved' LIMIT 1"
+    ).get(requestId);
+  if (!row) return null;
+  const request = row as Record<string, unknown>;
+  const phone = String(request.phone || '');
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) return null;
+  return {
+    id: String(request.id),
+    requestType: String(request.request_type) as 'enquiry' | 'ticket',
+    requestCode: String(request.request_code),
+    name: String(request.name),
+    phone,
+    subject: String(request.subject || ''),
+  };
+}
+
 export function getWhatsAppConsentContact(
   recipientType: 'customer' | 'staff' | 'enquiry',
   recipientId: string,

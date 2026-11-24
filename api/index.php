@@ -1953,6 +1953,7 @@ try {
             'email' => hiso_marketing_contacts('email'),
             'whatsapp' => hiso_whatsapp_consent_contacts('marketing'),
             'whatsappOperational' => hiso_whatsapp_consent_contacts('operational'),
+            'whatsappServiceRequests' => hiso_whatsapp_service_requests(),
             'pushCustomers' => $pushCustomers,
             'customerDirectory' => hiso_customer_contact_directory(),
             'customerGroups' => $contactGroupsReady ? hiso_customer_contact_groups() : [],
@@ -2044,6 +2045,48 @@ try {
             hiso_json_response(['error' => $configured ? $error->getMessage() : 'WhatsApp provider delivery failed. Check private configuration and provider status.'], $configured ? 503 : 502);
         }
         hiso_audit($user, 'SEND_WHATSAPP_MARKETING', ucfirst($recipientType), $recipientId, 'Sent approved-template WhatsApp marketing message.');
+        hiso_json_response(['ok' => true]);
+    }
+
+    if ($method === 'POST' && $route === 'communications/whatsapp-service') {
+        $user = hiso_require_permission('manage_communications');
+        hiso_require_communications_rate_limit($user, 'whatsapp-service-single', 30);
+        $body = hiso_json_body();
+        $requestType = is_string($body['requestType'] ?? null) ? $body['requestType'] : '';
+        $requestId = is_string($body['requestId'] ?? null) ? trim($body['requestId']) : '';
+        $message = is_string($body['message'] ?? null) ? trim($body['message']) : '';
+        $messageLength = preg_match_all('/./us', $message);
+        if (!in_array($requestType, ['enquiry', 'ticket'], true) || $requestId === '' || strlen($requestId) > 36
+            || $message === '' || $messageLength === false || $messageLength > 1024 || strlen($message) > 4096) {
+            hiso_json_response(['error' => 'Select an active enquiry or support ticket and enter a service reply of up to 1024 characters.'], 422);
+        }
+        try {
+            $contact = hiso_whatsapp_service_request_contact($requestType, $requestId);
+        } catch (Throwable $error) {
+            hiso_json_response(['error' => 'The service request could not be verified. Please retry.'], 503);
+        }
+        if (!$contact) {
+            hiso_json_response(['error' => 'That request is unavailable, closed, or has no valid country-code WhatsApp number.'], 422);
+        }
+        try {
+            $templateKey = $requestType === 'enquiry' ? 'new_enquiry' : 'ticket_status';
+            $config = hiso_whatsapp_template_config($templateKey);
+            hiso_whatsapp_send_template($config, (string)$contact['phone'], $message);
+        } catch (InvalidArgumentException $error) {
+            hiso_json_response(['error' => $error->getMessage()], 422);
+        } catch (Throwable $error) {
+            $configured = str_contains(strtolower($error->getMessage()), 'not configured')
+                || str_contains(strtolower($error->getMessage()), 'configuration')
+                || str_contains(strtolower($error->getMessage()), 'template header');
+            hiso_json_response(['error' => $configured ? $error->getMessage() : 'WhatsApp service reply could not be delivered. Check private provider configuration and status.'], $configured ? 503 : 502);
+        }
+        hiso_audit(
+            $user,
+            'SEND_WHATSAPP_SERVICE_REPLY',
+            $requestType,
+            (string)$contact['requestCode'],
+            'Sent a service reply for ' . (string)$contact['requestCode'] . '.'
+        );
         hiso_json_response(['ok' => true]);
     }
 

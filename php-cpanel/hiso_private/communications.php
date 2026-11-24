@@ -248,13 +248,13 @@ function hiso_send_enquiry_confirmation_whatsapp(
         . ($quoteCode ? " and load estimate {$quoteCode}" : '')
         . '. A representative will get back to you shortly using this WhatsApp number. Thank you.';
     try {
-        $contact = hiso_whatsapp_consent_contact('enquiry', $enquiryId, 'operational');
+        $contact = hiso_whatsapp_service_request_contact('enquiry', $enquiryId);
     } catch (Throwable $error) {
-        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'failed', 'consent_lookup_failed');
+        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'failed', 'service_request_lookup_failed');
         return;
     }
     if (!$contact || (string)$contact['phone'] !== $phone) {
-        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'skipped', 'no_active_operational_consent');
+        hiso_communications_log('new_enquiry', 'enquiry', $enquiryId, 'whatsapp', 'skipped', 'service_request_unavailable');
         return;
     }
     try {
@@ -703,6 +703,40 @@ function hiso_whatsapp_consent_contacts(string $purpose): array {
     return array_values(array_filter($contacts, fn($contact) =>
         preg_match('/^\+[1-9][0-9]{7,14}$/', (string)($contact['phone'] ?? '')) === 1
     ));
+}
+
+function hiso_whatsapp_service_requests(): array {
+    $sql =
+        'SELECT id, "enquiry" AS requestType, ref_code AS requestCode, customer_name AS name, phone, need_summary AS subject ' .
+        'FROM enquiries WHERE archived_at IS NULL ' .
+        'UNION ALL SELECT id, "ticket" AS requestType, ticket_code AS requestCode, customer_name AS name, customer_phone AS phone, subject ' .
+        'FROM service_tickets WHERE status <> "Resolved" ORDER BY requestCode';
+    $contacts = hiso_pdo()->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+    return array_values(array_filter($contacts, fn($contact) =>
+        preg_match('/^\+[1-9][0-9]{7,14}$/', (string)($contact['phone'] ?? '')) === 1
+    ));
+}
+
+function hiso_whatsapp_service_request_contact(string $requestType, string $requestId): ?array {
+    if (!in_array($requestType, ['enquiry', 'ticket'], true) || $requestId === '' || strlen($requestId) > 36) {
+        return null;
+    }
+    if ($requestType === 'enquiry') {
+        $sql =
+            'SELECT id, "enquiry" AS requestType, ref_code AS requestCode, customer_name AS name, phone, need_summary AS subject ' .
+            'FROM enquiries WHERE id = ? AND archived_at IS NULL LIMIT 1';
+    } else {
+        $sql =
+            'SELECT id, "ticket" AS requestType, ticket_code AS requestCode, customer_name AS name, customer_phone AS phone, subject ' .
+            'FROM service_tickets WHERE id = ? AND status <> "Resolved" LIMIT 1';
+    }
+    $stmt = hiso_pdo()->prepare($sql);
+    $stmt->execute([$requestId]);
+    $contact = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$contact || preg_match('/^\+[1-9][0-9]{7,14}$/', (string)($contact['phone'] ?? '')) !== 1) {
+        return null;
+    }
+    return $contact;
 }
 
 function hiso_whatsapp_consent_contact(

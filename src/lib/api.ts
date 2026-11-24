@@ -242,6 +242,14 @@ export const api = {
     request<{
       email: { id: string; name: string; email: string; phone: string }[];
       whatsapp: { id: string; name: string; email: string; phone: string; recipientType: 'customer' | 'staff' | 'enquiry' }[];
+      whatsappServiceRequests: {
+        id: string;
+        requestType: 'enquiry' | 'ticket';
+        requestCode: string;
+        name: string;
+        phone: string;
+        subject: string;
+      }[];
       pushCustomers: { id: string; name: string }[];
       myWhatsappConsents: { operational: boolean; marketing: boolean; phone: string };
       customerDirectory: { id: string; name: string; email: string; phone: string }[];
@@ -274,6 +282,12 @@ export const api = {
     request<{ ok: boolean }>('/api/communications/whatsapp', {
       method: 'POST',
       body: JSON.stringify({ recipientType, recipientId, message, attachments }),
+    }),
+
+  sendWhatsAppServiceReply: (payload: { requestType: 'enquiry' | 'ticket'; requestId: string; message: string }) =>
+    request<{ ok: boolean }>('/api/communications/whatsapp-service', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   sendWhatsAppNewsletter: (payload: { message: string; recipients: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }[]; attachments: NewsletterAttachment[]; groupId?: string }) =>

@@ -108,6 +108,35 @@ test('WhatsApp send resolution distinguishes invalid phone format from missing m
   );
 });
 
+test('service WhatsApp replies resolve only active customer requests and do not widen marketing consent', () => {
+  const now = new Date().toISOString();
+  const enquiryId = 'c1111111-1111-4111-8111-111111111111';
+  const archivedEnquiryId = 'c2222222-2222-4222-8222-222222222222';
+  const ticketId = 'c3333333-3333-4333-8333-333333333333';
+  const resolvedTicketId = 'c4444444-4444-4444-8444-444444444444';
+  const addEnquiry = (id: string, refCode: string, archivedAt: string | null) => database!.prepare(
+    'INSERT INTO enquiries (id, ref_code, customer_name, email, phone, location, channel, need_summary, status, archived_at, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, refCode, 'Service customer', 'service@example.com', '+2348012345678', 'Lagos', 'Website', 'Solar consultation', 'New', archivedAt, 'service-test-staff', now);
+  addEnquiry(enquiryId, 'HISO-SERVICE-1', null);
+  addEnquiry(archivedEnquiryId, 'HISO-SERVICE-2', now);
+  const addTicket = (id: string, code: string, status: string) => database!.prepare(
+    'INSERT INTO service_tickets (id, ticket_code, customer_id, customer_name, customer_phone, location, category, subject, description, status, resolution_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, code, `customer-${id}`, 'Ticket customer', '+2348098765432', 'Abuja', 'Service Request', 'Inverter check', 'Please check the inverter.', status, '', now, now);
+  addTicket(ticketId, 'HISO-TICKET-1', 'Open');
+  addTicket(resolvedTicketId, 'HISO-TICKET-2', 'Resolved');
+
+  const requests = db!.listWhatsAppServiceRequests();
+  assert.deepEqual(
+    requests.filter((request) => [enquiryId, archivedEnquiryId, ticketId, resolvedTicketId].includes(request.id))
+      .map((request) => `${request.requestType}:${request.id}`).sort(),
+    [`enquiry:${enquiryId}`, `ticket:${ticketId}`].sort(),
+  );
+  assert.equal(db!.getWhatsAppServiceRequestContact('enquiry', enquiryId)?.phone, '+2348012345678');
+  assert.equal(db!.getWhatsAppServiceRequestContact('enquiry', archivedEnquiryId), null);
+  assert.equal(db!.getWhatsAppServiceRequestContact('ticket', resolvedTicketId), null);
+  assert.equal(db!.getWhatsAppConsentContact('enquiry', enquiryId, 'marketing'), null);
+});
+
 test('staff profile editing preserves email and withdraws consent bound to the old phone', () => {
   const now = new Date().toISOString();
   const staffId = '55555555-5555-4555-8555-555555555555';
