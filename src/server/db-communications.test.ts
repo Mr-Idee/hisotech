@@ -27,7 +27,7 @@ after(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-test('group delivery includes only currently consented customers and reports skipped members', () => {
+test('WhatsApp group delivery includes saved numbers without consent while email remains consent-gated', () => {
   const now = new Date().toISOString();
   const activeId = '11111111-1111-4111-8111-111111111111';
   const noConsentId = '22222222-2222-4222-8222-222222222222';
@@ -50,9 +50,11 @@ test('group delivery includes only currently consented customers and reports ski
   const emailResult = db!.getCustomerContactGroupRecipients(group.id, 'email');
   const whatsappResult = db!.getCustomerContactGroupRecipients(group.id, 'whatsapp');
   assert.deepEqual(emailResult.contacts.map((contact) => contact.id), [activeId]);
-  assert.deepEqual(whatsappResult.contacts.map((contact) => contact.id), [activeId]);
+  assert.deepEqual(whatsappResult.contacts.map((contact) => contact.id), [activeId, noConsentId]);
   assert.equal(emailResult.skipped, 1);
-  assert.equal(whatsappResult.skipped, 1);
+  assert.equal(whatsappResult.skipped, 0);
+  assert.equal(db!.getWhatsAppContact('customer', noConsentId)?.phone, '+2348012345679');
+  assert.ok(db!.listWhatsAppContacts().some((contact) => contact.id === noConsentId && contact.recipientType === 'customer'));
 
   const secondGroup = db!.saveCustomerContactGroup({
     name: 'Newsletter customers',

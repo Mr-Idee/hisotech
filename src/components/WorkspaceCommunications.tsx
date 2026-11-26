@@ -202,7 +202,7 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
         <p className="text-xs font-semibold tracking-wider text-[#D61F26]">ADMIN / STAFF</p>
         <h1 className="mt-1 text-2xl font-bold text-[#081E3E] dark:text-white">Communications workspace</h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Marketing is sent only to verified customers with current, recorded channel consent. WhatsApp service-update consent is separate and does not authorize marketing.
+          Email marketing is limited to verified customers with recorded consent. Staff-composed WhatsApp messages can use any saved contact with a valid number.
         </p>
         <div className="mt-3 flex max-w-xl flex-wrap items-end gap-2">
           <label className="min-w-[260px] flex-1 text-xs">
@@ -235,7 +235,7 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
       <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
         <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Customer contact groups</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Customers can belong to multiple groups. Group membership never grants consent; email and WhatsApp batches re-check consent and valid contact details before sending.
+          Customers can belong to multiple groups. Email batches re-check email consent; WhatsApp batches re-resolve saved contacts and require a valid phone number, but not a consent record.
         </p>
         {!contactGroupsReady && (
           <p role="alert" className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
@@ -310,9 +310,9 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
       <PushSubscriptionControl />
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
-        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">My WhatsApp preferences</h2>
+        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Automated WhatsApp preferences</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Your saved staff number: {myWhatsappConsent.phone || 'not set'}. Consent is self-managed and can be withdrawn.
+          Your saved staff number: {myWhatsappConsent.phone || 'not set'}. These preferences apply to automated notifications; they do not filter staff-composed messages.
         </p>
         <div className="mt-3 space-y-2 text-sm">
           <label className="flex items-start gap-2">
@@ -339,26 +339,26 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
-        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">One-to-one WhatsApp marketing message</h2>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{whatsappContacts.length} marketing-consented contact(s)</p>
+        <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">One-to-one WhatsApp message</h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{whatsappContacts.length} saved contact(s) with a valid WhatsApp number</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Uses an approved template. Recipients must have active WhatsApp marketing consent.
+          Uses an approved template. Saved customer, staff, and enquiry numbers are available regardless of recorded consent.
         </p>
         <form className="mt-4 space-y-3" onSubmit={(event) => {
           event.preventDefault();
           void submit(async () => {
             const recipient = whatsappContacts.find((contact) => `${contact.recipientType}:${contact.id}` === whatsappRecipientKey);
-            if (!recipient) throw new Error('Select a recipient with active WhatsApp consent.');
+            if (!recipient) throw new Error('Select a saved contact with a valid WhatsApp number.');
             await api.sendWhatsAppMarketing(recipient.recipientType, recipient.id, whatsappMessage);
             setWhatsappMessage('');
             return 'WhatsApp message accepted by the provider.';
           });
         }}>
           <label className="block text-xs font-medium">
-            Recipient with marketing consent
+            Recipient
             <select required value={whatsappRecipientKey} onChange={(event) => setWhatsappRecipientKey(event.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]">
-              <option value="">Select a customer</option>
+              <option value="">Select a saved contact</option>
               {whatsappContacts.map((contact) => <option key={`${contact.recipientType}-${contact.id}`} value={`${contact.recipientType}:${contact.id}`}>{contact.name} · {contact.phone} · {contact.recipientType}</option>)}
             </select>
           </label>
@@ -484,7 +484,7 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
       <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39]">
         <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">WhatsApp newsletter</h2>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Sends only through the privately configured approved newsletter template and to recipients with current marketing consent.
+          Uses the privately configured approved newsletter template. Saved contacts with valid country-code numbers are available regardless of recorded consent.
         </p>
         <form className="mt-4 space-y-3" onSubmit={(event) => {
           event.preventDefault();
@@ -501,11 +501,11 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
             });
             setWhatsappNewsletterRecipients([]);
             setWhatsappAttachments([]);
-            return `WhatsApp newsletter accepted for ${result.delivered} recipient(s). ${result.skipped} recipient(s) skipped for missing marketing consent or a valid country-code number.`;
+            return `WhatsApp newsletter accepted for ${result.delivered} recipient(s). ${result.skipped} recipient(s) skipped because the contact was unavailable or had an invalid country-code number.`;
           });
         }}>
           <label className="block text-xs font-medium">
-            Select a customer group (selects its eligible WhatsApp contacts)
+            Select a customer group (selects its saved WhatsApp contacts)
             <select value={whatsappGroupId} disabled={!contactGroupsReady}
               onChange={(event) => selectWhatsAppGroup(event.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-[#061327]">
@@ -533,7 +533,7 @@ export function WorkspaceCommunications({ staff }: { staff: StaffMember[] }) {
               ? whatsappContacts.filter((contact) => contact.recipientType === 'customer' && group.customerIds.includes(contact.id)).length
               : 0;
             return <p className="text-xs text-slate-500">
-              {eligibleCount} eligible recipient(s); {Math.max(0, (group?.customerIds.length || 0) - eligibleCount)} member(s) will be skipped. A single WhatsApp batch may include up to 200 selected recipients.
+              {eligibleCount} recipient(s) have a valid WhatsApp number; {Math.max(0, (group?.customerIds.length || 0) - eligibleCount)} member(s) will be skipped. A single WhatsApp batch may include up to 200 selected recipients.
             </p>;
           })()}
           <div className="grid gap-2 sm:grid-cols-2">

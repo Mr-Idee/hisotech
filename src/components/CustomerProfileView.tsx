@@ -1,5 +1,5 @@
 import { AlertCircle, Camera, CheckCircle2, Cpu, LogOut, Plus, UserCheck, Wrench } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
 import { listenForCustomerLogout, notifyCustomerLogoutAcrossTabs } from '../lib/auth-sync';
 import type {
@@ -85,17 +85,19 @@ export function CustomerProfileView() {
     clearCustomerSession('You were signed out in another tab. Please sign in again to continue.');
   }), []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let active = true;
     const hash = window.location.hash;
     const queryIndex = hash.indexOf('?');
     const token = queryIndex >= 0
       ? new URLSearchParams(hash.slice(queryIndex + 1)).get('token')
       : null;
+    if (token) {
+      window.history.replaceState(null, '', '#customer');
+    }
 
     const restoreSession = token
       ? api.verifyCustomerLoginLink(token).then((res) => {
-          window.history.replaceState(null, '', '#customer');
           if (active) syncState(res);
         })
       : api.customerSession().then((res) => {
@@ -107,7 +109,6 @@ export function CustomerProfileView() {
     restoreSession
       .catch((err) => {
         if (active) {
-          window.history.replaceState(null, '', '#customer');
           setError((err as Error).message);
         }
       })

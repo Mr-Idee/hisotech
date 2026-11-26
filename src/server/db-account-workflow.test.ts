@@ -11,6 +11,12 @@ let originalCwd = '';
 let database: DatabaseSync | undefined;
 let workflow: typeof import('./db') | undefined;
 
+function dateOffset(days: number): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 before(async () => {
   originalCwd = process.cwd();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hiso-account-workflow-'));
@@ -55,7 +61,7 @@ test('only approved estimator quotations can provision a customer account and th
       'VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?, NULL, NULL, ?, ?, ?)'
     ).run(
       id, `QUO-${id}`, enquiryId, 'Test Customer', status, 'Solar system', 'Terms', '',
-      '2026-01-01', '2026-01-08',       itemsJson, '[]', new Date().toISOString(),
+      dateOffset(0), dateOffset(7), itemsJson, '[]', new Date().toISOString(),
     );
   };
 
@@ -155,4 +161,105 @@ test('only approved estimator quotations can provision a customer account and th
   assert.equal((database!.prepare('SELECT status FROM store_orders WHERE id=?').get('order-payment') as { status: string }).status, 'Completed');
   workflow!.archiveEnquiry(actor, 'enq-payment');
   assert.ok((database!.prepare('SELECT archived_at FROM enquiries WHERE id=?').get('enq-payment') as { archived_at: string }).archived_at);
+
+  const standaloneQuote = workflow!.saveQuotation(actor, {
+    enquiryId: null,
+    standalone: true,
+    customerName: '',
+    scope: 'Standalone solar supply',
+    terms: 'Payment due on invoice.',
+    note: 'Custom quotation note',
+    discountNgn: 0,
+    taxPercent: 0,
+    items: [{ sku: 'INV-2', description: 'Solar inverter', unit: 'unit', qty: 1, unitPriceNgn: 2500 }],
+    submitForApproval: true,
+  });
+  const standaloneRecord = database!.prepare(
+    'SELECT enquiry_id, customer_name, customer_email, customer_phone, customer_address, valid_until FROM quotations WHERE id=?'
+  ).get(standaloneQuote.id) as {
+    enquiry_id: string | null;
+    customer_name: string;
+    customer_email: string | null;
+    customer_phone: string | null;
+    customer_address: string | null;
+    valid_until: string;
+  };
+  assert.equal(standaloneRecord.enquiry_id, null);
+  assert.equal(standaloneRecord.customer_name, '');
+  assert.equal(standaloneRecord.customer_email, null);
+  assert.equal(standaloneRecord.customer_phone, null);
+  assert.equal(standaloneRecord.customer_address, null);
+  assert.equal(standaloneRecord.valid_until, dateOffset(7));
+
+  const technician = { ...actor, id: 'tech-user', role: 'technician' as const };
+  assert.throws(() => workflow!.saveQuotation(technician, {
+    enquiryId: null,
+    standalone: true,
+    customerName: 'Unauthorized',
+    scope: 'Standalone',
+    terms: '',
+    note: '',
+    discountNgn: 0,
+    taxPercent: 0,
+    items: [{ sku: 'INV-2', description: 'Solar inverter', unit: 'unit', qty: 1, unitPriceNgn: 2500 }],
+  }), /Only Admin\/front desk or Super Admin/);
+
+  workflow!.saveDocumentDetails(actor, {
+    type: 'quote',
+    id: standaloneQuote.id,
+    customerName: 'Standalone Customer Updated',
+    customerEmail: 'standalone@example.com',
+    customerPhone: '+2348012345678',
+    customerAddress: 'Abuja',
+    note: 'Updated quotation note',
+  });
+  workflow!.decideQuotation(actor, standaloneQuote.id, 'Approved');
+  const standaloneInvoice = workflow!.issueInvoice(actor, standaloneQuote.id);
+  assert.equal(standaloneInvoice.enquiryId, null);
+  assert.equal(standaloneInvoice.email, 'standalone@example.com');
+  assert.equal(standaloneInvoice.note, 'Updated quotation note');
+  assert.throws(
+    () => database!.prepare(
+      'INSERT INTO invoices (id, invoice_code, quotation_id, customer_name, note, discount_ngn, tax_percent, total_ngn, bank_details_json, issued_date, due_date, items_json, created_at) ' +
+      'SELECT ?, ?, quotation_id, customer_name, note, discount_ngn, tax_percent, total_ngn, bank_details_json, issued_date, due_date, items_json, created_at FROM invoices WHERE id = ?'
+    ).run('duplicate-invoice-id', 'INV-DUPLICATE', standaloneInvoice.id),
+    /UNIQUE constraint failed: invoices\.quotation_id/,
+  );
+  assert.equal(
+    (database!.prepare('SELECT COUNT(*) AS count FROM invoices WHERE quotation_id=?').get(standaloneQuote.id) as { count: number }).count,
+    1,
+  );
+  const invoiceDocument = workflow!.getPublicDocument('invoice', standaloneInvoice.id, 'standalone@example.com') as { note: string; email: string };
+  assert.equal(invoiceDocument.note, 'Updated quotation note');
+  workflow!.saveDocumentDetails(actor, {
+    type: 'invoice',
+    id: standaloneInvoice.id,
+    customerName: 'Standalone Customer Updated',
+    customerEmail: 'standalone@example.com',
+    customerPhone: '+2348012345678',
+    customerAddress: 'Abuja',
+    note: 'Invoice-specific note',
+  });
+  assert.equal(
+    (workflow!.getPublicDocument('invoice', standaloneInvoice.id, 'standalone@example.com') as { note: string }).note,
+    'Invoice-specific note',
+  );
+
+  addEnquiry('enq-expiry', 'expiry@example.com', true);
+  const expiringQuote = workflow!.saveQuotation(actor, {
+    enquiryId: 'enq-expiry',
+    customerName: 'Expiry Customer',
+    scope: 'Solar system',
+    terms: '',
+    note: '',
+    discountNgn: 0,
+    taxPercent: 0,
+    items: [{ sku: 'INV-3', description: 'Solar inverter', unit: 'unit', qty: 1, unitPriceNgn: 1000 }],
+    submitForApproval: true,
+  });
+  database!.prepare('UPDATE quotations SET valid_until=? WHERE id=?').run(dateOffset(-1), expiringQuote.id);
+  assert.throws(() => workflow!.decideQuotation(actor, expiringQuote.id, 'Approved'), /quotation has expired/i);
+  const renewed = workflow!.renewQuotation(actor, expiringQuote.id);
+  assert.equal(renewed.validUntil, dateOffset(7));
+  assert.equal(workflow!.decideQuotation(actor, expiringQuote.id, 'Approved').status, 'Approved');
 });

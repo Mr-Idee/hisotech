@@ -38,6 +38,7 @@ if ($route === '') {
         $route = trim($m[1], '/');
     }
 }
+header('Cache-Control: private, no-store');
 
 function hiso_next_code(string $table, string $column, string $prefix): string {
     $rows = hiso_pdo()->query("SELECT {$column} AS c FROM {$table}")->fetchAll();
@@ -502,7 +503,7 @@ function hiso_hydrate_workspace(array $user): array {
     $pdo = hiso_pdo();
     $perms = $user['permissions'] ?? [];
     $isSuper = ($user['role'] === 'superadmin');
-    $canCommercial = $isSuper || count(array_intersect($perms, ['manage_enquiries', 'draft_quotes', 'approve_quotes', 'manage_invoices', 'verify_payments', 'release_installations'])) > 0;
+    $canCommercial = in_array($user['role'] ?? '', ['admin', 'superadmin'], true) || count(array_intersect($perms, ['manage_enquiries', 'draft_quotes', 'approve_quotes', 'manage_invoices', 'verify_payments', 'release_installations'])) > 0;
     $canTickets = $isSuper || in_array('manage_tickets', $perms, true);
     $canAudit = $isSuper || in_array('view_audit', $perms, true);
     $isTechOnly = !$isSuper && $user['role'] === 'technician';
@@ -567,7 +568,12 @@ function hiso_hydrate_workspace(array $user): array {
         'quoteCode' => $q['quote_code'],
         'enquiryId' => $q['enquiry_id'],
         'customerName' => $q['customer_name'],
+        'customerEmail' => (string)($q['customer_email'] ?? ''),
+        'customerPhone' => (string)($q['customer_phone'] ?? ''),
+        'customerAddress' => (string)($q['customer_address'] ?? ''),
+        'note' => (string)($q['note'] ?? ''),
         'status' => $q['status'],
+        'isExpired' => (string)$q['valid_until'] < gmdate('Y-m-d'),
         'revisionNo' => (int)$q['revision_no'],
         'scope' => $q['scope'],
         'terms' => $q['terms'],
@@ -589,6 +595,10 @@ function hiso_hydrate_workspace(array $user): array {
         'quotationId' => $i['quotation_id'],
         'enquiryId' => $i['enquiry_id'],
         'customerName' => $i['customer_name'],
+        'customerEmail' => (string)($i['customer_email'] ?? ''),
+        'customerPhone' => (string)($i['customer_phone'] ?? ''),
+        'customerAddress' => (string)($i['customer_address'] ?? ''),
+        'note' => (string)($i['note'] ?? ''),
         'discountNgn' => (float)$i['discount_ngn'],
         'taxPercent' => (float)$i['tax_percent'],
         'totalNgn' => (float)$i['total_ngn'],
@@ -1173,7 +1183,7 @@ try {
             hiso_json_response(['error' => 'Invoice reference is invalid.'], 422);
         }
         $invoiceStmt = hiso_pdo()->prepare(
-            'SELECT i.id, i.customer_accepted FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?) AND LOWER(e.email) = LOWER(?) LIMIT 1'
+            "SELECT i.id, i.customer_accepted FROM invoices i LEFT JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?) AND LOWER(COALESCE(i.customer_email, e.email, '')) = LOWER(?) LIMIT 1"
         );
         $invoiceStmt->execute([$invoiceId, $invoiceId, (string)$customer['email']]);
         $invoice = $invoiceStmt->fetch();
@@ -1206,8 +1216,8 @@ try {
             }
         }
         if ($type === 'invoice') {
-            $sql = 'SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?)';
-            if ($customer) $sql .= ' AND LOWER(e.email) = LOWER(?)';
+            $sql = "SELECT i.*, COALESCE(i.customer_address, e.location, '') AS location, COALESCE(i.customer_phone, e.phone, '') AS phone, COALESCE(i.customer_email, e.email, '') AS email, COALESCE(e.ref_code, '') AS ref_code FROM invoices i LEFT JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?)";
+            if ($customer) $sql .= " AND LOWER(COALESCE(i.customer_email, e.email, '')) = LOWER(?)";
             $stmt = hiso_pdo()->prepare($sql . ' LIMIT 1');
             $params = [$id, $id];
             if ($customer) $params[] = (string)$customer['email'];
@@ -1219,12 +1229,13 @@ try {
                 'location' => $row['location'], 'phone' => $row['phone'], 'email' => $row['email'], 'refCode' => $row['ref_code'],
                 'issuedDate' => $row['issued_date'], 'dueDate' => $row['due_date'], 'discountNgn' => (float)$row['discount_ngn'],
                 'taxPercent' => (float)$row['tax_percent'], 'totalNgn' => (float)$row['total_ngn'],
+                'note' => (string)($row['note'] ?? ''),
                 'bankDetails' => json_decode($row['bank_details_json'] ?: '{}', true),
                 'customerAccepted' => (bool)$row['customer_accepted'], 'items' => json_decode($row['items_json'] ?: '[]', true),
             ]);
         } else {
-            $sql = 'SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE (q.id = ? OR q.quote_code = ?)';
-            if ($customer) $sql .= " AND LOWER(e.email) = LOWER(?) AND q.status IN ('Approved', 'Invoiced')";
+            $sql = "SELECT q.*, COALESCE(q.customer_address, e.location, '') AS location, COALESCE(q.customer_phone, e.phone, '') AS phone, COALESCE(q.customer_email, e.email, '') AS email, COALESCE(e.ref_code, '') AS ref_code FROM quotations q LEFT JOIN enquiries e ON e.id = q.enquiry_id WHERE (q.id = ? OR q.quote_code = ?)";
+            if ($customer) $sql .= " AND LOWER(COALESCE(q.customer_email, e.email, '')) = LOWER(?) AND q.status IN ('Approved', 'Invoiced') AND q.valid_until >= CURDATE()";
             $stmt = hiso_pdo()->prepare($sql . ' LIMIT 1');
             $params = [$id, $id];
             if ($customer) $params[] = (string)$customer['email'];
@@ -1951,7 +1962,7 @@ try {
         )->fetchAll(PDO::FETCH_ASSOC);
         hiso_json_response([
             'email' => hiso_marketing_contacts('email'),
-            'whatsapp' => hiso_whatsapp_consent_contacts('marketing'),
+            'whatsapp' => hiso_whatsapp_contacts(),
             'whatsappOperational' => hiso_whatsapp_consent_contacts('operational'),
             'whatsappServiceRequests' => hiso_whatsapp_service_requests(),
             'pushCustomers' => $pushCustomers,
@@ -2013,19 +2024,16 @@ try {
         $recipientType = (string)($body['recipientType'] ?? '');
         $recipientId = trim((string)($body['recipientId'] ?? ''));
         if (!in_array($recipientType, ['customer', 'staff', 'enquiry'], true) || $recipientId === '' || !is_string($body['message'] ?? null)) {
-            hiso_json_response(['error' => 'Select a recipient with active WhatsApp marketing consent and enter a message.'], 422);
+            hiso_json_response(['error' => 'Select a saved contact with a valid WhatsApp number and enter a message.'], 422);
         }
         $message = trim((string)($body['message'] ?? ''));
         $messageLength = preg_match_all('/./us', $message);
         if ($message === '' || $messageLength === false || $messageLength > 1024 || strlen($message) > 4096) {
             hiso_json_response(['error' => 'Enter a template body parameter of at most 1024 characters.'], 422);
         }
-        $contact = hiso_whatsapp_consent_contact($recipientType, $recipientId, 'marketing', true);
+        $contact = hiso_whatsapp_contact($recipientType, $recipientId);
         if (!$contact) {
-            hiso_json_response(['error' => 'This recipient has no active WhatsApp marketing consent. Service-update consent is separate and does not authorize marketing messages.'], 422);
-        }
-        if (!preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone'])) {
-            hiso_json_response(['error' => 'Please use the required country code in the opted-in phone number.'], 422);
+            hiso_json_response(['error' => 'This saved contact does not have a valid country-code WhatsApp number.'], 422);
         }
         $attachments = $body['attachments'] ?? [];
         if (!is_array($attachments) || count($attachments) > 1) {
@@ -2107,7 +2115,7 @@ try {
         }
         if (!is_array($recipients) || count($recipients) < 1 || count($recipients) > 200
             || !is_array($attachments) || count($attachments) > 1) {
-            hiso_json_response(['error' => 'Select 1–200 recipients and at most one validated image or PDF attachment.'], 422);
+            hiso_json_response(['error' => 'Select 1–200 saved WhatsApp contacts and at most one validated image or PDF attachment.'], 422);
         }
         $uniqueRecipients = [];
         foreach ($recipients as $recipient) {
@@ -2139,8 +2147,8 @@ try {
                 $skipped++;
                 continue;
             }
-            $contact = hiso_whatsapp_consent_contact($recipientType, $recipientId, 'marketing', true);
-            if (!$contact || !preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone'])) {
+            $contact = hiso_whatsapp_contact($recipientType, $recipientId);
+            if (!$contact) {
                 $skipped++;
                 continue;
             }
@@ -2148,7 +2156,7 @@ try {
         }
         if (!$contacts) {
             hiso_json_response([
-                'error' => 'No selected recipients currently have active WhatsApp marketing consent and a valid country-code phone number. Service-update consent is separate.',
+                'error' => 'No selected recipients have a valid country-code WhatsApp number.',
                 'skipped' => $skipped,
             ], 422);
         }
@@ -2169,7 +2177,7 @@ try {
             $status = str_contains($error->getMessage(), 'HTTP ') ? 502 : 503;
             hiso_json_response(['error' => $status === 503 ? $error->getMessage() : 'WhatsApp newsletter delivery failed.'], $status);
         }
-        hiso_audit($user, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', hiso_uuid(), 'Sent to ' . count($contacts) . ' marketing-consented recipients.');
+        hiso_audit($user, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', hiso_uuid(), 'Sent to ' . count($contacts) . ' saved contact(s).');
         hiso_json_response(['ok' => true, 'delivered' => count($contacts), 'skipped' => $skipped]);
     }
 
@@ -2587,11 +2595,31 @@ try {
     }
 
     if ($method === 'POST' && $route === 'quotes') {
-        $user = hiso_require_permission('draft_quotes');
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
         $body = hiso_json_body();
+        $requestedEnquiryId = is_string($body['enquiryId'] ?? null) ? trim($body['enquiryId']) : '';
+        $standalone = !empty($body['standalone']) || $requestedEnquiryId === '';
+        if ((!empty($body['standalone']) && $requestedEnquiryId !== '')
+            || ($standalone && !in_array($user['role'] ?? '', ['admin', 'superadmin'], true))
+            || (!$standalone && !in_array('draft_quotes', $user['permissions'] ?? [], true))) {
+            hiso_json_response(['error' => 'Standalone quotations are available only to Admin/front desk and Super Admin; linked quotations require drafting permission.'], 403);
+        }
         $pdo = hiso_pdo();
         $items = $body['items'] ?? [];
-        if (!is_array($items) || count($items) > 100) {
+        $customerName = is_string($body['customerName'] ?? null) ? trim($body['customerName']) : '';
+        $customerEmail = strtolower(is_string($body['customerEmail'] ?? null) ? trim($body['customerEmail']) : '');
+        $customerPhone = is_string($body['customerPhone'] ?? null) ? trim($body['customerPhone']) : '';
+        $customerAddress = is_string($body['customerAddress'] ?? null) ? trim($body['customerAddress']) : '';
+        $scope = is_string($body['scope'] ?? null) ? trim($body['scope']) : '';
+        $terms = is_string($body['terms'] ?? null) ? trim($body['terms']) : '';
+        $note = is_string($body['note'] ?? null) ? trim($body['note']) : '';
+        if (strlen($customerName) > 150 || strlen($customerEmail) > 190 || strlen($customerPhone) > 40 || strlen($customerAddress) > 255
+            || strlen($scope) > 2000 || strlen($terms) > 2000 || strlen($note) > 4000
+            || ($customerEmail !== '' && !filter_var($customerEmail, FILTER_VALIDATE_EMAIL))) {
+            hiso_json_response(['error' => 'Quotation details exceed the allowed field lengths.'], 422);
+        }
+        if (!is_array($items) || count($items) < 1 || count($items) > 100) {
             hiso_json_response(['error' => 'Quotation line items are invalid.'], 422);
         }
         foreach ($items as $item) {
@@ -2604,8 +2632,11 @@ try {
                 hiso_json_response(['error' => 'Quotation line item details are invalid.'], 422);
             }
         }
-        $discount = (float)($body['discountNgn'] ?? 0);
-        $tax = (float)($body['taxPercent'] ?? 0);
+        $discount = is_numeric($body['discountNgn'] ?? 0) ? (float)($body['discountNgn'] ?? 0) : -1;
+        $tax = is_numeric($body['taxPercent'] ?? 0) ? (float)($body['taxPercent'] ?? 0) : -1;
+        if ($discount < 0 || $tax < 0 || $tax > 100) {
+            hiso_json_response(['error' => 'Quotation discount or tax is invalid.'], 422);
+        }
         $subtotal = 0.0;
         foreach ($items as $it) $subtotal += (float)$it['qty'] * (float)$it['unitPriceNgn'];
         $taxable = max(0, $subtotal - min($subtotal, max(0, $discount)));
@@ -2618,38 +2649,50 @@ try {
             $stmt->execute([$body['quoteId']]);
             $existing = $stmt->fetch();
             if (!$existing) hiso_json_response(['error' => 'Quotation not found.'], 404);
+            if ($existing['enquiry_id'] === null && !in_array($user['role'] ?? '', ['admin', 'superadmin'], true)) {
+                hiso_json_response(['error' => 'Only Admin/front desk or Super Admin can manage standalone quotations.'], 403);
+            }
+            if ((string)$existing['valid_until'] < gmdate('Y-m-d')) {
+                hiso_json_response(['error' => 'This quotation has expired. Renew it before making a revision.'], 422);
+            }
+            if ($existing['status'] === 'Invoiced') {
+                hiso_json_response(['error' => 'An invoiced quotation cannot be revised.'], 422);
+            }
             $revNo = (int)$existing['revision_no'] + 1;
             $revs = json_decode($existing['revisions_json'] ?: '[]', true) ?: [];
-            $revs[] = ['revisionNo' => $revNo, 'changedBy' => $user['name'], 'note' => $body['note'] ?? 'Revised', 'createdAt' => gmdate('c'), 'totalNgn' => $total];
-            $pdo->prepare('UPDATE quotations SET status=?, revision_no=?, scope=?, terms=?, note=?, discount_ngn=?, tax_percent=?, valid_until=?, items_json=?, revisions_json=? WHERE id=?')
-                ->execute([$status, $revNo, $body['scope'], $body['terms'], $body['note'], $discount, $tax, $body['validUntil'], json_encode($items), json_encode($revs), $existing['id']]);
+            $revs[] = ['revisionNo' => $revNo, 'changedBy' => $user['name'], 'note' => $note ?: 'Revised', 'createdAt' => gmdate('c'), 'totalNgn' => $total];
+            $pdo->prepare('UPDATE quotations SET status=?, revision_no=?, scope=?, terms=?, note=?, discount_ngn=?, tax_percent=?, issued_date=CURDATE(), valid_until=DATE_ADD(CURDATE(), INTERVAL 7 DAY), items_json=?, revisions_json=? WHERE id=?')
+                ->execute([$status, $revNo, $scope, $terms, $note, $discount, $tax, json_encode($items), json_encode($revs), $existing['id']]);
             $code = $existing['quote_code'];
         } else {
-            $enquiryStmt = $pdo->prepare('SELECT estimate_json FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1');
-            $enquiryStmt->execute([(string)($body['enquiryId'] ?? '')]);
-            $enquiry = $enquiryStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$enquiry) {
-                hiso_json_response(['error' => 'Enquiry not found or already archived.'], 404);
-            }
-            $orderStmt = $pdo->prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1');
-            $orderStmt->execute([(string)($body['enquiryId'] ?? '')]);
-            $linkedOrder = (bool)$orderStmt->fetchColumn();
-            if ($linkedOrder) {
-                $quoteStmt = $pdo->prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1');
-                $quoteStmt->execute([(string)$body['enquiryId']]);
-                if ($quoteStmt->fetchColumn()) {
-                    hiso_json_response(['error' => 'A quotation already exists for this Store order. Revise the existing quotation instead.'], 422);
+            $enquiry = null;
+            if (!$standalone) {
+                $enquiryStmt = $pdo->prepare('SELECT estimate_json, email, phone, location FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1');
+                $enquiryStmt->execute([$requestedEnquiryId]);
+                $enquiry = $enquiryStmt->fetch(PDO::FETCH_ASSOC);
+                if (!$enquiry) {
+                    hiso_json_response(['error' => 'Enquiry not found or already archived.'], 404);
                 }
-            }
-            if (!$linkedOrder && empty($enquiry['estimate_json'])) {
-                hiso_json_response(['error' => 'Only load-estimator enquiries and Store orders can have quotations.'], 422);
+                $orderStmt = $pdo->prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1');
+                $orderStmt->execute([$requestedEnquiryId]);
+                $linkedOrder = (bool)$orderStmt->fetchColumn();
+                if ($linkedOrder) {
+                    $quoteStmt = $pdo->prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1');
+                    $quoteStmt->execute([$requestedEnquiryId]);
+                    if ($quoteStmt->fetchColumn()) {
+                        hiso_json_response(['error' => 'A quotation already exists for this Store order. Revise the existing quotation instead.'], 422);
+                    }
+                }
+                if (!$linkedOrder && empty($enquiry['estimate_json'])) {
+                    hiso_json_response(['error' => 'Only load-estimator enquiries and Store orders can have quotations.'], 422);
+                }
             }
             $id = hiso_uuid();
             $savedId = $id;
             $code = hiso_next_code('quotations', 'quote_code', 'QUO');
             $revs = [['revisionNo' => 1, 'changedBy' => $user['name'], 'note' => 'Initial quotation', 'createdAt' => gmdate('c'), 'totalNgn' => $total]];
-            $pdo->prepare('INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, items_json, revisions_json) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, CURDATE(), ?, ?, ?)')
-                ->execute([$id, $code, $body['enquiryId'], $body['customerName'], $status, $body['scope'], $body['terms'], $body['note'], $discount, $tax, $body['validUntil'], json_encode($items), json_encode($revs)]);
+            $pdo->prepare('INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, customer_email, customer_phone, customer_address, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, items_json, revisions_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 7 DAY), ?, ?)')
+                ->execute([$id, $code, $standalone ? null : $requestedEnquiryId, $customerName, $standalone ? ($customerEmail ?: null) : ($enquiry['email'] ?? null), $standalone ? ($customerPhone ?: null) : ($enquiry['phone'] ?? null), $standalone ? ($customerAddress ?: null) : ($enquiry['location'] ?? null), $status, $scope, $terms, $note, $discount, $tax, json_encode($items), json_encode($revs)]);
         }
         if ($status === 'Pending MD') {
             hiso_notify_roles(['director', 'superadmin'], 'Quotation awaiting approval: ' . $code, $body['customerName'] . ' submitted for Director review.', 'quotes', $code);
@@ -2664,6 +2707,98 @@ try {
         hiso_json_response(['id' => $savedId, 'quoteCode' => $code]);
     }
 
+    if ($method === 'POST' && $route === 'quotes/renew') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        $body = hiso_json_body();
+        $quoteId = is_string($body['quoteId'] ?? null) ? trim($body['quoteId']) : '';
+        if ($quoteId === '' || strlen($quoteId) > 80) hiso_json_response(['error' => 'Quotation reference is invalid.'], 422);
+        $pdo = hiso_pdo();
+        $stmt = $pdo->prepare('SELECT id, quote_code, enquiry_id, status, valid_until FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1');
+        $stmt->execute([$quoteId, $quoteId]);
+        $quote = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$quote) hiso_json_response(['error' => 'Quotation not found.'], 404);
+        if ($quote['enquiry_id'] === null) {
+            if (!in_array($user['role'] ?? '', ['admin', 'superadmin'], true)) {
+                hiso_json_response(['error' => 'Only Admin/front desk or Super Admin can renew standalone quotations.'], 403);
+            }
+        } elseif (!in_array('draft_quotes', $user['permissions'] ?? [], true)) {
+            hiso_json_response(['error' => 'Quotation drafting permission required.'], 403);
+        }
+        if (in_array($quote['status'], ['Invoiced', 'Rejected'], true)) {
+            hiso_json_response(['error' => 'Only active, non-invoiced quotations can be renewed.'], 422);
+        }
+        if ((string)$quote['valid_until'] >= gmdate('Y-m-d')) {
+            hiso_json_response(['error' => 'This quotation has not expired yet.'], 422);
+        }
+        $pdo->prepare('UPDATE quotations SET issued_date = CURDATE(), valid_until = DATE_ADD(CURDATE(), INTERVAL 7 DAY) WHERE id = ?')
+            ->execute([$quote['id']]);
+        $validUntil = gmdate('Y-m-d', strtotime('+7 days'));
+        hiso_audit($user, 'RENEW_QUOTE', 'Quotation', (string)$quote['quote_code'], 'Renewed quotation validity through ' . $validUntil);
+        hiso_json_response(['validUntil' => $validUntil]);
+    }
+
+    if ($method === 'POST' && $route === 'documents/details') {
+        $user = hiso_current_user();
+        if (!$user) hiso_json_response(['error' => 'Authentication required.'], 401);
+        $body = hiso_json_body();
+        $type = in_array($body['type'] ?? null, ['quote', 'invoice'], true) ? $body['type'] : '';
+        $id = is_string($body['id'] ?? null) ? trim($body['id']) : '';
+        $name = is_string($body['customerName'] ?? null) ? trim($body['customerName']) : '';
+        $email = strtolower(is_string($body['customerEmail'] ?? null) ? trim($body['customerEmail']) : '');
+        $phone = is_string($body['customerPhone'] ?? null) ? trim($body['customerPhone']) : '';
+        $address = is_string($body['customerAddress'] ?? null) ? trim($body['customerAddress']) : '';
+        $note = is_string($body['note'] ?? null) ? trim($body['note']) : '';
+        if ($type === '' || $id === '' || strlen($id) > 80
+            || strlen($name) > 150 || strlen($email) > 190 || strlen($phone) > 40 || strlen($address) > 255 || strlen($note) > 4000
+            || ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))) {
+            hiso_json_response(['error' => 'Customer details or document notes are invalid or exceed the allowed field lengths.'], 422);
+        }
+        $pdo = hiso_pdo();
+        if ($type === 'quote') {
+            $stmt = $pdo->prepare('SELECT id, quote_code, enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1');
+            $stmt->execute([$id, $id]);
+            $document = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$document) hiso_json_response(['error' => 'Quotation not found.'], 404);
+            if ($document['enquiry_id'] === null) {
+                if (!in_array($user['role'] ?? '', ['admin', 'superadmin'], true)) {
+                    hiso_json_response(['error' => 'Only Admin/front desk or Super Admin can edit standalone quotation details.'], 403);
+                }
+            } elseif (!in_array('draft_quotes', $user['permissions'] ?? [], true)) {
+                hiso_json_response(['error' => 'Quotation drafting permission required.'], 403);
+            }
+            $quoteId = (string)$document['id'];
+            $pdo->beginTransaction();
+            $pdo->prepare('UPDATE quotations SET customer_name=?, customer_email=?, customer_phone=?, customer_address=?, note=? WHERE id=?')
+                ->execute([$name, $email, $phone, $address, $note, $quoteId]);
+            $pdo->prepare('UPDATE invoices SET customer_name=?, customer_email=?, customer_phone=?, customer_address=? WHERE quotation_id=?')
+                ->execute([$name, $email, $phone, $address, $quoteId]);
+            $code = (string)$document['quote_code'];
+        } else {
+            $stmt = $pdo->prepare('SELECT id, invoice_code, quotation_id, enquiry_id FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1');
+            $stmt->execute([$id, $id]);
+            $document = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$document) hiso_json_response(['error' => 'Invoice not found.'], 404);
+            if ($document['enquiry_id'] === null) {
+                if (!in_array($user['role'] ?? '', ['admin', 'superadmin'], true)) {
+                    hiso_json_response(['error' => 'Only Admin/front desk or Super Admin can edit standalone invoice details.'], 403);
+                }
+            } elseif (!in_array('manage_invoices', $user['permissions'] ?? [], true)) {
+                hiso_json_response(['error' => 'Invoice management permission required.'], 403);
+            }
+            $invoiceId = (string)$document['id'];
+            $pdo->beginTransaction();
+            $pdo->prepare('UPDATE invoices SET customer_name=?, customer_email=?, customer_phone=?, customer_address=?, note=? WHERE id=?')
+                ->execute([$name, $email, $phone, $address, $note, $invoiceId]);
+            $pdo->prepare('UPDATE quotations SET customer_name=?, customer_email=?, customer_phone=?, customer_address=? WHERE id=?')
+                ->execute([$name, $email, $phone, $address, $document['quotation_id']]);
+            $code = (string)$document['invoice_code'];
+        }
+        $pdo->commit();
+        hiso_audit($user, 'UPDATE_DOCUMENT_CUSTOMER', $type === 'quote' ? 'Quotation' : 'Invoice', $code, 'Updated saved customer details.');
+        hiso_json_response(['ok' => true]);
+    }
+
     if ($method === 'POST' && $route === 'quotes/approve') {
         $user = hiso_require_permission('approve_quotes');
         $body = hiso_json_body();
@@ -2673,10 +2808,13 @@ try {
             hiso_json_response(['error' => 'Quotation decision is invalid.'], 422);
         }
         $pdo = hiso_pdo();
-        $quoteStmt = $pdo->prepare('SELECT items_json FROM quotations WHERE id = ? LIMIT 1');
+        $quoteStmt = $pdo->prepare('SELECT items_json, valid_until, enquiry_id FROM quotations WHERE id = ? LIMIT 1');
         $quoteStmt->execute([$quoteId]);
         $quote = $quoteStmt->fetch();
         if (!$quote) hiso_json_response(['error' => 'Quotation not found.'], 404);
+        if ($decision === 'Approved' && (string)$quote['valid_until'] < gmdate('Y-m-d')) {
+            hiso_json_response(['error' => 'This quotation has expired. Renew it before approval.'], 422);
+        }
         $quoteItems = json_decode((string)$quote['items_json'], true);
         if ($decision === 'Approved' && is_array($quoteItems)
             && array_filter($quoteItems, static fn($item) => !empty($item['isTbd']))) {
@@ -2701,33 +2839,65 @@ try {
         $user = hiso_require_permission('manage_invoices');
         $body = hiso_json_body();
         $pdo = hiso_pdo();
-        $qStmt = $pdo->prepare('SELECT * FROM quotations WHERE id = ? LIMIT 1');
-        $qStmt->execute([$body['quotationId']]);
-        $quote = $qStmt->fetch();
-        if (!$quote || $quote['status'] !== 'Approved') hiso_json_response(['error' => 'Only Approved quotations can be invoiced.'], 422);
-        $items = json_decode($quote['items_json'], true);
-        $subtotal = 0.0;
-        foreach ($items as $it) $subtotal += (float)$it['qty'] * (float)$it['unitPriceNgn'];
-        $taxable = max(0, $subtotal - min($subtotal, (float)$quote['discount_ngn']));
-        $total = round($taxable * (1 + (float)$quote['tax_percent'] / 100));
+        $quotationId = is_string($body['quotationId'] ?? null) ? trim($body['quotationId']) : '';
+        if ($quotationId === '' || strlen($quotationId) > 80) {
+            hiso_json_response(['error' => 'Quotation reference is invalid.'], 422);
+        }
+        $pdo->beginTransaction();
+        try {
+            $qStmt = $pdo->prepare('SELECT * FROM quotations WHERE id = ? LIMIT 1 FOR UPDATE');
+            $qStmt->execute([$quotationId]);
+            $quote = $qStmt->fetch();
+            if (!$quote) {
+                $pdo->rollBack();
+                hiso_json_response(['error' => 'Quotation not found.'], 404);
+            }
+            if ($quote['status'] !== 'Approved') {
+                $pdo->rollBack();
+                hiso_json_response(['error' => 'Only Approved quotations can be invoiced.'], 422);
+            }
+            if ((string)$quote['valid_until'] < gmdate('Y-m-d')) {
+                $pdo->rollBack();
+                hiso_json_response(['error' => 'This quotation has expired. Renew it before creating an invoice.'], 422);
+            }
+            $reserve = $pdo->prepare('UPDATE quotations SET status = ? WHERE id = ? AND status = ? AND valid_until >= CURDATE()');
+            $reserve->execute(['Invoiced', $quote['id'], 'Approved']);
+            if ($reserve->rowCount() !== 1) {
+                $pdo->rollBack();
+                hiso_json_response(['error' => 'This quotation is no longer available for invoicing.'], 422);
+            }
 
-        $invId = hiso_uuid();
-        $invCode = hiso_next_code('invoices', 'invoice_code', 'INV');
-        $bankDetails = hiso_load_platform_settings()['bankDetails'];
-        $pdo->prepare('INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, discount_ngn, tax_percent, total_ngn, bank_details_json, issued_date, due_date, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 14 DAY), ?)')
-            ->execute([$invId, $invCode, $quote['id'], $quote['enquiry_id'], $quote['customer_name'], $quote['discount_ngn'], $quote['tax_percent'], $total, json_encode($bankDetails, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $quote['items_json']]);
-        $pdo->prepare('UPDATE quotations SET status = "Invoiced" WHERE id = ?')->execute([$quote['id']]);
-        hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);
-        $enquiryStmt = $pdo->prepare('SELECT id, email, phone FROM enquiries WHERE id=? LIMIT 1');
-        $enquiryStmt->execute([$quote['enquiry_id']]);
-        $enquiry = $enquiryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $items = json_decode($quote['items_json'], true);
+            $subtotal = 0.0;
+            foreach ($items as $it) $subtotal += (float)$it['qty'] * (float)$it['unitPriceNgn'];
+            $taxable = max(0, $subtotal - min($subtotal, (float)$quote['discount_ngn']));
+            $total = round($taxable * (1 + (float)$quote['tax_percent'] / 100));
+
+            $invId = hiso_uuid();
+            $invCode = hiso_next_code('invoices', 'invoice_code', 'INV');
+            $bankDetails = hiso_load_platform_settings()['bankDetails'];
+            $pdo->prepare('INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, customer_email, customer_phone, customer_address, note, discount_ngn, tax_percent, total_ngn, bank_details_json, issued_date, due_date, items_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 14 DAY), ?)')
+                ->execute([$invId, $invCode, $quote['id'], $quote['enquiry_id'], $quote['customer_name'], $quote['customer_email'], $quote['customer_phone'], $quote['customer_address'], $quote['note'], $quote['discount_ngn'], $quote['tax_percent'], $total, json_encode($bankDetails, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $quote['items_json']]);
+            hiso_audit($user, 'ISSUE_INVOICE', 'Invoice', $invCode, 'Issued invoice from ' . $quote['quote_code']);
+            $pdo->commit();
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+        $enquiry = [];
+        if ($quote['enquiry_id'] !== null) {
+            $enquiryStmt = $pdo->prepare('SELECT id, email, phone FROM enquiries WHERE id=? LIMIT 1');
+            $enquiryStmt->execute([$quote['enquiry_id']]);
+            $enquiry = $enquiryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        }
         $invoiceMessage = [
             'id' => $invId,
-            'enquiryId' => (string)$quote['enquiry_id'],
+            'enquiryId' => (string)($quote['enquiry_id'] ?? ''),
             'invoiceCode' => $invCode,
             'customerName' => (string)$quote['customer_name'],
-            'email' => (string)($enquiry['email'] ?? ''),
-            'phone' => (string)($enquiry['phone'] ?? ''),
+            'email' => (string)($quote['customer_email'] ?: ($enquiry['email'] ?? '')),
+            'phone' => (string)($quote['customer_phone'] ?: ($enquiry['phone'] ?? '')),
+            'note' => (string)($quote['note'] ?? ''),
             'totalNgn' => $total,
             'items' => is_array($items) ? $items : [],
         ];
@@ -2738,7 +2908,8 @@ try {
             $invId,
             "Hello " . (string)$quote['customer_name'] . ", your HI-SOTECH invoice {$invCode} has been issued and is pending payment.\n" .
                 implode("\n", array_map(static fn($item) => (float)$item['qty'] . ' × ' . (string)($item['description'] ?? $item['name'] ?? '') . ': ₦' . number_format((float)$item['qty'] * (float)$item['unitPriceNgn']), $items)) .
-                "\nAmount due: ₦" . number_format($total) . ". Open your customer portal: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#customer',
+                "\nAmount due: ₦" . number_format($total) . ($quote['note'] ? "\n\nNote: " . (string)$quote['note'] : '') .
+                    ". Open your customer portal: " . rtrim((string)(($CONFIG['APP_URL'] ?? '') ?: ''), '/') . '/#customer',
             false
         );
         hiso_json_response(['id' => $invId, 'invoiceCode' => $invCode], 201);
@@ -3269,7 +3440,7 @@ try {
         }
         header('Content-Type: ' . $photo['mime_type']);
         header('Content-Length: ' . (string)filesize($path));
-        header('Cache-Control: private, max-age=86400');
+        header('Cache-Control: private, no-store');
         header('X-Content-Type-Options: nosniff');
         readfile($path);
         exit;
@@ -3305,7 +3476,7 @@ try {
         }
         header('Content-Type: image/jpeg');
         header('Content-Length: ' . (string)filesize($path));
-        header('Cache-Control: private, max-age=3600');
+        header('Cache-Control: private, no-store');
         header('X-Content-Type-Options: nosniff');
         readfile($path);
         exit;
@@ -3323,7 +3494,7 @@ try {
         if (!is_file($path)) { http_response_code(404); exit('Missing file'); }
         header('Content-Type: ' . $photo['mime_type']);
         header('Content-Length: ' . (string)filesize($path));
-        header('Cache-Control: private, max-age=86400');
+        header('Cache-Control: private, no-store');
         header('X-Content-Type-Options: nosniff');
         readfile($path);
         exit;

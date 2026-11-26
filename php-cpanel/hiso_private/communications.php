@@ -119,15 +119,22 @@ function hiso_customer_contact_group_recipients(string $groupId, string $channel
     if (!$exists->fetchColumn()) throw new InvalidArgumentException('Contact group not found.');
     $total = hiso_pdo()->prepare('SELECT COUNT(*) FROM customer_contact_group_members WHERE group_id = ?');
     $total->execute([$groupId]);
-    $column = $channel === 'email' ? 'email' : 'phone';
-    $stmt = hiso_pdo()->prepare(
-        'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' .
-        'JOIN customer_profiles c ON c.id = m.customer_id ' .
-        'JOIN communications_consents x ON x.customer_id = c.id AND x.channel = ? ' .
-        'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL AND x.consented_at IS NOT NULL ' .
-        'AND x.revoked_at IS NULL AND c.' . $column . ' <> "" ORDER BY c.name'
-    );
-    $stmt->execute([$channel, $groupId]);
+    if ($channel === 'email') {
+        $stmt = hiso_pdo()->prepare(
+            'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' .
+            'JOIN customer_profiles c ON c.id = m.customer_id ' .
+            'JOIN communications_consents x ON x.customer_id = c.id AND x.channel = ? ' .
+            'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL AND x.consented_at IS NOT NULL ' .
+            'AND x.revoked_at IS NULL AND c.email <> "" ORDER BY c.name'
+        );
+        $stmt->execute([$channel, $groupId]);
+    } else {
+        $stmt = hiso_pdo()->prepare(
+            'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' .
+            'JOIN customer_profiles c ON c.id = m.customer_id WHERE m.group_id = ? AND c.phone <> "" ORDER BY c.name'
+        );
+        $stmt->execute([$groupId]);
+    }
     $contacts = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if ($channel === 'email') {
         $contacts = array_values(array_filter($contacts, static fn($contact) =>
@@ -330,10 +337,11 @@ function hiso_send_store_order_emails(array $order): void {
 
 function hiso_send_invoice_issued_emails(array $invoice): void {
     $eventKey = 'invoice_status';
-    $enquiryId = (string)($invoice['enquiryId'] ?? '');
+    $enquiryId = (string)($invoice['enquiryId'] ?? $invoice['id'] ?? '');
     $name = trim((string)($invoice['customerName'] ?? ''));
     $email = trim((string)($invoice['email'] ?? ''));
     $invoiceCode = (string)($invoice['invoiceCode'] ?? '');
+    $note = trim((string)($invoice['note'] ?? ''));
     $items = is_array($invoice['items'] ?? null) ? $invoice['items'] : [];
     $itemRows = implode("\n", array_map(static fn($item) =>
         (float)$item['qty'] . ' × ' . (string)($item['description'] ?? $item['name'] ?? '') . ' — ₦' .
@@ -346,6 +354,7 @@ function hiso_send_invoice_issued_emails(array $invoice): void {
         . "Your HI-SOTECH invoice {$invoiceCode} has been issued and is pending payment.\n\n"
         . "Invoice items:\n{$itemRows}\n\n"
         . 'Amount due: ₦' . number_format((float)($invoice['totalNgn'] ?? 0)) . "\n"
+        . ($note !== '' ? "Note: {$note}\n\n" : '')
         . 'View your account and invoice at: ' . $appUrl . '/#customer' . "\n\n"
         . "Please contact the HI-SOTECH front desk if you have any questions.";
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -705,6 +714,17 @@ function hiso_whatsapp_consent_contacts(string $purpose): array {
     ));
 }
 
+function hiso_whatsapp_contacts(): array {
+    $sql =
+        'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c WHERE c.phone <> "" ' .
+        'UNION ALL SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u WHERE u.status = "Active" AND u.phone <> "" ' .
+        'UNION ALL SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e WHERE e.phone <> "" ORDER BY name';
+    $contacts = hiso_pdo()->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+    return array_values(array_filter($contacts, fn($contact) =>
+        preg_match('/^\+[1-9][0-9]{7,14}$/', (string)($contact['phone'] ?? '')) === 1
+    ));
+}
+
 function hiso_whatsapp_service_requests(): array {
     $sql =
         'SELECT id, "enquiry" AS requestType, ref_code AS requestCode, customer_name AS name, phone, need_summary AS subject ' .
@@ -784,6 +804,26 @@ function hiso_whatsapp_consent_contact(
     $stmt->execute([$recipientId]);
     $contact = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$contact || (!$includeInvalidPhone && !preg_match('/^\+[1-9][0-9]{7,14}$/', (string)$contact['phone']))) {
+        return null;
+    }
+    return $contact;
+}
+
+function hiso_whatsapp_contact(string $recipientType, string $recipientId): ?array {
+    if (!in_array($recipientType, ['customer', 'staff', 'enquiry'], true) || $recipientId === '' || strlen($recipientId) > 36) {
+        return null;
+    }
+    if ($recipientType === 'customer') {
+        $sql = 'SELECT c.id, c.name, c.email, c.phone, "customer" AS recipient_type FROM customer_profiles c WHERE c.id = ? AND c.phone <> "" LIMIT 1';
+    } elseif ($recipientType === 'staff') {
+        $sql = 'SELECT u.id, u.name, u.email, u.phone, "staff" AS recipient_type FROM users u WHERE u.id = ? AND u.status = "Active" AND u.phone <> "" LIMIT 1';
+    } else {
+        $sql = 'SELECT e.id, e.customer_name AS name, e.email, e.phone, "enquiry" AS recipient_type FROM enquiries e WHERE e.id = ? AND e.phone <> "" LIMIT 1';
+    }
+    $stmt = hiso_pdo()->prepare($sql);
+    $stmt->execute([$recipientId]);
+    $contact = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$contact || preg_match('/^\+[1-9][0-9]{7,14}$/', (string)($contact['phone'] ?? '')) !== 1) {
         return null;
     }
     return $contact;
@@ -951,14 +991,19 @@ function hiso_send_lifecycle_whatsapp(
         $enquiryId = null;
         $customerId = null;
         $assignedStaffId = null;
+        $standaloneContact = null;
         if ($entityType === 'quote') {
-            $stmt = $pdo->prepare('SELECT enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1');
+            $stmt = $pdo->prepare('SELECT id, enquiry_id, customer_name AS name, customer_email AS email, customer_phone AS phone FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1');
             $stmt->execute([$entityId, $entityId]);
-            $enquiryId = $stmt->fetchColumn() ?: null;
+            $document = $stmt->fetch(PDO::FETCH_ASSOC);
+            $enquiryId = $document['enquiry_id'] ?? null;
+            if ($document && !$enquiryId) $standaloneContact = $document;
         } elseif ($entityType === 'invoice') {
-            $stmt = $pdo->prepare('SELECT enquiry_id FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1');
+            $stmt = $pdo->prepare('SELECT id, enquiry_id, customer_name AS name, customer_email AS email, customer_phone AS phone FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1');
             $stmt->execute([$entityId, $entityId]);
-            $enquiryId = $stmt->fetchColumn() ?: null;
+            $document = $stmt->fetch(PDO::FETCH_ASSOC);
+            $enquiryId = $document['enquiry_id'] ?? null;
+            if ($document && !$enquiryId) $standaloneContact = $document;
         } elseif ($entityType === 'installation') {
             $stmt = $pdo->prepare('SELECT enquiry_id, assigned_engineer_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1');
             $stmt->execute([$entityId, $entityId]);
@@ -989,6 +1034,20 @@ function hiso_send_lifecycle_whatsapp(
                 if (!$targets) {
                     $targets[] = $enquiry + ['recipient_type' => 'enquiry'];
                 }
+            }
+        }
+        if ($standaloneContact) {
+            $email = trim((string)($standaloneContact['email'] ?? ''));
+            if ($email !== '') {
+                $stmt = $pdo->prepare('SELECT id, name, email, phone FROM customer_profiles WHERE LOWER(email) = LOWER(?) AND email_verified_at IS NOT NULL LIMIT 1');
+                $stmt->execute([$email]);
+                $customer = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($customer) $targets[] = $customer + ['recipient_type' => 'customer'];
+            }
+            if (!$targets) {
+                $standaloneContact['id'] = (string)($standaloneContact['id'] ?? $entityId);
+                $standaloneContact['email'] = $email;
+                $targets[] = $standaloneContact + ['recipient_type' => 'enquiry'];
             }
         }
         if ($customerId) {

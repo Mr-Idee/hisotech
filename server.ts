@@ -52,6 +52,7 @@ import {
   deletePushSubscription,
   getStaffWhatsAppConsents,
   getWhatsAppConsentContact,
+  getWhatsAppContact,
   getWhatsAppServiceRequestContact,
   getLifecycleNotificationTargets,
   getPaymentInvoiceId,
@@ -62,14 +63,17 @@ import {
   getVerifiedCustomerIds,
   listMarketingContacts,
   listWhatsAppConsentContacts,
+  listWhatsAppContacts,
   listWhatsAppServiceRequests,
   logCommunicationDelivery,
   recordPayment,
   releaseInstallation,
+  renewQuotation,
   revokeCustomerLoginLink,
   clearCustomerInitialPin,
   saveCustomerEquipment,
   saveCustomerProfile,
+  saveDocumentDetails,
   saveQuotation,
   saveRoleDefinition,
   saveStaffMember,
@@ -890,6 +894,10 @@ async function startServer() {
     }
     next();
   });
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    next();
+  });
   app.use(express.json({ limit: '18mb' }));
 
   const getSessionUser = (req: express.Request) => {
@@ -1264,7 +1272,7 @@ async function startServer() {
       return;
     }
     res.setHeader('Content-Type', file.mimeType);
-    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.sendFile(file.filePath);
   });
@@ -1488,7 +1496,7 @@ async function startServer() {
       res.status(404).send('Not found.');
       return;
     }
-    res.type(photo.mimeType).set('Cache-Control', 'private, max-age=3600')
+    res.type(photo.mimeType).set('Cache-Control', 'private, no-store')
       .set('X-Content-Type-Options', 'nosniff').sendFile(photo.filePath);
   });
 
@@ -1573,7 +1581,7 @@ async function startServer() {
     }
     res.json({
       email: listMarketingContacts('email'),
-      whatsapp: listWhatsAppConsentContacts('marketing'),
+      whatsapp: listWhatsAppContacts(),
       whatsappOperational: listWhatsAppConsentContacts('operational'),
       whatsappServiceRequests: listWhatsAppServiceRequests(),
       pushCustomers: getPushSubscribedCustomers(),
@@ -1681,16 +1689,12 @@ async function startServer() {
       return;
     }
     if (!['customer', 'staff', 'enquiry'].includes(recipientType) || !recipientId) {
-      res.status(422).json({ error: 'Select a recipient with active WhatsApp marketing consent.' });
+      res.status(422).json({ error: 'Select a saved contact with a valid WhatsApp number.' });
       return;
     }
-    const contact = getWhatsAppConsentContact(recipientType, recipientId, 'marketing', true);
+    const contact = getWhatsAppContact(recipientType, recipientId);
     if (!contact) {
-      res.status(422).json({ error: 'This recipient has no active WhatsApp marketing consent. Service-update consent is separate and does not authorize marketing messages.' });
-      return;
-    }
-    if (!isValidE164(contact.phone)) {
-      res.status(422).json({ error: 'Please use the required country code for the opted-in phone number.' });
+      res.status(422).json({ error: 'This saved contact does not have a valid country-code WhatsApp number.' });
       return;
     }
     const attachments = req.body?.attachments ?? [];
@@ -1789,7 +1793,7 @@ async function startServer() {
     if (!Array.isArray(recipients) || recipients.length < 1 || recipients.length > 200
         || recipients.some((r: any) => !['customer', 'staff', 'enquiry'].includes(r?.recipientType)
           || typeof r?.recipientId !== 'string' || r.recipientId.length > 36)) {
-      res.status(422).json({ error: 'Select between 1 and 200 recipients with recorded WhatsApp marketing consent.' });
+      res.status(422).json({ error: 'Select between 1 and 200 saved WhatsApp contacts.' });
       return;
     }
     if (!Array.isArray(attachments) || attachments.length > 1) {
@@ -1814,12 +1818,12 @@ async function startServer() {
     }
     const resolved = uniqueRecipients.map((r: { recipientType: 'customer' | 'staff' | 'enquiry'; recipientId: string }) => {
       if (groupId && (r.recipientType !== 'customer' || !allowedGroupRecipients?.has(r.recipientId))) return null;
-      return getWhatsAppConsentContact(r.recipientType, r.recipientId, 'marketing', true);
+      return getWhatsAppContact(r.recipientType, r.recipientId);
     }).filter((contact): contact is NonNullable<typeof contact> => Boolean(contact && isValidE164(contact.phone)));
     skipped += uniqueRecipients.length - resolved.length;
     if (!resolved.length) {
       res.status(422).json({
-        error: 'No selected recipients currently have active WhatsApp marketing consent and a valid country-code phone number. Service-update consent is separate.',
+        error: 'No selected recipients have a valid country-code WhatsApp number.',
         skipped,
       });
       return;
@@ -1847,7 +1851,7 @@ async function startServer() {
           : undefined);
         delivered += 1;
       }
-      writeAudit(user!, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', crypto.randomUUID(), `Sent to ${delivered} marketing-consented recipient(s).`);
+      writeAudit(user!, 'SEND_WHATSAPP_NEWSLETTER', 'Newsletter', crypto.randomUUID(), `Sent to ${delivered} saved contact(s).`);
       res.json({ ok: true, delivered, skipped });
     } catch (error) {
       const text = (error as Error).message;
@@ -2266,7 +2270,10 @@ async function startServer() {
 
   app.post('/api/quotes', async (req, res) => {
     const { user } = getSessionUser(req);
-    if (!hasPermission(user, 'draft_quotes')) {
+    const standalone = req.body?.standalone === true || !String(req.body?.enquiryId || '').trim();
+    if (!user || (standalone
+      ? !['admin', 'superadmin'].includes(user.role)
+      : !hasPermission(user, 'draft_quotes'))) {
       res.status(403).json({ error: 'Quotation drafting permission required.' });
       return;
     }
@@ -2283,6 +2290,47 @@ async function startServer() {
       res.json(saved);
     } catch (err) {
       res.status(422).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/quotes/renew', (req, res) => {
+    const { user } = getSessionUser(req);
+    const quoteId = typeof req.body?.quoteId === 'string' ? req.body.quoteId.trim() : '';
+    if (!user || !quoteId || quoteId.length > 36) {
+      res.status(user ? 403 : 401).json({ error: 'Quotation renewal permission and a valid quotation are required.' });
+      return;
+    }
+    try {
+      res.json(renewQuotation(user, quoteId));
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post('/api/documents/details', (req, res) => {
+    const { user } = getSessionUser(req);
+    const type = req.body?.type === 'quote' || req.body?.type === 'invoice' ? req.body.type : null;
+    const id = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+    if (!type || !id || id.length > 80) {
+      res.status(403).json({ error: 'Your role does not permit editing customer details for this document.' });
+      return;
+    }
+    try {
+      res.json(saveDocumentDetails(user, {
+        type,
+        id,
+        customerName: typeof req.body?.customerName === 'string' ? req.body.customerName : '',
+        customerEmail: typeof req.body?.customerEmail === 'string' ? req.body.customerEmail : '',
+        customerPhone: typeof req.body?.customerPhone === 'string' ? req.body.customerPhone : '',
+        customerAddress: typeof req.body?.customerAddress === 'string' ? req.body.customerAddress : '',
+        note: typeof req.body?.note === 'string' ? req.body.note : '',
+      }));
+    } catch (error) {
+      res.status(422).json({ error: (error as Error).message });
     }
   });
 
@@ -2387,7 +2435,7 @@ async function startServer() {
         'invoice_status',
         'invoice',
         invoice.id,
-        `Hello ${invoice.customerName}, your HI-SOTECH invoice ${invoice.invoiceCode} has been issued and is pending payment.\n\n${invoiceDetails}\n\nAmount due: ₦${invoice.totalNgn.toLocaleString('en-NG')}\nOpen the customer portal: ${(process.env.APP_URL || '').replace(/\/+$/, '')}/#customer`,
+        `Hello ${invoice.customerName}, your HI-SOTECH invoice ${invoice.invoiceCode} has been issued and is pending payment.\n\n${invoiceDetails}\n\nAmount due: ₦${invoice.totalNgn.toLocaleString('en-NG')}${invoice.note ? `\n\nNote: ${invoice.note}` : ''}\nOpen the customer portal: ${(process.env.APP_URL || '').replace(/\/+$/, '')}/#customer`,
         `HI-SOTECH invoice ${invoice.invoiceCode}`,
       );
       await sendLifecycleWhatsApp('quote_status', 'quote', req.body.quotationId, 'Your approved quotation has been converted to an invoice.');
@@ -2684,7 +2732,7 @@ async function startServer() {
       return;
     }
     res.setHeader('Content-Type', file.mimeType);
-    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.sendFile(file.filePath);
   });

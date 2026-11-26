@@ -21,6 +21,7 @@ test('document PDF includes the supplied equipment totals and warranty terms', a
     status: 'Approved',
     scope: '3kVA-5kWh hybrid system',
     terms: 'Valid for 7 days.',
+    note: 'Custom quotation message.',
     discountNgn: 0,
     taxPercent: 0,
     logoDataUrl,
@@ -38,6 +39,7 @@ test('document PDF includes the supplied equipment totals and warranty terms', a
   assert.match(content, /NGN 3,130,000/);
   assert.match(content, /Three Million One Hundred and Thirty Thousand Naira Only/);
   assert.match(content, /2 years on installation work only/);
+  assert.match(content, /Custom quotation message\./);
   assert.match(content, /\/Subtype \/Image/);
   assert.ok(content.indexOf('WARRANTY & EXPECTED EQUIPMENT LIFE') > content.indexOf('3KVA 24V Hybrid Inverter'));
   assert.ok(blob.size < 2 * 1024 * 1024);
@@ -61,6 +63,7 @@ test('invoice PDF places warranty after the listed items and receiving account',
     status: 'Issued',
     scope: 'Supply and installation',
     terms: '',
+    note: '',
     discountNgn: 0,
     taxPercent: 0,
     items: [{ sku: 'INV-3', description: '3kVA inverter', unit: 'unit', qty: 1, unitPriceNgn: 100_000 }],

@@ -162,8 +162,11 @@ CREATE TABLE IF NOT EXISTS enquiries (
 CREATE TABLE IF NOT EXISTS quotations (
   id TEXT PRIMARY KEY,
   quote_code TEXT NOT NULL UNIQUE,
-  enquiry_id TEXT NOT NULL,
+  enquiry_id TEXT,
   customer_name TEXT NOT NULL,
+  customer_email TEXT,
+  customer_phone TEXT,
+  customer_address TEXT,
   status TEXT NOT NULL,
   revision_no INTEGER NOT NULL DEFAULT 1,
   scope TEXT NOT NULL,
@@ -184,8 +187,12 @@ CREATE TABLE IF NOT EXISTS invoices (
   id TEXT PRIMARY KEY,
   invoice_code TEXT NOT NULL UNIQUE,
   quotation_id TEXT NOT NULL,
-  enquiry_id TEXT NOT NULL,
+  enquiry_id TEXT,
   customer_name TEXT NOT NULL,
+  customer_email TEXT,
+  customer_phone TEXT,
+  customer_address TEXT,
+  note TEXT NOT NULL DEFAULT '',
   discount_ngn REAL NOT NULL DEFAULT 0,
   tax_percent REAL NOT NULL DEFAULT 0,
   total_ngn REAL NOT NULL,
@@ -464,6 +471,93 @@ function ensureColumn(table: string, col: string, ddl: string): void {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
   }
 }
+
+ensureColumn('invoices', 'status', "status TEXT NOT NULL DEFAULT 'Pending'");
+const standaloneQuotesMigration = 'standalone-quotations-v1';
+if (!db.prepare('SELECT id FROM app_migrations WHERE id = ?').get(standaloneQuotesMigration)) {
+  const quoteEnquiry = (db.prepare('PRAGMA table_info(quotations)').all() as { name: string; notnull: number }[])
+    .find((column) => column.name === 'enquiry_id');
+  const invoiceEnquiry = (db.prepare('PRAGMA table_info(invoices)').all() as { name: string; notnull: number }[])
+    .find((column) => column.name === 'enquiry_id');
+  if (quoteEnquiry?.notnull || invoiceEnquiry?.notnull) {
+    db.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE');
+    try {
+      db.exec(`
+        CREATE TABLE quotations_new (
+          id TEXT PRIMARY KEY, quote_code TEXT NOT NULL UNIQUE, enquiry_id TEXT, customer_name TEXT NOT NULL,
+          customer_email TEXT, customer_phone TEXT, customer_address TEXT, status TEXT NOT NULL,
+          revision_no INTEGER NOT NULL DEFAULT 1, scope TEXT NOT NULL, terms TEXT NOT NULL, note TEXT NOT NULL,
+          discount_ngn REAL NOT NULL DEFAULT 0, tax_percent REAL NOT NULL DEFAULT 0, issued_date TEXT NOT NULL,
+          valid_until TEXT NOT NULL, approved_by TEXT, approved_at TEXT, items_json TEXT NOT NULL,
+          revisions_json TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        INSERT INTO quotations_new (
+          id, quote_code, enquiry_id, customer_name, customer_email, customer_phone, customer_address, status,
+          revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by,
+          approved_at, items_json, revisions_json, created_at
+        )
+        SELECT q.id, q.quote_code, q.enquiry_id, q.customer_name, e.email, e.phone, e.location, q.status,
+          q.revision_no, q.scope, q.terms, q.note, q.discount_ngn, q.tax_percent, q.issued_date, q.valid_until,
+          q.approved_by, q.approved_at, q.items_json, q.revisions_json, q.created_at
+        FROM quotations q LEFT JOIN enquiries e ON e.id = q.enquiry_id;
+        DROP TABLE quotations;
+        ALTER TABLE quotations_new RENAME TO quotations;
+
+        CREATE TABLE invoices_new (
+          id TEXT PRIMARY KEY, invoice_code TEXT NOT NULL UNIQUE, quotation_id TEXT NOT NULL, enquiry_id TEXT,
+          customer_name TEXT NOT NULL, customer_email TEXT, customer_phone TEXT, customer_address TEXT,
+          discount_ngn REAL NOT NULL DEFAULT 0, tax_percent REAL NOT NULL DEFAULT 0, total_ngn REAL NOT NULL,
+          status TEXT NOT NULL DEFAULT 'Pending', bank_details_json TEXT NOT NULL,
+          customer_accepted INTEGER NOT NULL DEFAULT 0, accepted_at TEXT, issued_date TEXT NOT NULL,
+          due_date TEXT NOT NULL, items_json TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        INSERT INTO invoices_new (
+          id, invoice_code, quotation_id, enquiry_id, customer_name, customer_email, customer_phone,
+          customer_address, discount_ngn, tax_percent, total_ngn, status, bank_details_json, customer_accepted,
+          accepted_at, issued_date, due_date, items_json, created_at
+        )
+        SELECT i.id, i.invoice_code, i.quotation_id, i.enquiry_id, i.customer_name, e.email, e.phone, e.location,
+          i.discount_ngn, i.tax_percent, i.total_ngn, i.status, i.bank_details_json, i.customer_accepted,
+          i.accepted_at, i.issued_date, i.due_date, i.items_json, i.created_at
+        FROM invoices i LEFT JOIN enquiries e ON e.id = i.enquiry_id;
+        DROP TABLE invoices;
+        ALTER TABLE invoices_new RENAME TO invoices;
+      `);
+      db.exec('COMMIT; PRAGMA foreign_keys = ON');
+    } catch (error) {
+      db.exec('ROLLBACK; PRAGMA foreign_keys = ON');
+      throw error;
+    }
+  } else {
+    ensureColumn('quotations', 'customer_email', 'customer_email TEXT');
+    ensureColumn('quotations', 'customer_phone', 'customer_phone TEXT');
+    ensureColumn('quotations', 'customer_address', 'customer_address TEXT');
+    ensureColumn('invoices', 'customer_email', 'customer_email TEXT');
+    ensureColumn('invoices', 'customer_phone', 'customer_phone TEXT');
+    ensureColumn('invoices', 'customer_address', 'customer_address TEXT');
+    db.exec(`
+      UPDATE quotations SET
+        customer_email = COALESCE(customer_email, (SELECT email FROM enquiries WHERE id = quotations.enquiry_id)),
+        customer_phone = COALESCE(customer_phone, (SELECT phone FROM enquiries WHERE id = quotations.enquiry_id)),
+        customer_address = COALESCE(customer_address, (SELECT location FROM enquiries WHERE id = quotations.enquiry_id));
+      UPDATE invoices SET
+        customer_email = COALESCE(customer_email, (SELECT email FROM enquiries WHERE id = invoices.enquiry_id)),
+        customer_phone = COALESCE(customer_phone, (SELECT phone FROM enquiries WHERE id = invoices.enquiry_id)),
+        customer_address = COALESCE(customer_address, (SELECT location FROM enquiries WHERE id = invoices.enquiry_id));
+    `);
+  }
+  db.prepare('INSERT INTO app_migrations (id, applied_at) VALUES (?, ?)').run(standaloneQuotesMigration, new Date().toISOString());
+}
+ensureColumn('invoices', 'note', "note TEXT NOT NULL DEFAULT ''");
+const duplicateInvoice = db.prepare(
+  'SELECT quotation_id, COUNT(*) AS invoice_count FROM invoices GROUP BY quotation_id HAVING COUNT(*) > 1 LIMIT 1'
+).get() as { quotation_id: string; invoice_count: number } | undefined;
+if (duplicateInvoice) {
+  throw new Error(
+    `Cannot enforce one invoice per quotation: quotation ${duplicateInvoice.quotation_id} already has ${duplicateInvoice.invoice_count} invoices. Reconcile these records before restarting.`
+  );
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_invoices_quotation_id ON invoices(quotation_id)');
 
 ensureColumn('catalog_items', 'item_type', "item_type TEXT NOT NULL DEFAULT 'equipment'");
 ensureColumn('catalog_items', 'grade', "grade TEXT NOT NULL DEFAULT 'Standard'");
@@ -1415,9 +1509,9 @@ export function getPublicTracking(refCode: string, customerEmail?: string) {
 export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string, customerEmail?: string) {
   if (type === 'invoice') {
     const row = customerEmail === undefined
-      ? db.prepare('SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? OR i.invoice_code = ? LIMIT 1')
+      ? db.prepare("SELECT i.*, COALESCE(i.customer_address, e.location, '') AS location, COALESCE(i.customer_phone, e.phone, '') AS phone, COALESCE(i.customer_email, e.email, '') AS email, COALESCE(e.ref_code, '') AS ref_code FROM invoices i LEFT JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? OR i.invoice_code = ? LIMIT 1")
         .get(idOrCode, idOrCode) as Record<string, unknown> | undefined
-      : db.prepare('SELECT i.*, e.location, e.phone, e.email, e.ref_code FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?) AND LOWER(e.email) = LOWER(?) LIMIT 1')
+      : db.prepare("SELECT i.*, COALESCE(i.customer_address, e.location, '') AS location, COALESCE(i.customer_phone, e.phone, '') AS phone, COALESCE(i.customer_email, e.email, '') AS email, COALESCE(e.ref_code, '') AS ref_code FROM invoices i LEFT JOIN enquiries e ON e.id = i.enquiry_id WHERE (i.id = ? OR i.invoice_code = ?) AND LOWER(COALESCE(i.customer_email, e.email, '')) = LOWER(?) LIMIT 1")
         .get(idOrCode, idOrCode, customerEmail) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
@@ -1433,16 +1527,17 @@ export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string, c
       discountNgn: Number(row.discount_ngn),
       taxPercent: Number(row.tax_percent),
       totalNgn: Number(row.total_ngn),
+      note: String(row.note || ''),
       bankDetails: JSON.parse(String(row.bank_details_json)),
       customerAccepted: Boolean(row.customer_accepted),
       items: JSON.parse(String(row.items_json)),
     };
   }
   const row = customerEmail === undefined
-    ? db.prepare('SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? OR q.quote_code = ? LIMIT 1')
+    ? db.prepare("SELECT q.*, COALESCE(q.customer_address, e.location, '') AS location, COALESCE(q.customer_phone, e.phone, '') AS phone, COALESCE(q.customer_email, e.email, '') AS email, COALESCE(e.ref_code, '') AS ref_code FROM quotations q LEFT JOIN enquiries e ON e.id = q.enquiry_id WHERE q.id = ? OR q.quote_code = ? LIMIT 1")
       .get(idOrCode, idOrCode) as Record<string, unknown> | undefined
-    : db.prepare("SELECT q.*, e.location, e.phone, e.email, e.ref_code FROM quotations q JOIN enquiries e ON e.id = q.enquiry_id WHERE (q.id = ? OR q.quote_code = ?) AND LOWER(e.email) = LOWER(?) AND q.status IN ('Approved', 'Invoiced') LIMIT 1")
-      .get(idOrCode, idOrCode, customerEmail) as Record<string, unknown> | undefined;
+    : db.prepare("SELECT q.*, COALESCE(q.customer_address, e.location, '') AS location, COALESCE(q.customer_phone, e.phone, '') AS phone, COALESCE(q.customer_email, e.email, '') AS email, COALESCE(e.ref_code, '') AS ref_code FROM quotations q LEFT JOIN enquiries e ON e.id = q.enquiry_id WHERE (q.id = ? OR q.quote_code = ?) AND LOWER(COALESCE(q.customer_email, e.email, '')) = LOWER(?) AND q.status IN ('Approved', 'Invoiced') AND q.valid_until >= ? LIMIT 1")
+      .get(idOrCode, idOrCode, customerEmail, new Date().toISOString().slice(0, 10)) as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
     type: 'quote' as const,
@@ -1468,7 +1563,7 @@ export function getPublicDocument(type: 'quote' | 'invoice', idOrCode: string, c
 
 export function acceptInvoiceByCustomer(invoiceId: string, customerEmail: string): boolean {
   const result = db.prepare(
-    'UPDATE invoices SET customer_accepted = 1, accepted_at = ? WHERE (id = ? OR invoice_code = ?) AND EXISTS (SELECT 1 FROM enquiries e WHERE e.id = invoices.enquiry_id AND LOWER(e.email) = LOWER(?))'
+    "UPDATE invoices SET customer_accepted = 1, accepted_at = ? WHERE (id = ? OR invoice_code = ?) AND LOWER(COALESCE(customer_email, (SELECT email FROM enquiries WHERE id = invoices.enquiry_id), '')) = LOWER(?)"
   ).run(new Date().toISOString(), invoiceId, invoiceId, customerEmail);
   return result.changes === 1;
 }
@@ -1667,6 +1762,21 @@ export function listWhatsAppConsentContacts(purpose: 'operational' | 'marketing'
   })).filter((row) => /^\+[1-9]\d{7,14}$/.test(row.phone));
 }
 
+export function listWhatsAppContacts() {
+  const rows = db.prepare(
+    `SELECT c.id, c.name, c.email, c.phone, 'customer' AS recipient_type FROM customer_profiles c WHERE c.phone <> '' ` +
+    `UNION ALL SELECT u.id, u.name, u.email, u.phone, 'staff' AS recipient_type FROM users u WHERE u.status = 'Active' AND u.phone <> '' ` +
+    `UNION ALL SELECT e.id, e.customer_name AS name, e.email, e.phone, 'enquiry' AS recipient_type FROM enquiries e WHERE e.phone <> '' ORDER BY name`
+  ).all() as Record<string, unknown>[];
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    email: String(row.email || ''),
+    phone: String(row.phone || ''),
+    recipientType: String(row.recipient_type) as 'customer' | 'staff' | 'enquiry',
+  })).filter((row) => /^\+[1-9]\d{7,14}$/.test(row.phone));
+}
+
 export function listWhatsAppServiceRequests() {
   const rows = db.prepare(
     `SELECT id, 'enquiry' AS request_type, ref_code AS request_code, customer_name AS name, phone, need_summary AS subject ` +
@@ -1763,6 +1873,36 @@ export function getWhatsAppConsentContact(
     name: String(contact.name),
     email: String(contact.email || ''),
     phone: String(contact.phone),
+    recipientType: contact.recipient_type as 'customer' | 'staff' | 'enquiry',
+  };
+}
+
+export function getWhatsAppContact(
+  recipientType: 'customer' | 'staff' | 'enquiry',
+  recipientId: string,
+) {
+  const row = recipientType === 'customer'
+    ? db.prepare(
+      `SELECT c.id, c.name, c.email, c.phone, 'customer' AS recipient_type FROM customer_profiles c ` +
+      "WHERE c.id = ? AND c.phone <> '' LIMIT 1"
+    ).get(recipientId)
+    : recipientType === 'staff'
+      ? db.prepare(
+        `SELECT u.id, u.name, u.email, u.phone, 'staff' AS recipient_type FROM users u ` +
+        `WHERE u.id = ? AND u.status = 'Active' AND u.phone <> '' LIMIT 1`
+      ).get(recipientId)
+      : db.prepare(
+        `SELECT e.id, e.customer_name AS name, e.email, e.phone, 'enquiry' AS recipient_type FROM enquiries e ` +
+        "WHERE e.id = ? AND e.phone <> '' LIMIT 1"
+      ).get(recipientId);
+  if (!row) return null;
+  const contact = row as { id: string; name: string; email: string; phone: string; recipient_type: string };
+  if (!/^\+[1-9]\d{7,14}$/.test(contact.phone)) return null;
+  return {
+    id: String(contact.id),
+    name: String(contact.name),
+    email: String(contact.email || ''),
+    phone: contact.phone,
     recipientType: contact.recipient_type as 'customer' | 'staff' | 'enquiry',
   };
 }
@@ -1880,12 +2020,17 @@ export function getLifecycleNotificationTargets(
   } else {
     let enquiryId: string | undefined;
     let assignedEngineerId: string | null = null;
+    let standaloneContact: { id: string; name: string; email: string; phone: string } | undefined;
     if (entity === 'quote') {
-      enquiryId = (db.prepare('SELECT enquiry_id FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1')
-        .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
+      const quote = db.prepare('SELECT enquiry_id, id, customer_name AS name, customer_email AS email, customer_phone AS phone FROM quotations WHERE id = ? OR quote_code = ? LIMIT 1')
+        .get(entityId, entityId) as { enquiry_id: string | null; id: string; name: string; email: string; phone: string } | undefined;
+      enquiryId = quote?.enquiry_id ?? undefined;
+      if (quote && !enquiryId) standaloneContact = { id: quote.id, name: quote.name, email: quote.email || '', phone: quote.phone || '' };
     } else if (entity === 'invoice') {
-      enquiryId = (db.prepare('SELECT enquiry_id FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1')
-        .get(entityId, entityId) as { enquiry_id: string } | undefined)?.enquiry_id;
+      const invoice = db.prepare('SELECT enquiry_id, id, customer_name AS name, customer_email AS email, customer_phone AS phone FROM invoices WHERE id = ? OR invoice_code = ? LIMIT 1')
+        .get(entityId, entityId) as { enquiry_id: string | null; id: string; name: string; email: string; phone: string } | undefined;
+      enquiryId = invoice?.enquiry_id ?? undefined;
+      if (invoice && !enquiryId) standaloneContact = { id: invoice.id, name: invoice.name, email: invoice.email || '', phone: invoice.phone || '' };
     } else {
       const installation = db.prepare('SELECT enquiry_id, assigned_engineer_id FROM installations WHERE id = ? OR job_code = ? LIMIT 1')
         .get(entityId, entityId) as { enquiry_id: string; assigned_engineer_id: string | null } | undefined;
@@ -1903,6 +2048,13 @@ export function getLifecycleNotificationTargets(
         if (customer) addTarget('customer', customer);
         else addTarget('enquiry', enquiry);
       }
+    } else if (standaloneContact) {
+      const customer = standaloneContact.email
+        ? db.prepare('SELECT id, name, email, phone FROM customer_profiles WHERE LOWER(email) = LOWER(?) AND email_verified_at IS NOT NULL LIMIT 1')
+          .get(standaloneContact.email) as { id: string; name: string; email: string; phone: string } | undefined
+        : undefined;
+      if (customer) addTarget('customer', customer);
+      else addTarget('enquiry', standaloneContact, null, null);
     }
     if (entity === 'invoice') {
       const staff = db.prepare("SELECT id, name, email, phone FROM users WHERE status='Active' AND role IN ('admin','director','superadmin')")
@@ -2076,8 +2228,7 @@ export function getCustomerContactGroupRecipients(groupId: string, channel: 'ema
     : db.prepare(
       'SELECT c.id, c.name, c.email, c.phone FROM customer_contact_group_members m ' +
       'JOIN customer_profiles c ON c.id = m.customer_id ' +
-      `JOIN communications_consents x ON x.customer_id = c.id AND x.channel = 'whatsapp' ` +
-      'WHERE m.group_id = ? AND c.email_verified_at IS NOT NULL AND x.consented_at IS NOT NULL AND x.revoked_at IS NULL ORDER BY c.name'
+      'WHERE m.group_id = ? ORDER BY c.name'
     ).all(groupId) as Record<string, unknown>[];
   const contacts = rows.map((row) => ({
     id: String(row.id),
@@ -2701,6 +2852,7 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
 
   const catalog = getPublicCatalog();
   const canCommercial =
+    ['admin', 'superadmin'].includes(user.role) ||
     hasPermission(user, 'manage_enquiries') ||
     hasPermission(user, 'draft_quotes') ||
     hasPermission(user, 'approve_quotes') ||
@@ -2731,9 +2883,13 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
     : (db.prepare('SELECT * FROM quotations ORDER BY created_at DESC').all() as Record<string, unknown>[]).map((q) => ({
         id: String(q.id),
         quoteCode: String(q.quote_code),
-        enquiryId: String(q.enquiry_id),
+        enquiryId: q.enquiry_id ? String(q.enquiry_id) : null,
         customerName: String(q.customer_name),
+        customerEmail: String(q.customer_email || ''),
+        customerPhone: String(q.customer_phone || ''),
+        customerAddress: String(q.customer_address || ''),
         status: q.status as QuotationRecord['status'],
+        isExpired: String(q.valid_until) < new Date().toISOString().slice(0, 10),
         revisionNo: Number(q.revision_no),
         scope: String(q.scope),
         terms: String(q.terms),
@@ -2754,8 +2910,12 @@ export function hydrateWorkspace(user: StaffMember): WorkspaceBootstrap {
         id: String(i.id),
         invoiceCode: String(i.invoice_code),
         quotationId: String(i.quotation_id),
-        enquiryId: String(i.enquiry_id),
+        enquiryId: i.enquiry_id ? String(i.enquiry_id) : null,
         customerName: String(i.customer_name),
+        customerEmail: String(i.customer_email || ''),
+        customerPhone: String(i.customer_phone || ''),
+        customerAddress: String(i.customer_address || ''),
+        note: String(i.note || ''),
         discountNgn: Number(i.discount_ngn),
         taxPercent: Number(i.tax_percent),
         totalNgn: Number(i.total_ngn),
@@ -3058,14 +3218,18 @@ export function saveQuotation(
   actor: StaffMember,
   body: {
     quoteId?: string;
-    enquiryId: string;
+    enquiryId: string | null;
+    standalone?: boolean;
     customerName: string;
+    customerEmail?: string;
+    customerPhone?: string;
+    customerAddress?: string;
     scope: string;
     terms: string;
     note: string;
     discountNgn: number;
     taxPercent: number;
-    validUntil: string;
+    validUntil?: string;
     items: LineItem[];
     submitForApproval?: boolean;
   }
@@ -3080,33 +3244,56 @@ export function saveQuotation(
     savedId = body.quoteId;
     const existing = db.prepare('SELECT * FROM quotations WHERE id = ?').get(body.quoteId) as Record<string, unknown> | undefined;
     if (!existing) throw new Error('Quotation not found.');
+    if (existing.enquiry_id === null && !['admin', 'superadmin'].includes(actor.role)) {
+      throw new Error('Only Admin/front desk or Super Admin can manage standalone quotations.');
+    }
+    if (String(existing.valid_until) < isoDateOffset(0)) {
+      throw new Error('This quotation has expired. Renew it before making a revision.');
+    }
+    if (existing.status === 'Invoiced') throw new Error('An invoiced quotation cannot be revised.');
     const revNo = Number(existing.revision_no) + 1;
     const revs = JSON.parse(String(existing.revisions_json || '[]'));
     revs.push({ revisionNo: revNo, changedBy: actor.name, note: body.note || 'Revision', createdAt: now, totalNgn: totals.total });
-    db.prepare('UPDATE quotations SET status=?, revision_no=?, scope=?, terms=?, note=?, discount_ngn=?, tax_percent=?, valid_until=?, items_json=?, revisions_json=? WHERE id=?').run(
-      status, revNo, body.scope, body.terms, body.note, body.discountNgn, body.taxPercent, body.validUntil, JSON.stringify(body.items), JSON.stringify(revs), body.quoteId
+    db.prepare('UPDATE quotations SET status=?, revision_no=?, scope=?, terms=?, note=?, discount_ngn=?, tax_percent=?, issued_date=?, valid_until=?, items_json=?, revisions_json=? WHERE id=?').run(
+      status, revNo, body.scope, body.terms, body.note, body.discountNgn, body.taxPercent, isoDateOffset(0), isoDateOffset(7), JSON.stringify(body.items), JSON.stringify(revs), body.quoteId
     );
     code = String(existing.quote_code);
   } else {
-    const enquiry = db.prepare(
-      'SELECT estimate_json FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1'
-    ).get(body.enquiryId) as { estimate_json: string | null } | undefined;
-    if (!enquiry) throw new Error('Enquiry not found or already archived.');
-    const existingQuote = db.prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1').get(body.enquiryId);
-    const linkedOrder = db.prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1').get(body.enquiryId);
-    if (existingQuote && linkedOrder) {
-      throw new Error('A quotation already exists for this Store order. Revise the existing quotation instead.');
+    const enquiryId = body.enquiryId?.trim() || null;
+    const standalone = body.standalone === true || enquiryId === null;
+    if (body.standalone && enquiryId) throw new Error('A standalone quotation cannot be linked to an enquiry.');
+    if (standalone && !['admin', 'superadmin'].includes(actor.role)) {
+      throw new Error('Only Admin/front desk or Super Admin can create standalone quotations.');
     }
-    if (!linkedOrder && !enquiry.estimate_json) {
-      throw new Error('Only load-estimator enquiries and Store orders can have quotations.');
+    const customerEmail = (body.customerEmail || '').trim().toLowerCase();
+    const customerPhone = (body.customerPhone || '').trim();
+    const customerAddress = (body.customerAddress || '').trim();
+    if (customerEmail.length > 190 || customerPhone.length > 40 || customerAddress.length > 255
+      || (customerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail))) {
+      throw new Error('Customer contact details are invalid or exceed the allowed field lengths.');
+    }
+    let enquiry: { estimate_json: string | null; email: string; phone: string; location: string } | undefined;
+    if (!standalone) {
+      enquiry = db.prepare(
+        'SELECT estimate_json, email, phone, location FROM enquiries WHERE id=? AND archived_at IS NULL LIMIT 1'
+      ).get(enquiryId) as typeof enquiry;
+      if (!enquiry) throw new Error('Enquiry not found or already archived.');
+      const existingQuote = db.prepare('SELECT id FROM quotations WHERE enquiry_id=? LIMIT 1').get(enquiryId);
+      const linkedOrder = db.prepare('SELECT id FROM store_orders WHERE enquiry_id=? LIMIT 1').get(enquiryId);
+      if (existingQuote && linkedOrder) {
+        throw new Error('A quotation already exists for this Store order. Revise the existing quotation instead.');
+      }
+      if (!linkedOrder && !enquiry.estimate_json) {
+        throw new Error('Only load-estimator enquiries and Store orders can have quotations.');
+      }
     }
     const id = crypto.randomUUID();
     savedId = id;
     code = nextCode('quotations', 'quote_code', 'QUO');
     const revs = [{ revisionNo: 1, changedBy: actor.name, note: 'Initial quotation', createdAt: now, totalNgn: totals.total }];
     db.prepare(
-      'INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by, approved_at, items_json, revisions_json, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)'
-    ).run(id, code, body.enquiryId, body.customerName, status, body.scope, body.terms, body.note, body.discountNgn, body.taxPercent, isoDateOffset(0), body.validUntil || isoDateOffset(7), JSON.stringify(body.items), JSON.stringify(revs), now);
+      'INSERT INTO quotations (id, quote_code, enquiry_id, customer_name, customer_email, customer_phone, customer_address, status, revision_no, scope, terms, note, discount_ngn, tax_percent, issued_date, valid_until, approved_by, approved_at, items_json, revisions_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)'
+    ).run(id, code, enquiryId, body.customerName.trim(), standalone ? customerEmail || null : enquiry?.email ?? null, standalone ? customerPhone || null : enquiry?.phone ?? null, standalone ? customerAddress || null : enquiry?.location ?? null, status, body.scope, body.terms, body.note, body.discountNgn, body.taxPercent, isoDateOffset(0), isoDateOffset(7), JSON.stringify(body.items), JSON.stringify(revs), now);
   }
   if (status === 'Pending MD') {
     notifyRoleMembers(['director', 'superadmin'], `Quotation awaiting approval: ${code}`, `${body.customerName} submitted for Director review.`, 'quotes', code);
@@ -3115,10 +3302,85 @@ export function saveQuotation(
   return { id: savedId, quoteCode: code };
 }
 
+export function renewQuotation(actor: StaffMember, quoteId: string) {
+  const quote = db.prepare('SELECT * FROM quotations WHERE id = ? LIMIT 1').get(quoteId) as Record<string, unknown> | undefined;
+  if (!quote) throw new Error('Quotation not found.');
+  if (quote.enquiry_id === null && !['admin', 'superadmin'].includes(actor.role)) {
+    throw new Error('Only Admin/front desk or Super Admin can manage standalone quotations.');
+  }
+  if (quote.enquiry_id !== null && !hasPermission(actor, 'draft_quotes')) {
+    throw new Error('Quotation drafting permission required.');
+  }
+  if (quote.status === 'Invoiced' || quote.status === 'Rejected') {
+    throw new Error('Only active, non-invoiced quotations can be renewed.');
+  }
+  if (String(quote.valid_until) >= isoDateOffset(0)) throw new Error('This quotation has not expired yet.');
+  const validUntil = isoDateOffset(7);
+  db.prepare('UPDATE quotations SET issued_date = ?, valid_until = ? WHERE id = ?')
+    .run(isoDateOffset(0), validUntil, quoteId);
+  writeAudit(actor, 'RENEW_QUOTE', 'Quotation', String(quote.quote_code), `Renewed quotation validity through ${validUntil}.`);
+  return { validUntil };
+}
+
+export function saveDocumentDetails(
+  actor: StaffMember,
+  body: {
+    type: 'quote' | 'invoice';
+    id: string;
+    customerName: string;
+    customerEmail: string;
+    customerPhone: string;
+    customerAddress: string;
+    note: string;
+  },
+) {
+  const values = {
+    name: body.customerName.trim(),
+    email: body.customerEmail.trim().toLowerCase(),
+    phone: body.customerPhone.trim(),
+    address: body.customerAddress.trim(),
+    note: body.note.trim(),
+  };
+  if (values.name.length > 150 || values.email.length > 190 || values.phone.length > 40 || values.address.length > 255 || values.note.length > 4000) {
+    throw new Error('Customer details or document notes exceed the allowed field lengths.');
+  }
+  if (values.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email)) {
+    throw new Error('Enter a valid customer email address.');
+  }
+  const document = body.type === 'quote'
+    ? db.prepare('SELECT id, quote_code, enquiry_id FROM quotations WHERE id = ? LIMIT 1').get(body.id) as Record<string, unknown> | undefined
+    : db.prepare('SELECT id, invoice_code, quotation_id, enquiry_id FROM invoices WHERE id = ? LIMIT 1').get(body.id) as Record<string, unknown> | undefined;
+  if (!document) throw new Error(`${body.type === 'quote' ? 'Quotation' : 'Invoice'} not found.`);
+  if (document.enquiry_id === null && !['admin', 'superadmin'].includes(actor.role)) {
+    throw new Error('Only Admin/front desk or Super Admin can manage standalone document details.');
+  }
+  if (document.enquiry_id !== null
+    && (body.type === 'quote' ? !hasPermission(actor, 'draft_quotes') : !hasPermission(actor, 'manage_invoices'))) {
+    throw new Error('Your role does not permit editing customer details for this document.');
+  }
+  const updateQuote = db.prepare('UPDATE quotations SET customer_name=?, customer_email=?, customer_phone=?, customer_address=?, note=? WHERE id=?');
+  const updateInvoice = db.prepare('UPDATE invoices SET customer_name=?, customer_email=?, customer_phone=?, customer_address=?, note=? WHERE id=?');
+  if (body.type === 'quote') {
+    updateQuote.run(values.name, values.email, values.phone, values.address, values.note, body.id);
+    db.prepare('UPDATE invoices SET customer_name=?, customer_email=?, customer_phone=?, customer_address=? WHERE quotation_id=?')
+      .run(values.name, values.email, values.phone, values.address, body.id);
+  } else {
+    updateInvoice.run(values.name, values.email, values.phone, values.address, values.note, body.id);
+    db.prepare('UPDATE quotations SET customer_name=?, customer_email=?, customer_phone=?, customer_address=? WHERE id=?')
+      .run(values.name, values.email, values.phone, values.address, String(document.quotation_id));
+  }
+  const code = String(body.type === 'quote' ? document.quote_code : document.invoice_code);
+  writeAudit(actor, 'UPDATE_DOCUMENT_CUSTOMER', body.type === 'quote' ? 'Quotation' : 'Invoice', code, 'Updated saved customer details.');
+  return { ok: true };
+}
+
 export function decideQuotation(actor: StaffMember, quoteId: string, decision: 'Approved' | 'Rejected') {
   const quote = db.prepare('SELECT * FROM quotations WHERE id = ?').get(quoteId) as Record<string, unknown> | undefined;
   if (!quote) throw new Error('Quotation not found.');
   if (!['Approved', 'Rejected'].includes(decision)) throw new Error('Quotation decision is invalid.');
+  if (decision === 'Approved' && String(quote.valid_until) < isoDateOffset(0)) {
+    throw new Error('This quotation has expired. Renew it before approval.');
+  }
   if (decision === 'Approved') {
     const items = JSON.parse(String(quote.items_json || '[]')) as LineItem[];
     if (items.some((item) => item.isTbd)) {
@@ -3126,8 +3388,8 @@ export function decideQuotation(actor: StaffMember, quoteId: string, decision: '
     }
   }
   db.prepare('UPDATE quotations SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?').run(decision, actor.name, new Date().toISOString(), quoteId);
-  if (decision === 'Approved') {
-    db.prepare('UPDATE store_orders SET status = "Confirmed", updated_at = ? WHERE enquiry_id = ?')
+  if (decision === 'Approved' && quote.enquiry_id) {
+    db.prepare("UPDATE store_orders SET status = 'Confirmed', updated_at = ? WHERE enquiry_id = ?")
       .run(new Date().toISOString(), String(quote.enquiry_id));
   }
   notifyRoleMembers(['admin'], `Quotation ${decision}: ${quote.quote_code}`, `${actor.name} marked ${quote.quote_code} as ${decision}.`, 'quotes', String(quote.quote_code));
@@ -3136,37 +3398,55 @@ export function decideQuotation(actor: StaffMember, quoteId: string, decision: '
 }
 
 export function issueInvoice(actor: StaffMember, quotationId: string) {
-  const quote = db.prepare('SELECT * FROM quotations WHERE id = ?').get(quotationId) as Record<string, unknown> | undefined;
-  if (!quote || quote.status !== 'Approved') {
-    throw new Error('Only Approved quotations can be converted to an invoice.');
-  }
-  const items = JSON.parse(String(quote.items_json)) as LineItem[];
-  const totals = calculateDocumentTotals(items, Number(quote.discount_ngn), Number(quote.tax_percent));
-  const enquiry = db.prepare('SELECT email, phone FROM enquiries WHERE id=? LIMIT 1')
-    .get(String(quote.enquiry_id)) as { email: string; phone: string } | undefined;
-  const id = crypto.randomUUID();
-  const invoiceCode = nextCode('invoices', 'invoice_code', 'INV');
-  const now = new Date().toISOString();
-  db.prepare(
-    'INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, discount_ngn, tax_percent, total_ngn, bank_details_json, customer_accepted, accepted_at, issued_date, due_date, items_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)'
-  ).run(
-    id, invoiceCode, String(quote.id), String(quote.enquiry_id), String(quote.customer_name),
-    Number(quote.discount_ngn), Number(quote.tax_percent), totals.total,
-    JSON.stringify(getPlatformSettings().bankDetails),
-    isoDateOffset(0), isoDateOffset(14), String(quote.items_json), now
-  );
-  db.prepare("UPDATE quotations SET status = 'Invoiced' WHERE id = ?").run(String(quote.id));
-  writeAudit(actor, 'ISSUE_INVOICE', 'Invoice', invoiceCode, `Issued invoice from ${quote.quote_code}`);
-  return {
-    id,
-    invoiceCode,
-    enquiryId: String(quote.enquiry_id),
-    customerName: String(quote.customer_name),
-    email: String(enquiry?.email || ''),
-    phone: String(enquiry?.phone || ''),
-    totalNgn: totals.total,
-    items,
-  };
+  return withTransaction(() => {
+    const quote = db.prepare('SELECT * FROM quotations WHERE id = ?').get(quotationId) as Record<string, unknown> | undefined;
+    if (!quote || quote.status !== 'Approved' || String(quote.valid_until) < isoDateOffset(0)) {
+      if (quote && String(quote.valid_until) < isoDateOffset(0)) {
+        throw new Error('This quotation has expired. Renew it before creating an invoice.');
+      }
+      throw new Error('Only Approved quotations can be converted to an invoice.');
+    }
+    const reservation = db.prepare(
+      "UPDATE quotations SET status = 'Invoiced' WHERE id = ? AND status = 'Approved' AND valid_until >= ?"
+    ).run(String(quote.id), isoDateOffset(0));
+    if (reservation.changes !== 1) {
+      throw new Error('This quotation is no longer available for invoicing.');
+    }
+
+    const items = JSON.parse(String(quote.items_json)) as LineItem[];
+    const totals = calculateDocumentTotals(items, Number(quote.discount_ngn), Number(quote.tax_percent));
+    const enquiry = quote.enquiry_id
+      ? db.prepare('SELECT email, phone, location FROM enquiries WHERE id=? LIMIT 1')
+          .get(String(quote.enquiry_id)) as { email: string; phone: string; location: string } | undefined
+      : undefined;
+    const id = crypto.randomUUID();
+    const invoiceCode = nextCode('invoices', 'invoice_code', 'INV');
+    const now = new Date().toISOString();
+    db.prepare(
+      'INSERT INTO invoices (id, invoice_code, quotation_id, enquiry_id, customer_name, customer_email, customer_phone, customer_address, note, discount_ngn, tax_percent, total_ngn, bank_details_json, customer_accepted, accepted_at, issued_date, due_date, items_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)'
+    ).run(
+      id, invoiceCode, String(quote.id), quote.enquiry_id ? String(quote.enquiry_id) : null, String(quote.customer_name),
+      typeof quote.customer_email === 'string' ? quote.customer_email : enquiry?.email ?? null,
+      typeof quote.customer_phone === 'string' ? quote.customer_phone : enquiry?.phone ?? null,
+      typeof quote.customer_address === 'string' ? quote.customer_address : enquiry?.location ?? null,
+      String(quote.note || ''),
+      Number(quote.discount_ngn), Number(quote.tax_percent), totals.total,
+      JSON.stringify(getPlatformSettings().bankDetails),
+      isoDateOffset(0), isoDateOffset(14), String(quote.items_json), now
+    );
+    writeAudit(actor, 'ISSUE_INVOICE', 'Invoice', invoiceCode, `Issued invoice from ${quote.quote_code}`);
+    return {
+      id,
+      invoiceCode,
+      enquiryId: quote.enquiry_id ? String(quote.enquiry_id) : null,
+      customerName: String(quote.customer_name),
+      email: String(quote.customer_email ?? enquiry?.email ?? ''),
+      phone: String(quote.customer_phone ?? enquiry?.phone ?? ''),
+      note: String(quote.note || ''),
+      totalNgn: totals.total,
+      items,
+    };
+  });
 }
 
 export function recordPayment(actor: StaffMember, body: { invoiceId: string; amountNgn: number; paymentDate: string; method: string; reference: string; evidenceNote: string }) {
@@ -3214,9 +3494,10 @@ export function releaseInstallation(
   body: { invoiceId: string; releaseType: 'Full Payment' | 'MD Exception'; releaseNote: string; assignedEngineerId: string | null; targetDate: string; systemSummary: string }
 ) {
   const inv = db
-    .prepare('SELECT i.*, e.location FROM invoices i JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? LIMIT 1')
+    .prepare("SELECT i.*, COALESCE(i.customer_address, e.location, '') AS location FROM invoices i LEFT JOIN enquiries e ON e.id = i.enquiry_id WHERE i.id = ? LIMIT 1")
     .get(body.invoiceId) as Record<string, unknown> | undefined;
   if (!inv) throw new Error('Invoice not found.');
+  if (!inv.enquiry_id) throw new Error('An installation job requires an enquiry-linked invoice and customer location.');
 
   const payRows = db.prepare('SELECT amount_ngn, status FROM payments WHERE invoice_id = ?').all(String(inv.id)) as { amount_ngn: number; status: string }[];
   const bal = calculateInvoiceBalance(

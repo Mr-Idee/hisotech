@@ -1,15 +1,10 @@
-import { useEffect, useState } from 'react';
-import { CustomerProfileView } from './components/CustomerProfileView';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { GlobalNotice } from './components/GlobalNotice';
-import { DocumentView } from './components/DocumentView';
-import { EstimatorView } from './components/EstimatorView';
 import { OfflineIndicator } from './components/PWAInstallButton';
 import { PublicSite } from './components/PublicSite';
-import { StorefrontView } from './components/StorefrontView';
 import { TopBar, type AppRoute } from './components/TopBar';
-import { TrackerView } from './components/TrackerView';
-import { WorkspaceView } from './components/WorkspaceView';
 import { api } from './lib/api';
+import { migrateLegacyOfflineEstimatesToMemory } from './lib/offline-estimate-storage';
 import {
   DEFAULT_HOMEPAGE_CONTENT,
   normalizeHomepageContent,
@@ -17,6 +12,13 @@ import {
 } from './lib/homepage';
 import type { ApplianceItem, BankDetails, CatalogItem, EstimatorSettings, PlatformSettings } from './lib/types';
 import { defaultEstimatorSettings, normalizeEstimatorSettings } from './lib/estimator-settings';
+
+const CustomerProfileView = lazy(() => import('./components/CustomerProfileView').then((module) => ({ default: module.CustomerProfileView })));
+const DocumentView = lazy(() => import('./components/DocumentView').then((module) => ({ default: module.DocumentView })));
+const EstimatorView = lazy(() => import('./components/EstimatorView').then((module) => ({ default: module.EstimatorView })));
+const StorefrontView = lazy(() => import('./components/StorefrontView').then((module) => ({ default: module.StorefrontView })));
+const TrackerView = lazy(() => import('./components/TrackerView').then((module) => ({ default: module.TrackerView })));
+const WorkspaceView = lazy(() => import('./components/WorkspaceView').then((module) => ({ default: module.WorkspaceView })));
 
 const CACHED_CATALOG_KEY = 'hiso_cached_catalog';
 const THEME_MODE_KEY = 'hiso_theme_mode';
@@ -78,6 +80,7 @@ export default function App() {
   }
 
   useEffect(() => {
+    migrateLegacyOfflineEstimatesToMemory();
     api
       .getPublicBootstrap()
       .then((res) => {
@@ -154,64 +157,66 @@ export default function App() {
         onToggleTheme={cycleThemeMode}
       />
 
-      {docView ? (
-        <DocumentView
-          type={docView.type}
-          id={docView.id}
-          canEmail={docView.canEmail}
-          bankDetails={bankDetails}
-          onBack={() => setDocView(null)}
-        />
-      ) : route === 'home' ? (
-        <PublicSite
-          catalog={catalog}
-          homepage={homepage}
-          darkMode={darkMode}
-          themeMode={themeMode}
-          onToggleTheme={cycleThemeMode}
-          onNavigate={handleNavigate}
-        />
-      ) : route === 'store' ? (
-        <StorefrontView
-          catalog={catalog}
-          onUseInEstimator={handleUseStoreItemInEstimator}
-          onOpenEstimator={() => handleNavigate('estimator')}
-          onTrackOrder={(refCode) => {
-            setTrackRef(refCode);
-            handleNavigate('track');
-          }}
-        />
-      ) : route === 'estimator' ? (
-        <EstimatorView
-          catalog={catalog}
-          settings={estimatorSettings}
-          importedAppliances={importedAppliances}
-          onClearImported={() => setImportedAppliances([])}
-          onOpenStore={() => handleNavigate('store')}
-          onTrackRef={(refCode) => {
-            setTrackRef(refCode);
-            handleNavigate('track');
-          }}
-        />
-      ) : route === 'customer' ? (
-        <CustomerProfileView />
-      ) : route === 'track' ? (
-        <TrackerView
-          initialRef={trackRef}
-          onOpenDocument={(type, id) => setDocView({ type, id, canEmail: false })}
-          onOpenCustomerPortal={() => handleNavigate('customer')}
-        />
-      ) : (
-        <WorkspaceView
-          onOpenDocument={(type, id) => setDocView({ type, id, canEmail: true })}
-          onCatalogChange={saveAndSetCatalog}
-          onHomepageChange={setHomepage}
-          onSettingsChange={(settings: PlatformSettings) => {
-            setEstimatorSettings(settings.estimator);
-            setBankDetails(settings.bankDetails);
-          }}
-        />
-      )}
+      <Suspense fallback={<main className="mx-auto max-w-7xl p-8 text-sm text-slate-500">Loading page…</main>}>
+        {docView ? (
+          <DocumentView
+            type={docView.type}
+            id={docView.id}
+            canEmail={docView.canEmail}
+            bankDetails={bankDetails}
+            onBack={() => setDocView(null)}
+          />
+        ) : route === 'home' ? (
+          <PublicSite
+            catalog={catalog}
+            homepage={homepage}
+            darkMode={darkMode}
+            themeMode={themeMode}
+            onToggleTheme={cycleThemeMode}
+            onNavigate={handleNavigate}
+          />
+        ) : route === 'store' ? (
+          <StorefrontView
+            catalog={catalog}
+            onUseInEstimator={handleUseStoreItemInEstimator}
+            onOpenEstimator={() => handleNavigate('estimator')}
+            onTrackOrder={(refCode) => {
+              setTrackRef(refCode);
+              handleNavigate('track');
+            }}
+          />
+        ) : route === 'estimator' ? (
+          <EstimatorView
+            catalog={catalog}
+            settings={estimatorSettings}
+            importedAppliances={importedAppliances}
+            onClearImported={() => setImportedAppliances([])}
+            onOpenStore={() => handleNavigate('store')}
+            onTrackRef={(refCode) => {
+              setTrackRef(refCode);
+              handleNavigate('track');
+            }}
+          />
+        ) : route === 'customer' ? (
+          <CustomerProfileView />
+        ) : route === 'track' ? (
+          <TrackerView
+            initialRef={trackRef}
+            onOpenDocument={(type, id) => setDocView({ type, id, canEmail: false })}
+            onOpenCustomerPortal={() => handleNavigate('customer')}
+          />
+        ) : (
+          <WorkspaceView
+            onOpenDocument={(type, id) => setDocView({ type, id, canEmail: true })}
+            onCatalogChange={saveAndSetCatalog}
+            onHomepageChange={setHomepage}
+            onSettingsChange={(settings: PlatformSettings) => {
+              setEstimatorSettings(settings.estimator);
+              setBankDetails(settings.bankDetails);
+            }}
+          />
+        )}
+      </Suspense>
 
       <OfflineIndicator />
       <GlobalNotice />

@@ -502,14 +502,18 @@ export const api = {
 
   saveQuote: (payload: {
     quoteId?: string;
-    enquiryId: string;
+    enquiryId: string | null;
+    standalone?: boolean;
     customerName: string;
+    customerEmail?: string;
+    customerPhone?: string;
+    customerAddress?: string;
     scope: string;
     terms: string;
     note: string;
     discountNgn: number;
     taxPercent: number;
-    validUntil: string;
+    validUntil?: string;
     items: LineItem[];
     submitForApproval: boolean;
   }) =>
@@ -522,6 +526,26 @@ export const api = {
     request<{ status: string }>('/api/quotes/approve', {
       method: 'POST',
       body: JSON.stringify({ quoteId, decision }),
+    }),
+
+  renewQuote: (quoteId: string) =>
+    request<{ validUntil: string }>('/api/quotes/renew', {
+      method: 'POST',
+      body: JSON.stringify({ quoteId }),
+    }),
+
+  saveDocumentDetails: (payload: {
+    type: 'quote' | 'invoice';
+    id: string;
+    customerName: string;
+    customerEmail: string;
+    customerPhone: string;
+    customerAddress: string;
+    note: string;
+  }) =>
+    request<{ ok: boolean }>('/api/documents/details', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   issueInvoice: (quotationId: string) =>

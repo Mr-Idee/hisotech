@@ -134,9 +134,13 @@ export interface QuotationRevision {
 export interface QuotationRecord {
   id: string;
   quoteCode: string;
-  enquiryId: string;
+  enquiryId: string | null;
   customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  customerAddress: string;
   status: 'Draft' | 'Pending MD' | 'Approved' | 'Rejected' | 'Invoiced';
+  isExpired: boolean;
   revisionNo: number;
   scope: string;
   terms: string;
@@ -176,8 +180,12 @@ export interface InvoiceRecord {
   id: string;
   invoiceCode: string;
   quotationId: string;
-  enquiryId: string;
+  enquiryId: string | null;
   customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  customerAddress: string;
+  note: string;
   discountNgn: number;
   taxPercent: number;
   totalNgn: number;

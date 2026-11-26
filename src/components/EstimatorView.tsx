@@ -13,28 +13,17 @@ import { useOnlineStatus } from '../hooks/usePWAInstall';
 import { api } from '../lib/api';
 import { notifyUser } from '../lib/notifications';
 import {
+  persistOfflineEstimates,
+  readOfflineEstimates,
+  type PendingOfflineEstimate,
+} from '../lib/offline-estimate-storage';
+import {
   calculateSolarEstimate,
   computeEstimateCostFromCatalog,
   DEFAULT_APPLIANCES,
   formatNgn,
 } from '../lib/solar';
 import type { ApplianceItem, CatalogItem, EstimatorSettings, PowerMode, SolarEstimateResult } from '../lib/types';
-
-interface PendingOfflineEstimate {
-  localId: string;
-  savedAt: string;
-  customerName: string;
-  email: string;
-  phone: string;
-  location: string;
-  needSummary: string;
-  appliances: ApplianceItem[];
-  estimate: SolarEstimateResult;
-  whatsappUpdatesConsent?: boolean;
-  whatsappMarketingConsent?: boolean;
-}
-
-const OFFLINE_QUEUE_KEY = 'hiso_offline_estimates_queue';
 
 interface EstimatorViewProps {
   catalog: CatalogItem[];
@@ -51,17 +40,6 @@ const COMMERCIAL_PRESET: ApplianceItem[] = [
   { id: 'c-ac', name: '2HP Inverter Split AC', qty: 2, watts: 1500, hours: 6 },
   { id: 'c-srv', name: 'Network Rack & Server', qty: 1, watts: 450, hours: 24 },
 ];
-
-function readOfflineQueue(): PendingOfflineEstimate[] {
-  try {
-    const raw = window.localStorage.getItem(OFFLINE_QUEUE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 
 export function EstimatorView({
   catalog,
@@ -96,7 +74,7 @@ export function EstimatorView({
   const [submittedRef, setSubmittedRef] = useState('');
   const [submittedQuoteCode, setSubmittedQuoteCode] = useState('');
   const [offlineSavedBanner, setOfflineSavedBanner] = useState('');
-  const [offlineQueue, setOfflineQueue] = useState<PendingOfflineEstimate[]>(() => readOfflineQueue());
+  const [offlineQueue, setOfflineQueue] = useState<PendingOfflineEstimate[]>(() => readOfflineEstimates());
 
   // Append appliances sent from the Store.
   useEffect(() => {
@@ -116,11 +94,7 @@ export function EstimatorView({
 
   function persistQueue(next: PendingOfflineEstimate[]) {
     setOfflineQueue(next);
-    try {
-      window.localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage quota errors
-    }
+    persistOfflineEstimates(next);
   }
 
   const estimate = useMemo(
@@ -274,7 +248,7 @@ export function EstimatorView({
     const next = [entry, ...offlineQueue];
     persistQueue(next);
     setOfflineSavedBanner(
-      `Saved ${entry.localId} locally to device storage. Ready to upload to HI-SOTECH server whenever online.`
+      `Saved ${entry.localId} in this tab's memory. It will be cleared when you refresh or close the tab.`
     );
   }
 
@@ -369,26 +343,41 @@ export function EstimatorView({
                 {offlineSavedBanner ||
                   (!isOnline
                     ? 'You are currently offline. Calculations and Store pricing run 100% locally.'
-                    : `${offlineQueue.length} local offline estimate(s) ready to sync to the HI-SOTECH server.`)}
+                    : `${offlineQueue.length} in-memory offline estimate(s) ready to sync to the HI-SOTECH server.`)}
               </div>
               {offlineQueue.length > 0 && (
                 <p className="mt-0.5 text-xs opacity-85">
-                  Queued: {offlineQueue.map((q) => `${q.customerName} (${q.estimate.inverterMinKw}kW)`).join(', ')}
+                  Queued: {offlineQueue.length} estimate(s). Kept in memory only; refreshing or closing this tab clears them.
                 </p>
               )}
             </div>
           </div>
 
-          {offlineQueue.length > 0 && isOnline && (
-            <button
-              type="button"
-              disabled={syncBusy}
-              onClick={() => uploadOfflineQueue(offlineQueue)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26] disabled:opacity-60"
-            >
-              <CloudUpload className="h-3.5 w-3.5" />
-              {syncBusy ? 'Uploading...' : `Upload ${offlineQueue.length} Pending to Server`}
-            </button>
+          {offlineQueue.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {isOnline && (
+                <button
+                  type="button"
+                  disabled={syncBusy}
+                  onClick={() => uploadOfflineQueue(offlineQueue)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#081E3E] px-4 py-2 text-xs font-semibold text-white hover:bg-[#D61F26] disabled:opacity-60"
+                >
+                  <CloudUpload className="h-3.5 w-3.5" />
+                  {syncBusy ? 'Uploading...' : `Upload ${offlineQueue.length} Pending to Server`}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={syncBusy}
+                onClick={() => {
+                  persistQueue([]);
+                  setOfflineSavedBanner('');
+                }}
+                className="rounded-lg border border-amber-600 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200"
+              >
+                Clear Saved Data
+              </button>
+            </div>
           )}
         </div>
       )}

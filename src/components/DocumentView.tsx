@@ -99,7 +99,8 @@ function documentPdfData(doc: Record<string, unknown>, type: 'quote' | 'invoice'
     validUntil: String(doc.validUntil || ''),
     status: String(doc.status || ''),
     scope: String(doc.scope || ''),
-    terms: String(doc.terms || doc.note || ''),
+    terms: String(doc.terms || ''),
+    note: String(doc.note || ''),
     discountNgn: Number(doc.discountNgn || 0),
     taxPercent: Number(doc.taxPercent || 0),
     items: Array.isArray(doc.items) ? doc.items as LineItem[] : [],
@@ -405,10 +406,16 @@ export function DocumentView({ type, id, canEmail, bankDetails, onBack }: Docume
                     {bank.accountNumber}
                   </div>
                 </div>
-              ) : (
+              ) : doc.terms ? (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
                   <div className="font-semibold text-[#081E3E]">Commercial Terms</div>
-                  <p className="mt-1">{String(doc.terms || doc.note || 'Subject to site inspection and MD sign-off.')}</p>
+                  <p className="mt-1">{String(doc.terms)}</p>
+                </div>
+              ) : null}
+              {String(doc.note || '').trim() && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950">
+                  <div className="font-semibold text-[#704B00]">Note</div>
+                  <p className="mt-1 whitespace-pre-wrap">{String(doc.note)}</p>
                 </div>
               )}
             </div>

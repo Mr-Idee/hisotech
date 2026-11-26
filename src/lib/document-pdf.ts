@@ -16,6 +16,7 @@ export interface DocumentPdfData {
   status: string;
   scope: string;
   terms: string;
+  note: string;
   discountNgn: number;
   taxPercent: number;
   items: LineItem[];
@@ -246,6 +247,20 @@ export async function createDocumentPdf(data: DocumentPdfData): Promise<Blob> {
     pdf.setFont('helvetica', 'normal');
     pdf.text(termsLines, left, y);
     y += termsLines.length * 3.84 + 2;
+  }
+
+  if (data.note) {
+    const noteLines = pdf.splitTextToSize(printableText(data.note), width) as string[];
+    ensureSpace(8 + noteLines.length * 3.84);
+    pdf.setTextColor(106, 73, 16);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.text('NOTE', left, y);
+    y += 4;
+    pdf.setTextColor(75, 85, 99);
+    pdf.setFont('helvetica', 'normal');
+    pdf.text(noteLines, left, y);
+    y += noteLines.length * 3.84 + 2;
   }
 
   const warrantyItems = [

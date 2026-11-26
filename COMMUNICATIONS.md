@@ -15,6 +15,7 @@ The production implementation is primarily in [`php-cpanel/hiso_private/communic
 | Same Store order submission | Admin, Super Admin, and Director | `Purchase order {orderCode} awaits Director confirmation` | Customer/contact and delivery details, order items and totals, TBD delivery, customer notes, and a workspace link. |
 | Staff member submits a quotation for Director approval | Director and Super Admin | `HI-SOTECH quotation awaiting Director approval: {quoteCode}` | Quotation code, customer, scope, and a link to the quotations workspace. |
 | Director decides a quotation | Admin and Super Admin | `HI-SOTECH quotation decision: {status}` | Decision, quotation ID, and a link to the quotations workspace. The customer is not automatically sent the quotation PDF; staff must use the document-email action. |
+| Admin/front desk or Super Admin creates a standalone quotation | Director and Super Admin when submitted | `HI-SOTECH quotation awaiting Director approval: {quoteCode}` | Same approval notification as an enquiry-linked quotation. Standalone documents have optional customer contact details and do not require an enquiry. |
 | Admin provisions a customer account from a Director-approved estimator quotation | Customer | `Your HI-SOTECH account setup instructions` | Personalized greeting, portal email/username, four-digit one-time setup PIN, 24-hour expiry, and instructions to create a password. The PIN is invalidated after ten incorrect attempts. Delivery failure is reported so the Admin can retry. |
 | Admin resets a customer password from the approved estimator quotation | Customer | `Your HI-SOTECH password reset instructions` | Same four-digit one-time PIN setup flow. Resetting invalidates active customer sessions and existing sign-in links; the PIN is invalidated after ten incorrect attempts. |
 | Super Admin creates a staff account or Admin/Super Admin resends its setup PIN | Staff member | `Your HI-SOTECH account setup instructions` | Personalized greeting, username, four-digit one-time PIN, 24-hour expiry, staff-workspace link, and password-creation instructions. The PIN is invalidated after ten incorrect attempts. |
@@ -26,6 +27,7 @@ The production implementation is primarily in [`php-cpanel/hiso_private/communic
 | Quote, invoice, ticket, or installation lifecycle event | Related eligible customer/enquiry/staff recipient | Production subject: `HI-SOTECH service update`; Node preview uses `HI-SOTECH update: {event}` unless a specific subject is supplied | Uses the event message supplied by the trigger. If enabled for the event and recipient, this same lifecycle message may also be sent as WhatsApp and browser push. Delivery is conditional on the recipient records, channel configuration, subscriptions, and (for WhatsApp) active operational consent. |
 | Staff emails a quotation or invoice PDF from the workspace | Customer on the document's enquiry | `HI-SOTECH Quotation {documentCode}` or `HI-SOTECH Invoice {documentCode}` | Short message with the validated PDF attached. This is a staff action, not an automatic quotation-approval email. |
 | Staff sends a one-to-one service reply | Customer on an active, unarchived enquiry or unresolved support ticket | Approved `new_enquiry` or `ticket_status` WhatsApp template | Staff-entered service reply tied to the selected request. Requires communications permission and an E.164 phone number; it does not require marketing consent. This path is not for promotions. |
+| Staff sends a one-to-one WhatsApp message or newsletter | Any saved customer, active staff member, or enquiry with a valid E.164 number; newsletters may be restricted to a saved customer group | Approved `manual` or `newsletter` Meta template | Staff-composed message. Manual sends and newsletters do not require a WhatsApp consent record; recipient IDs are re-resolved server-side, with permissions, rate limits, valid numbers, template configuration, and attachment validation still enforced. |
 | Super Admin sends an SMTP test from Communications | Chosen address, or the signed-in Super Admin address | `HI-SOTECH email delivery test` | Fixed test message confirming outbound SMTP delivery. Rate-limited. |
 | Staff sends an email newsletter | Customers with active email-marketing consent; optionally restricted to a selected contact group | Staff-entered subject | Staff-entered message and validated attachments, sent in BCC batches. Recipients are re-resolved server-side at send time; unconsented, invalid, or unavailable contacts are skipped. |
 
@@ -177,7 +179,7 @@ The PHP invoice-issuance path sends the invoice email through the invoice-specif
 
 ## Other communication channels
 
-- **WhatsApp:** a public enquiry acknowledgement and staff-composed replies tied to an active enquiry or unresolved support ticket use the corresponding approved service template and valid submitted request phone, without requiring marketing consent. The staff reply route accepts only those request records and is not for promotions. Other lifecycle updates and customer/staff account setup WhatsApp notices remain gated by active operational consent. Staff-composed marketing messages and WhatsApp newsletters require current marketing consent. Meta-approved templates and private provider credentials are required.
+- **WhatsApp:** a public enquiry acknowledgement and staff-composed replies tied to an active enquiry or unresolved support ticket use the corresponding approved service template and valid submitted request phone, without requiring marketing consent. The service-reply route accepts only those request records and is not for promotions. Staff-composed one-to-one messages and newsletters can target any saved contact with a valid E.164 number, regardless of recorded consent. Lifecycle updates and customer/staff account setup WhatsApp notices remain gated by active operational consent. Meta-approved templates and private provider credentials are required.
 - **Browser push:** event-driven lifecycle notifications and staff-composed push notifications are sent only to registered subscriptions. Messages are truncated before delivery; expired subscriptions are removed when detected.
 - **In-app notifications:** assignment and workflow events can create internal workspace notifications. They are separate from email and do not imply that an email was sent.
 - **No automatic invoice/order-status email:** updating an order's dispatch/delivery status does not by itself compose an email. Invoice issuance and payment events have their own triggers above.
@@ -219,6 +221,14 @@ Consent and delivery outcomes are handled by the API at send time. An accepted A
 4. Admin records a payment receipt. It remains pending until Director/Super Admin verifies or rejects it.
 5. Verified payments update the invoice to Confirmed or Completed according to the amount paid. The Store order is completed only after payment completion and delivery.
 
+### Standalone quotation and invoice
+
+1. Admin/front desk or Super Admin creates a quotation without an enquiry, enters the heading and line items, and may add optional customer details and a custom note.
+2. The system assigns the quotation code and sets validity to seven days from creation. Director approval is still required; an expired quotation is inactive until renewed for seven days.
+3. Admin/front desk or Super Admin can update the saved customer details and note on a quotation or invoice. Creating the invoice copies the quotation's current note and customer details; invoice notes can then be edited independently.
+4. The system assigns the invoice code and adds its full amount to invoiced/receivable totals automatically. It does not create a payment receipt or count unpaid money as cash received.
+5. Actual customer payments are logged as receipts and only affect confirmed collections after Director/Super Admin verification.
+
 ### Service delivery and customer support
 
 1. Customer submits a service ticket from the authenticated portal.
@@ -229,11 +239,11 @@ Consent and delivery outcomes are handled by the API at send time. An accepted A
 ### Contact groups and batch communications
 
 1. Staff with communications permission create named groups from verified customer accounts.
-2. For each newsletter send, the API resolves the selected group and rechecks current channel-specific consent and contact details. Selection in the browser is not treated as consent. The separate one-to-one service-reply path only resolves active enquiry and support-ticket records, never arbitrary customer contacts.
+2. For email newsletter sends, the API resolves the selected group and rechecks current email consent and address. WhatsApp sends instead re-resolve saved recipient records and require a valid E.164 number, but do not require a WhatsApp consent record. The separate one-to-one service-reply path only resolves active enquiry and support-ticket records.
 3. Email newsletter messages use BCC batches. WhatsApp newsletters use the approved Meta template and can include one validated image/PDF. Push is sent only to subscribed devices.
 
 ## Production setup notes
 
 - Keep SMTP, Meta, and VAPID secrets in the private server configuration outside the web root.
-- Use the production migrations for existing databases; migration `011-staff-authentication.sql` adds staff auth type, verified staff email, and one-use reset-token storage. Migration `012-setup-pin-attempt-limit.sql` adds the lifetime failed-attempt counters for four-digit setup/reset PINs. Import each pending migration in phpMyAdmin before using the corresponding features.
+- Use the production migrations for existing databases. For standalone quotations and editable invoice notes, apply `014-standalone-quotations.sql` followed by `015-invoice-document-notes.sql`; apply `016-one-invoice-per-quotation.sql` to enforce one invoice per quotation. Check and reconcile any duplicate invoice groups reported by migration 016 before retrying it; do not delete duplicate financial records without reconciling their payments. Earlier migrations include `011-staff-authentication.sql` for staff authentication/reset-token storage and `012-setup-pin-attempt-limit.sql` for setup/reset PIN attempt limits. Import each pending migration before using its corresponding features.
 - See [`php-cpanel/README_CPANEL_AND_LOCAL_SETUP.md`](php-cpanel/README_CPANEL_AND_LOCAL_SETUP.md) for private configuration, deployment, and integration setup.

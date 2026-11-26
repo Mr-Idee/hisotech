@@ -12,6 +12,7 @@ interface WorkspaceFinanceProps {
   staff: StaffMember[];
   onRefresh: () => Promise<void>;
   onOpenDocument: (type: 'quote' | 'invoice', id: string) => void;
+  onEditDocumentDetails: (invoice: InvoiceRecord) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -23,6 +24,7 @@ export function WorkspaceFinance({
   staff,
   onRefresh,
   onOpenDocument,
+  onEditDocumentDetails,
   onNotify,
 }: WorkspaceFinanceProps) {
   const [payInvoice, setPayInvoice] = useState<InvoiceRecord | null>(null);
@@ -275,6 +277,15 @@ export function WorkspaceFinance({
                   </td>
                   <td className="py-3 text-right">
                     <div className="flex flex-wrap justify-end gap-2">
+                      {canLogReceipts && (
+                        <button
+                          type="button"
+                          onClick={() => onEditDocumentDetails(inv)}
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 px-2.5 py-1 text-xs font-semibold hover:border-[#081E3E] dark:border-slate-700"
+                        >
+                          Customer Details / Note
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onOpenDocument('invoice', inv.id)}

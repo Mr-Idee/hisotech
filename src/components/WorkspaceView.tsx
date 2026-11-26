@@ -27,7 +27,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, compressImageFile, imageBlobToDataUrl } from '../lib/api';
 import { listenForStaffLogout, notifyStaffLogoutAcrossTabs } from '../lib/auth-sync';
 import { createWhatsAppLink } from '../lib/communications';
@@ -136,6 +136,11 @@ export function WorkspaceView({
   const [resetStaffPasswordToken, setResetStaffPasswordToken] = useState(
     () => new URLSearchParams(window.location.hash.split('?').slice(1).join('?')).get('reset') || ''
   );
+  useLayoutEffect(() => {
+    if (resetStaffPasswordToken) {
+      window.history.replaceState(null, '', '#workspace');
+    }
+  }, []);
   const [resetStaffPassword, setResetStaffPassword] = useState('');
   const [resetStaffPasswordConfirm, setResetStaffPasswordConfirm] = useState('');
   const [setupAvailable, setSetupAvailable] = useState(false);
@@ -155,6 +160,16 @@ export function WorkspaceView({
   const [newQuotePickerOpen, setNewQuotePickerOpen] = useState(false);
   const [invoicePickerOpen, setInvoicePickerOpen] = useState(false);
   const [invoiceCreatingId, setInvoiceCreatingId] = useState<string | null>(null);
+  const [renewQuote, setRenewQuote] = useState<QuotationRecord | null>(null);
+  const [customerInfoDocument, setCustomerInfoDocument] = useState<{ type: 'quote' | 'invoice'; id: string; code: string } | null>(null);
+  const [customerInfoDraft, setCustomerInfoDraft] = useState({
+    customerName: '',
+    customerEmail: '',
+    customerPhone: '',
+    customerAddress: '',
+    note: '',
+  });
+  const [customerInfoBusy, setCustomerInfoBusy] = useState(false);
 
   // Manual enquiry modal
   const [enqModal, setEnqModal] = useState(false);
@@ -190,7 +205,11 @@ export function WorkspaceView({
   const [quoteModal, setQuoteModal] = useState(false);
   const [editQuoteId, setEditQuoteId] = useState<string | undefined>(undefined);
   const [quoteEnqId, setQuoteEnqId] = useState('');
+  const [quoteStandalone, setQuoteStandalone] = useState(false);
   const [quoteCustomer, setQuoteCustomer] = useState('');
+  const [quoteStandaloneEmail, setQuoteStandaloneEmail] = useState('');
+  const [quoteStandalonePhone, setQuoteStandalonePhone] = useState('');
+  const [quoteStandaloneAddress, setQuoteStandaloneAddress] = useState('');
   const [quoteScope, setQuoteScope] = useState('');
   const [quoteTerms, setQuoteTerms] = useState('50% deposit on acceptance, 50% prior to commissioning.');
   const [quoteNote, setQuoteNote] = useState('Valid 7 days. Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error.');
@@ -552,19 +571,24 @@ export function WorkspaceView({
     }
   }
 
-  function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord, storeOrder?: StoreOrderRecord) {
+  function openQuoteBuilder(enq?: EnquiryRecord, existing?: QuotationRecord, storeOrder?: StoreOrderRecord, standalone = false) {
     if (!data) return;
     setErrorMsg('');
+    setQuoteValid(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
     if (existing) {
       setEditQuoteId(existing.id);
-      setQuoteEnqId(existing.enquiryId);
+      setQuoteEnqId(existing.enquiryId || '');
+      setQuoteStandalone(existing.enquiryId === null);
       setQuoteCustomer(existing.customerName);
+      setQuoteStandaloneEmail(existing.customerEmail);
+      setQuoteStandalonePhone(existing.customerPhone);
+      setQuoteStandaloneAddress(existing.customerAddress);
       setQuoteScope(existing.scope);
       setQuoteTerms(existing.terms);
       setQuoteNote(existing.note);
       setQuoteDiscount(String(existing.discountNgn));
       setQuoteTax(String(existing.taxPercent));
-      setQuoteValid(existing.validUntil);
+      setQuoteValid(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
       setQuoteItems(existing.items);
     } else if (enq) {
       if (!storeOrder && !enq.estimate) {
@@ -573,7 +597,11 @@ export function WorkspaceView({
       }
       setEditQuoteId(undefined);
       setQuoteEnqId(enq.id);
+      setQuoteStandalone(false);
       setQuoteCustomer(enq.customerName);
+      setQuoteStandaloneEmail(enq.email);
+      setQuoteStandalonePhone(enq.phone);
+      setQuoteStandaloneAddress(enq.location);
       if (storeOrder) {
         setQuoteScope(`Supply of items in purchase order ${storeOrder.orderCode} for ${storeOrder.location}.`);
         setQuoteNote(`Prepared from customer purchase order ${storeOrder.orderCode}. Logistics / delivery remains TBD until priced.`);
@@ -601,10 +629,14 @@ export function WorkspaceView({
     } else {
       setEditQuoteId(undefined);
       setQuoteEnqId('');
+      setQuoteStandalone(standalone);
       setQuoteCustomer('');
+      setQuoteStandaloneEmail('');
+      setQuoteStandalonePhone('');
+      setQuoteStandaloneAddress('');
       setQuoteScope('');
       setQuoteTerms('50% deposit on acceptance, 50% prior to commissioning.');
-      setQuoteNote('Valid 7 days. Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error.');
+      setQuoteNote(standalone ? '' : 'Valid 7 days. Installation warranty: 2 years on installation work only; excludes theft, natural disasters, and end-user error.');
       setQuoteDiscount('0');
       setQuoteTax('7.5');
       setQuoteValid(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
@@ -972,7 +1004,7 @@ export function WorkspaceView({
     && visibleNotifications.every((notification) => selectedNotificationIds.includes(notification.id));
   const openTicketsCount = data.tickets.filter((t) => t.status !== 'Resolved').length;
   const pendingOrders = data.orders.filter((o) => o.status === 'Pending' || o.status === 'Confirmed').length;
-  const pendingQuotes = data.quotes.filter((q) => q.status === 'Pending MD').length;
+  const pendingQuotes = data.quotes.filter((q) => q.status === 'Pending MD' && !q.isExpired).length;
   const pendingPayments = data.payments.filter((p) => p.status === 'Pending').length;
   const technicians = data.staff.filter(
     (s) => (s.role === 'technician' || hasPermission(s, 'update_installations')) && s.status === 'Active'
@@ -981,7 +1013,7 @@ export function WorkspaceView({
     (enquiry) => Boolean(enquiry.estimate)
       && !data.quotes.some((quote) => quote.enquiryId === enquiry.id && quote.status !== 'Rejected')
   );
-  const approvedQuotesAvailableForInvoice = data.quotes.filter((quote) => quote.status === 'Approved');
+  const approvedQuotesAvailableForInvoice = data.quotes.filter((quote) => quote.status === 'Approved' && !quote.isExpired);
 
   const navLinks: { id: WorkspaceTab; label: string; icon: typeof LayoutDashboard; allowed: boolean }[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard, allowed: true },
@@ -1006,7 +1038,7 @@ export function WorkspaceView({
       id: 'quotes',
       label: 'Quotations',
       icon: FileText,
-      allowed: hasPermission(user, 'draft_quotes') || hasPermission(user, 'approve_quotes'),
+      allowed: hasPermission(user, 'draft_quotes') || hasPermission(user, 'approve_quotes') || ['admin', 'superadmin'].includes(user.role),
     },
     {
       id: 'invoices',
@@ -1700,13 +1732,22 @@ export function WorkspaceView({
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h1 className="text-2xl font-bold text-[#081E3E] dark:text-white">Quotations &amp; Director Approvals</h1>
-              {hasPermission(user, 'draft_quotes') && (
+              {(hasPermission(user, 'draft_quotes') || ['admin', 'superadmin'].includes(user.role)) && (
                 <button
                   type="button"
                   onClick={() => setNewQuotePickerOpen(true)}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-[#D61F26] px-4 py-2 text-sm font-semibold text-white hover:bg-[#B0171D]"
                 >
                   <Plus className="h-4 w-4" /> New Quotation
+                </button>
+              )}
+              {['admin', 'superadmin'].includes(user.role) && (
+                <button
+                  type="button"
+                  onClick={() => openQuoteBuilder(undefined, undefined, undefined, true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#D5A128] bg-amber-50 px-4 py-2 text-sm font-semibold text-[#704B00] shadow-sm dark:bg-amber-950/30 dark:text-amber-200"
+                >
+                  <Plus className="h-4 w-4" /> Standalone Quotation
                 </button>
               )}
             </div>
@@ -1724,12 +1765,17 @@ export function WorkspaceView({
                           {q.quoteCode} · R{q.revisionNo}
                         </span>
                         <span>·</span>
-                        <span className="font-semibold text-[#081E3E] dark:text-white">{q.status}</span>
+                        <span className={`font-semibold ${q.isExpired ? 'text-red-600 dark:text-red-300' : 'text-[#081E3E] dark:text-white'}`}>
+                          {q.isExpired ? 'Expired · Inactive' : q.status}
+                        </span>
                         <span>·</span>
                         <span>Valid until {q.validUntil}</span>
                       </div>
                       <h3 className="mt-1 text-lg font-bold text-[#081E3E] dark:text-white">{q.customerName}</h3>
                       <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{q.scope}</p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        {q.enquiryId ? 'Enquiry-linked' : 'Standalone · No enquiry'}
+                      </p>
                       <div className="font-mono-num mt-2 text-base font-bold text-[#081E3E] dark:text-white">
                         {formatNgn(tot.total)}
                       </div>
@@ -1743,7 +1789,36 @@ export function WorkspaceView({
                       >
                         Print PDF <ExternalLink className="h-3 w-3" />
                       </button>
-                      {hasPermission(user, 'draft_quotes') && q.status !== 'Invoiced' && (
+                      {(hasPermission(user, 'draft_quotes') || (q.enquiryId === null && ['admin', 'superadmin'].includes(user.role))) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomerInfoDocument({ type: 'quote', id: q.id, code: q.quoteCode });
+                            setCustomerInfoDraft({
+                              customerName: q.customerName,
+                              customerEmail: q.customerEmail,
+                              customerPhone: q.customerPhone,
+                              customerAddress: q.customerAddress,
+                              note: q.note,
+                            });
+                          }}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold dark:border-slate-700"
+                        >
+                          Customer Details
+                        </button>
+                      )}
+                      {q.isExpired && q.status !== 'Invoiced' && q.status !== 'Rejected'
+                        && (hasPermission(user, 'draft_quotes') || ['admin', 'superadmin'].includes(user.role)) && (
+                        <button
+                          type="button"
+                          onClick={() => setRenewQuote(q)}
+                          className="rounded-lg border border-amber-500 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-200"
+                        >
+                          Renew 7 Days
+                        </button>
+                      )}
+                      {(hasPermission(user, 'draft_quotes') || (q.enquiryId === null && ['admin', 'superadmin'].includes(user.role)))
+                        && !q.isExpired && q.status !== 'Invoiced' && (
                         <button
                           type="button"
                           onClick={() => openQuoteBuilder(undefined, q)}
@@ -1752,7 +1827,7 @@ export function WorkspaceView({
                           Edit / Revise
                         </button>
                       )}
-                      {hasPermission(user, 'approve_quotes') && q.status === 'Pending MD' && (
+                      {hasPermission(user, 'approve_quotes') && q.status === 'Pending MD' && !q.isExpired && (
                         <>
                           <button
                             type="button"
@@ -1840,7 +1915,7 @@ export function WorkspaceView({
                           </button>
                           </>
                         )}
-                      {hasPermission(user, 'manage_invoices') && q.status === 'Approved' && (
+                      {hasPermission(user, 'manage_invoices') && q.status === 'Approved' && !q.isExpired && (
                         <button
                           type="button"
                           onClick={() => void issueInvoiceFromQuote(q)}
@@ -1878,6 +1953,16 @@ export function WorkspaceView({
               staff={data.staff}
               onRefresh={loadWorkspace}
               onOpenDocument={onOpenDocument}
+              onEditDocumentDetails={(invoice) => {
+                setCustomerInfoDocument({ type: 'invoice', id: invoice.id, code: invoice.invoiceCode });
+                setCustomerInfoDraft({
+                  customerName: invoice.customerName,
+                  customerEmail: invoice.customerEmail,
+                  customerPhone: invoice.customerPhone,
+                  customerAddress: invoice.customerAddress,
+                  note: invoice.note,
+                });
+              }}
               onNotify={showToast}
             />
           </div>
@@ -2528,6 +2613,47 @@ export function WorkspaceView({
             </div>
 
             <div className="mt-4 space-y-3 text-sm">
+              {quoteStandalone && (
+                <div className="grid gap-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3 sm:grid-cols-2 dark:border-amber-900 dark:bg-amber-950/20">
+                  <label className="block text-xs">
+                    <span>Customer Name (optional)</span>
+                    <input
+                      maxLength={150}
+                      value={quoteCustomer}
+                      onChange={(event) => setQuoteCustomer(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                  </label>
+                  <label className="block text-xs">
+                    <span>Customer Email (optional)</span>
+                    <input
+                      type="email"
+                      maxLength={190}
+                      value={quoteStandaloneEmail}
+                      onChange={(event) => setQuoteStandaloneEmail(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                  </label>
+                  <label className="block text-xs">
+                    <span>Phone / WhatsApp (optional)</span>
+                    <input
+                      maxLength={40}
+                      value={quoteStandalonePhone}
+                      onChange={(event) => setQuoteStandalonePhone(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                  </label>
+                  <label className="block text-xs">
+                    <span>Address (optional)</span>
+                    <input
+                      maxLength={255}
+                      value={quoteStandaloneAddress}
+                      onChange={(event) => setQuoteStandaloneAddress(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                    />
+                  </label>
+                </div>
+              )}
               <label className="block">
                 <span className="text-xs font-medium">Technical Scope</span>
                 <textarea
@@ -2620,15 +2746,24 @@ export function WorkspaceView({
                   />
                 </label>
                 <label className="block text-xs">
-                  <span>Valid Until</span>
-                  <input
-                    type="date"
-                    value={quoteValid}
-                    onChange={(e) => setQuoteValid(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 dark:border-slate-700 dark:bg-[#061327]"
-                  />
+                  <span>Validity</span>
+                  <p className="mt-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    7 days from creation or revision ({quoteValid})
+                  </p>
                 </label>
               </div>
+
+              <label className="block text-xs">
+                <span>Quotation Note / Custom Message</span>
+                <textarea
+                  rows={3}
+                  maxLength={4000}
+                  value={quoteNote}
+                  onChange={(event) => setQuoteNote(event.target.value)}
+                  placeholder="Optional message printed on the quotation and copied to its invoice."
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]"
+                />
+              </label>
 
               <div className="flex items-center justify-between rounded-lg bg-slate-100 p-3 text-sm font-bold dark:bg-[#061327]">
                 <span>Computed Quotation Total</span>
@@ -2645,14 +2780,17 @@ export function WorkspaceView({
                 onClick={async () => {
                   const res = await api.saveQuote({
                     quoteId: editQuoteId,
-                    enquiryId: quoteEnqId,
+                    enquiryId: quoteEnqId || null,
+                    standalone: quoteStandalone,
                     customerName: quoteCustomer,
+                    customerEmail: quoteStandaloneEmail,
+                    customerPhone: quoteStandalonePhone,
+                    customerAddress: quoteStandaloneAddress,
                     scope: quoteScope,
                     terms: quoteTerms,
                     note: quoteNote,
                     discountNgn: Number(quoteDiscount) || 0,
                     taxPercent: Number(quoteTax) || 0,
-                    validUntil: quoteValid,
                     items: quoteItems,
                     submitForApproval: false,
                   });
@@ -2670,14 +2808,17 @@ export function WorkspaceView({
                 onClick={async () => {
                   const res = await api.saveQuote({
                     quoteId: editQuoteId,
-                    enquiryId: quoteEnqId,
+                    enquiryId: quoteEnqId || null,
+                    standalone: quoteStandalone,
                     customerName: quoteCustomer,
+                    customerEmail: quoteStandaloneEmail,
+                    customerPhone: quoteStandalonePhone,
+                    customerAddress: quoteStandaloneAddress,
                     scope: quoteScope,
                     terms: quoteTerms,
                     note: quoteNote,
                     discountNgn: Number(quoteDiscount) || 0,
                     taxPercent: Number(quoteTax) || 0,
-                    validUntil: quoteValid,
                     items: quoteItems,
                     submitForApproval: true,
                   });
@@ -3105,6 +3246,107 @@ export function WorkspaceView({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {renewQuote && (
+        <div role="dialog" aria-modal="true" aria-label="Renew expired quotation" className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]">
+            <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">Renew {renewQuote.quoteCode}?</h2>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              This quotation will become active for seven more days from today. Its new validity date is calculated automatically.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setRenewQuote(null)} className="rounded-lg border px-4 py-2 text-xs font-semibold">
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={customerInfoBusy}
+                onClick={async () => {
+                  setCustomerInfoBusy(true);
+                  setErrorMsg('');
+                  try {
+                    const result = await api.renewQuote(renewQuote.id);
+                    await loadWorkspace();
+                    showToast(`${renewQuote.quoteCode} renewed through ${result.validUntil}.`);
+                    setRenewQuote(null);
+                  } catch (error) {
+                    setErrorMsg((error as Error).message);
+                  } finally {
+                    setCustomerInfoBusy(false);
+                  }
+                }}
+                className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white disabled:opacity-60"
+              >
+                {customerInfoBusy ? 'Renewing…' : 'Renew for 7 Days'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {customerInfoDocument && (
+        <div role="dialog" aria-modal="true" aria-label={`Edit ${customerInfoDocument.type} customer details and note`} className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/60 p-4">
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setCustomerInfoBusy(true);
+              setErrorMsg('');
+              try {
+                await api.saveDocumentDetails({
+                  ...customerInfoDraft,
+                  type: customerInfoDocument.type,
+                  id: customerInfoDocument.id,
+                });
+                await loadWorkspace();
+                showToast(`Saved customer details and note for ${customerInfoDocument.code}.`);
+                setCustomerInfoDocument(null);
+              } catch (error) {
+                setErrorMsg((error as Error).message);
+              } finally {
+                setCustomerInfoBusy(false);
+              }
+            }}
+            className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-[#0B1D39]"
+          >
+            <h2 className="text-lg font-bold text-[#081E3E] dark:text-white">
+              {customerInfoDocument.type === 'quote' ? 'Quotation' : 'Invoice'} · {customerInfoDocument.code}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Update optional customer information and the custom note shown on this document.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs">
+                Customer name
+                <input maxLength={150} value={customerInfoDraft.customerName} onChange={(event) => setCustomerInfoDraft((current) => ({ ...current, customerName: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+              </label>
+              <label className="text-xs">
+                Email
+                <input type="email" maxLength={190} value={customerInfoDraft.customerEmail} onChange={(event) => setCustomerInfoDraft((current) => ({ ...current, customerEmail: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+              </label>
+              <label className="text-xs">
+                Phone / WhatsApp
+                <input maxLength={40} value={customerInfoDraft.customerPhone} onChange={(event) => setCustomerInfoDraft((current) => ({ ...current, customerPhone: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+              </label>
+              <label className="text-xs">
+                Address
+                <input maxLength={255} value={customerInfoDraft.customerAddress} onChange={(event) => setCustomerInfoDraft((current) => ({ ...current, customerAddress: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+              </label>
+              <label className="text-xs sm:col-span-2">
+                Document note / custom message
+                <textarea rows={4} maxLength={4000} value={customerInfoDraft.note} onChange={(event) => setCustomerInfoDraft((current) => ({ ...current, note: event.target.value }))} placeholder="Optional message printed on this quotation or invoice." className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-[#061327]" />
+              </label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" disabled={customerInfoBusy} onClick={() => setCustomerInfoDocument(null)} className="rounded-lg border px-4 py-2 text-xs font-semibold disabled:opacity-60">
+                Cancel
+              </button>
+              <button type="submit" disabled={customerInfoBusy} className="rounded-lg bg-[#D61F26] px-4 py-2 text-xs font-semibold text-white disabled:opacity-60">
+                {customerInfoBusy ? 'Saving…' : 'Save Details & Note'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
