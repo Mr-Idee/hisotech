@@ -2,7 +2,34 @@ import { Menu, Moon, Sun, X } from 'lucide-react';
 import { useState } from 'react';
 import { PWAInstallButton } from './PWAInstallButton';
 
-export type AppRoute = 'home' | 'store' | 'estimator' | 'customer' | 'track' | 'workspace';
+export type PublicPageRoute = 'home' | 'about' | 'services' | 'projects' | 'pricing' | 'contact';
+export type AppRoute = PublicPageRoute | 'store' | 'estimator' | 'customer' | 'track' | 'workspace';
+
+const PUBLIC_NAV_ITEMS: { label: string; route: AppRoute }[] = [
+  { label: 'Home', route: 'home' },
+  { label: 'About', route: 'about' },
+  { label: 'Services', route: 'services' },
+  { label: 'Projects', route: 'projects' },
+  { label: 'Pricing', route: 'pricing' },
+  { label: 'Contact', route: 'contact' },
+  { label: 'Get a quote', route: 'estimator' },
+];
+
+const APP_NAV_ITEMS: { label: string; route: AppRoute }[] = [
+  { label: 'Home', route: 'home' },
+  { label: 'Load Estimator', route: 'estimator' },
+  { label: 'Customer Portal', route: 'customer' },
+  { label: 'Store', route: 'store' },
+  { label: 'Track Request', route: 'track' },
+];
+
+const MOBILE_PUBLIC_LINKS: { label: string; route: PublicPageRoute }[] = [
+  { label: 'About', route: 'about' },
+  { label: 'Services', route: 'services' },
+  { label: 'Projects', route: 'projects' },
+  { label: 'Pricing', route: 'pricing' },
+  { label: 'Contact', route: 'contact' },
+];
 
 interface TopBarProps {
   activeRoute: AppRoute;
@@ -14,14 +41,9 @@ interface TopBarProps {
 
 export function TopBar({ activeRoute, onNavigate, darkMode, themeMode, onToggleTheme }: TopBarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
-
-  const navItems: { label: string; route: AppRoute; section?: string }[] = [
-    { label: 'Home', route: 'home' },
-    { label: 'Load Estimator', route: 'estimator' },
-    { label: 'Customer Portal', route: 'customer' },
-    { label: 'Store', route: 'store' },
-    { label: 'Track Request', route: 'track' },
-  ];
+  const isPublicRoute = activeRoute === 'home' || activeRoute === 'about' || activeRoute === 'services'
+    || activeRoute === 'projects' || activeRoute === 'pricing' || activeRoute === 'contact';
+  const navItems = isPublicRoute ? PUBLIC_NAV_ITEMS : APP_NAV_ITEMS;
 
   const ThemeIcon = darkMode ? Moon : Sun;
 
@@ -54,14 +76,14 @@ export function TopBar({ activeRoute, onNavigate, darkMode, themeMode, onToggleT
         {/* Zone 2: Concise single-line navigation */}
         <nav aria-label="Primary navigation" className="hidden items-center gap-4 lg:flex">
           {navItems.map((item) => {
-            const isCurrent = activeRoute === item.route && !item.section;
+            const isCurrent = activeRoute === item.route;
             return (
               <a
                 key={item.label}
-                href={`#${item.section || item.route}`}
+                href={`#${item.route}`}
                 onClick={(e) => {
                   e.preventDefault();
-                  handleNav(item.route, item.section);
+                  handleNav(item.route);
                 }}
                 className={`whitespace-nowrap shrink-0 text-sm font-medium transition-colors hover:text-[#D61F26] ${
                   isCurrent
@@ -117,30 +139,26 @@ export function TopBar({ activeRoute, onNavigate, darkMode, themeMode, onToggleT
               <button
                 key={item.label}
                 type="button"
-                onClick={() => handleNav(item.route, item.section)}
+                onClick={() => handleNav(item.route)}
                 className="flex min-h-[44px] items-center rounded-lg px-3 text-left text-sm font-medium text-slate-800 hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-800"
               >
                 {item.label}
               </button>
             ))}
-            <div className="my-1 grid grid-cols-3 gap-1 border-y border-slate-100 py-2 dark:border-slate-800">
-              {[
-                { label: 'About', sec: 'about' },
-                { label: 'Services', sec: 'services' },
-                { label: 'Projects', sec: 'projects' },
-                { label: 'Pricing', sec: 'pricing' },
-                { label: 'Contact', sec: 'contact' },
-              ].map((anchor) => (
-                <button
-                  key={anchor.sec}
-                  type="button"
-                  onClick={() => handleNav('home', anchor.sec)}
-                  className="min-h-[40px] rounded-md px-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-                >
-                  {anchor.label}
-                </button>
-              ))}
-            </div>
+            {!isPublicRoute && (
+              <div className="my-1 grid grid-cols-3 gap-1 border-y border-slate-100 py-2 dark:border-slate-800">
+                {MOBILE_PUBLIC_LINKS.map((item) => (
+                  <button
+                    key={item.route}
+                    type="button"
+                    onClick={() => handleNav(item.route)}
+                    className="min-h-[40px] rounded-md px-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap items-center gap-2.5">
               <button
                 type="button"

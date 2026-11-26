@@ -19,9 +19,10 @@ import type { CatalogItem } from '../lib/types';
 import type { HomepageContent } from '../lib/homepage';
 import heroImage from '../assets/images/hero_solar_array_1794819204906.jpg';
 import { Reveal } from './Reveal';
-import type { AppRoute } from './TopBar';
+import type { AppRoute, PublicPageRoute } from './TopBar';
 
 interface PublicSiteProps {
+  activePage: PublicPageRoute;
   catalog: CatalogItem[];
   homepage: HomepageContent;
   darkMode: boolean;
@@ -120,7 +121,7 @@ const PROJECTS = [
     location: 'Residential Electrification · Bayelsa',
     sector: 'Residential',
     metric: 'Uninterrupted 24/7 Home Backup',
-    image: '/assets/site/project-2-lithium-bank.jpg',
+    image: '/assets/site/project-7-survey-team.jpg',
     detail: 'Lithium battery bank paired with high-efficiency hybrid conversion and smart load prioritization.',
   },
   {
@@ -136,7 +137,7 @@ const PROJECTS = [
     location: 'Utako, FCT Abuja',
     sector: 'Commercial',
     metric: 'Modular 16kW Load Capacity',
-    image: '/assets/site/project-7-survey-team.jpg',
+    image: '/assets/site/project-6-utako-16kw.jpeg',
     detail: 'Redundant parallel hybrid inverters supporting dual solar charging and PHCN utility integration.',
   },
   {
@@ -144,7 +145,7 @@ const PROJECTS = [
     location: 'Imiringi, Bayelsa State',
     sector: 'Residential',
     metric: 'Supports PHCN & PV Charging',
-    image: '/assets/site/project-5-bayelsa-15kwh.jpg',
+    image: '/assets/site/project-4-panels-500w.jpg',
     detail: 'Durable off-grid hybrid configuration eliminating fuel generator dependence.',
   },
   {
@@ -152,8 +153,16 @@ const PROJECTS = [
     location: '24kW Solar Charging · Residential',
     sector: 'Residential',
     metric: '24kW Maximum Array Input',
-    image: '/assets/site/project-4-panels-500w.jpg',
+    image: '/assets/site/project-5-bayelsa-15kwh.jpg',
     detail: 'Precision anodized mounting and clean MC4 string wiring for maximum daily kWh yield.',
+  },
+  {
+    title: 'Residential Rooftop Solar Installation',
+    location: 'Residential Electrification · Nigeria',
+    sector: 'Residential',
+    metric: 'On-site PV array installation',
+    image: '/assets/site/project-2-lithium-bank.jpg',
+    detail: 'Solar panels installed and commissioned on site by HI-SOTECH field technicians.',
   },
   {
     title: 'Institutional & Health Centre Electrification',
@@ -212,6 +221,84 @@ const PARTNERS = [
   'Livoltek',
 ];
 
+const BENEFITS = [
+  {
+    title: 'End-to-end solar solutions',
+    description:
+      'From site assessment and consultancy through system design, installation, and maintenance—with asset management support for long-term projects.',
+  },
+  {
+    title: 'Reliable backup power',
+    description:
+      'Hybrid inverters and off-grid systems are engineered to keep essential home, business, and institutional loads running during grid interruptions.',
+  },
+  {
+    title: 'Nationwide project experience',
+    description:
+      'Our teams have delivered projects across Abuja, Lagos, Plateau, Akwa Ibom, Rivers, Bayelsa, and other parts of Nigeria.',
+  },
+];
+
+const PUBLIC_PAGE_LINKS: {
+  route: Exclude<PublicPageRoute, 'home'>;
+  title: string;
+  description: string;
+}[] = [
+  {
+    route: 'about',
+    title: 'About HI-SOTECH',
+    description: 'Learn about our engineering team, values, and commitment to dependable solar power.',
+  },
+  {
+    route: 'services',
+    title: 'Solar services',
+    description: 'Explore solar design, installation, maintenance, and institutional project support.',
+  },
+  {
+    route: 'projects',
+    title: 'Our projects',
+    description: 'See residential, commercial, and institutional installations delivered across Nigeria.',
+  },
+  {
+    route: 'pricing',
+    title: 'Packages & pricing',
+    description: 'Review indicative solar packages, warranty notes, and current Store pricing.',
+  },
+  {
+    route: 'contact',
+    title: 'Contact our team',
+    description: 'Request a callback or site evaluation from the HI-SOTECH engineering desk.',
+  },
+];
+
+const PAGE_INTROS: Record<Exclude<PublicPageRoute, 'home'>, { eyebrow: string; title: string; body: string }> = {
+  about: {
+    eyebrow: 'ABOUT HI-SOTECH',
+    title: 'Professional solar engineering built on trust.',
+    body: 'Meet the team and learn about the experience, values, and technical standards behind our solar projects.',
+  },
+  services: {
+    eyebrow: 'SERVICES & CAPABILITIES',
+    title: 'End-to-end solar solutions for every scale.',
+    body: 'Our comprehensive services support homes, businesses, and government institutions from assessment through maintenance.',
+  },
+  projects: {
+    eyebrow: 'PROJECT PORTFOLIO',
+    title: 'Powering a brighter future across Nigeria.',
+    body: 'Explore installations that demonstrate our commitment to reliable energy, precision engineering, and client success.',
+  },
+  pricing: {
+    eyebrow: 'PACKAGES & PRICING',
+    title: 'Solar packages designed around your needs.',
+    body: 'Review indicative package pricing and use the Load Estimator or Store to prepare a tailored system proposal.',
+  },
+  contact: {
+    eyebrow: 'FREE CONSULTATION',
+    title: 'Let’s plan your solar project.',
+    body: 'Tell us about your site and power needs. Our engineering team will help you identify the right next step.',
+  },
+};
+
 const FAQS = [
   {
     q: 'How can I get an accurate, itemized solar price quote?',
@@ -230,6 +317,22 @@ const FAQS = [
     a: 'Formal quotations are valid for 7 days. The supplied quotation specifies a 2-year installation-only warranty; theft, natural disasters, and end-user error are excluded. Expected service life is 5–10 years for inverters, 5–15 years for battery banks, and 10–25 years for solar panels. These are estimates, not product warranty terms, and may vary by model and use.',
   },
 ];
+
+function PublicPageIntro({ page }: { page: Exclude<PublicPageRoute, 'home'> }) {
+  const intro = PAGE_INTROS[page];
+
+  return (
+    <section className="bg-[#081E3E] py-12 text-white sm:py-16">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <p className="text-xs font-semibold tracking-widest text-red-300">{intro.eyebrow}</p>
+        <h1 className="mt-3 max-w-3xl text-balance text-3xl font-extrabold tracking-tight sm:text-4xl">
+          {intro.title}
+        </h1>
+        <p className="mt-4 max-w-2xl text-sm leading-relaxed text-slate-300 sm:text-base">{intro.body}</p>
+      </div>
+    </section>
+  );
+}
 
 function ImpactCounter({ target, suffix = '' }: { target: number; suffix?: string }) {
   const elementRef = useRef<HTMLSpanElement>(null);
@@ -267,7 +370,7 @@ function ImpactCounter({ target, suffix = '' }: { target: number; suffix?: strin
   return <span ref={elementRef}>{value.toLocaleString('en-NG')}{suffix}</span>;
 }
 
-export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleTheme, onNavigate }: PublicSiteProps) {
+export function PublicSite({ activePage, catalog, homepage, darkMode, themeMode, onToggleTheme, onNavigate }: PublicSiteProps) {
   const [workflowIdx, setWorkflowIdx] = useState(0);
   const [projectSector, setProjectSector] = useState<'All' | 'Residential' | 'Commercial' | 'Institutional'>('All');
   const [openFaq, setOpenFaq] = useState<number | null>(0);
@@ -324,7 +427,9 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
   }
 
   return (
-    <div id="home">
+    <div id={activePage === 'home' ? 'home' : undefined}>
+      {activePage === 'home' && (
+        <>
       {/* Hero Section (Immediate render above the fold) */}
       <section className={`relative overflow-hidden bg-[#081E3E] text-white ${homepage.hero.enabled ? '' : 'hidden'}`}>
         <div className="mx-auto grid max-w-7xl items-stretch gap-10 px-4 py-12 sm:px-6 lg:grid-cols-12 lg:px-8 lg:py-20">
@@ -543,8 +648,13 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
           </div>
         </Reveal>
       </section>
+        </>
+      )}
+
+      {activePage !== 'home' && <PublicPageIntro page={activePage} />}
 
       {/* About & Leadership */}
+      {activePage === 'about' && (
       <section id="about" className={`border-y border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830] ${homepage.about.enabled ? '' : 'hidden'}`}>
         <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-12 lg:px-8">
           <div className="lg:col-span-5">
@@ -565,6 +675,17 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
                     Founded 2010 · Registered 2016 under Nigeria’s CAC · COREN · SPVI · NERC · NEMSA
                   </p>
                 </div>
+              </div>
+            </Reveal>
+            <Reveal delayMs={90}>
+              <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-[#0B1D39]">
+                <img
+                  src="/assets/site/project-1-hybrid-10kw.jpg"
+                  alt="HI-SOTECH team members reviewing a solar project"
+                  className="aspect-[16/9] w-full object-cover"
+                  loading="lazy"
+                  decoding="async"
+                />
               </div>
             </Reveal>
           </div>
@@ -605,8 +726,10 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
           </div>
         </div>
       </section>
+      )}
 
       {/* Services Section */}
+      {activePage === 'services' && (
       <section id="services" className={`mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 ${homepage.services.enabled ? '' : 'hidden'}`}>
         <Reveal>
           <div className="max-w-2xl">
@@ -628,10 +751,39 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
               </Reveal>
             ))}
           </div>
+
+          <div className="mt-12 grid items-center gap-6 overflow-hidden rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-[#0B1D39] sm:p-8 lg:grid-cols-2">
+            <img
+              src="/assets/site/project-9-solar-rack.jpg"
+              alt="HI-SOTECH field technicians installing solar equipment"
+              className="aspect-video w-full rounded-lg object-cover"
+              loading="lazy"
+              decoding="async"
+            />
+            <div>
+              <p className="text-xs font-semibold tracking-wider text-[#D61F26]">CONSULTATION &amp; INSTALLATION</p>
+              <h3 className="mt-2 text-2xl font-bold text-[#081E3E] dark:text-white">
+                Certified technicians, from survey through commissioning.
+              </h3>
+              <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                Our team can assess your site and install solar panels, batteries, inverters, and supporting equipment.
+              </p>
+              <button
+                type="button"
+                onClick={() => onNavigate('contact')}
+                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-[#D61F26] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B0171D]"
+              >
+                Request a site evaluation
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </Reveal>
       </section>
+      )}
 
       {/* Selected Projects with Real HI-SOTECH Photography */}
+      {activePage === 'projects' && (
       <section id="projects" className={`border-y border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830] ${homepage.projects.enabled ? '' : 'hidden'}`}>
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Reveal>
@@ -695,7 +847,10 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
           </Reveal>
         </div>
       </section>
+      )}
 
+      {activePage === 'home' && (
+        <>
       <section aria-label="HI-SOTECH engineering impact" className="border-y border-slate-200 bg-white py-10 dark:border-slate-800 dark:bg-[#091830]">
         <Reveal>
           <div className="mx-auto grid max-w-7xl grid-cols-2 gap-6 px-4 sm:px-6 lg:grid-cols-4 lg:px-8">
@@ -719,7 +874,112 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
         </Reveal>
       </section>
 
+      <section
+        id="why-hi-sotech"
+        aria-labelledby="why-hi-sotech-heading"
+        className="border-b border-slate-200 bg-slate-50 py-16 dark:border-slate-800 dark:bg-[#091830]"
+      >
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <Reveal>
+            <div className="max-w-2xl">
+              <p className="text-xs font-semibold tracking-wider text-[#D61F26]">THE HI-SOTECH ADVANTAGE</p>
+              <h2
+                id="why-hi-sotech-heading"
+                className="mt-2 text-balance text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white"
+              >
+                By working with HI-SOTECH, you gain
+              </h2>
+            </div>
+
+            <div className="mt-8 grid gap-5 md:grid-cols-3">
+              {BENEFITS.map((benefit, idx) => (
+                <article
+                  key={benefit.title}
+                  className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-[#0B1D39]"
+                >
+                  <p className="font-mono-num text-sm font-bold text-[#D61F26]">
+                    {String(idx + 1).padStart(2, '0')}
+                  </p>
+                  <h3 className="mt-3 text-lg font-bold text-[#081E3E] dark:text-white">{benefit.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                    {benefit.description}
+                  </p>
+                </article>
+              ))}
+            </div>
+
+            <div className="mt-10 rounded-2xl border border-[#163B70] bg-[#081E3E] p-6 text-white shadow-lg sm:p-8">
+              <div className="flex flex-wrap items-end justify-between gap-5">
+                <div>
+                  <p className="text-xs font-semibold tracking-wider text-red-300">GLOBAL PARTNERS</p>
+                  <h3 className="mt-2 text-xl font-bold sm:text-2xl">Technology from trusted industry leaders</h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">
+                    Our solutions incorporate components from established solar and electrical brands.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('contact')}
+                  className="inline-flex items-center gap-2 rounded-lg bg-[#D61F26] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B0171D]"
+                >
+                  Request a free site evaluation
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
+
+              <ul className="mt-6 flex flex-wrap gap-2.5" aria-label="HI-SOTECH technology partners">
+                {PARTNERS.map((partner) => (
+                  <li
+                    key={partner}
+                    className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-100"
+                  >
+                    {partner}
+                  </li>
+                ))}
+              </ul>
+
+              <a
+                href="tel:+2347037770002"
+                className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-amber-200 transition-colors hover:text-white"
+              >
+                <Phone className="h-4 w-4" />
+                Speak to an expert: +234 703 777 0002
+              </a>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+          <section aria-labelledby="public-pages-heading" className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+            <Reveal>
+              <div className="max-w-2xl">
+                <p className="text-xs font-semibold tracking-wider text-[#D61F26]">EXPLORE HI-SOTECH</p>
+                <h2
+                  id="public-pages-heading"
+                  className="mt-2 text-balance text-3xl font-bold tracking-tight text-[#081E3E] dark:text-white"
+                >
+                  Find the information you need
+                </h2>
+              </div>
+              <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {PUBLIC_PAGE_LINKS.map((page) => (
+                  <button
+                    key={page.route}
+                    type="button"
+                    onClick={() => onNavigate(page.route)}
+                    className="rounded-xl border border-slate-200 bg-white p-5 text-left shadow-sm transition-colors hover:border-[#D61F26]/50 dark:border-slate-800 dark:bg-[#0B1D39]"
+                  >
+                    <h3 className="font-bold text-[#081E3E] dark:text-white">{page.title}</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">{page.description}</p>
+                  </button>
+                ))}
+              </div>
+            </Reveal>
+          </section>
+        </>
+      )}
+
       {/* Pricing Tiers & Store Snapshot */}
+      {activePage === 'pricing' && (
       <section id="pricing" className={`mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 ${homepage.pricing.enabled ? '' : 'hidden'}`}>
         <Reveal>
           <div className="flex flex-wrap items-end justify-between gap-4">
@@ -867,8 +1127,10 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
           </div>
         </Reveal>
       </section>
+      )}
 
       {/* Contact & Consultation Intake */}
+      {activePage === 'contact' && (
       <section id="contact" className="border-t border-slate-200 bg-white py-16 dark:border-slate-800 dark:bg-[#091830]">
         <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-12 lg:px-8">
           <div className="lg:col-span-5">
@@ -1016,6 +1278,7 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
           </div>
         </div>
       </section>
+      )}
 
       {/* Quiet Footer (No cPanel download button) */}
       <footer className="border-t border-slate-200 bg-[#081E3E] text-slate-300 dark:border-slate-800">
@@ -1036,6 +1299,11 @@ export function PublicSite({ catalog, homepage, darkMode, themeMode, onToggleThe
           </div>
 
           <div className="flex flex-wrap items-center gap-4 text-xs">
+            {PUBLIC_PAGE_LINKS.map((page) => (
+              <button key={page.route} type="button" onClick={() => onNavigate(page.route)} className="hover:text-white">
+                {page.title.replace(' HI-SOTECH', '')}
+              </button>
+            ))}
             <button type="button" onClick={() => onNavigate('estimator')} className="hover:text-white">
               Load Estimator
             </button>

@@ -36,6 +36,11 @@ function readThemeMode(): ThemeMode {
 function readRouteFromHash(): AppRoute {
   const hash = window.location.hash.replace(/^#/, '').split('?')[0];
   if (
+    hash === 'about' ||
+    hash === 'services' ||
+    hash === 'projects' ||
+    hash === 'pricing' ||
+    hash === 'contact' ||
     hash === 'store' ||
     hash === 'estimator' ||
     hash === 'customer' ||
@@ -98,7 +103,11 @@ export default function App() {
 
     const onHashChange = () => setRoute(readRouteFromHash());
     window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    window.addEventListener('popstate', onHashChange);
+    return () => {
+      window.removeEventListener('hashchange', onHashChange);
+      window.removeEventListener('popstate', onHashChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -166,8 +175,14 @@ export default function App() {
             bankDetails={bankDetails}
             onBack={() => setDocView(null)}
           />
-        ) : route === 'home' ? (
+        ) : route === 'home' ||
+          route === 'about' ||
+          route === 'services' ||
+          route === 'projects' ||
+          route === 'pricing' ||
+          route === 'contact' ? (
           <PublicSite
+            activePage={route}
             catalog={catalog}
             homepage={homepage}
             darkMode={darkMode}
